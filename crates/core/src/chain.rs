@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum Chain {
     BnbMainnet,
     EthereumMainnet,
+    SolanaMainnet,
 }
 
 impl Chain {
@@ -13,14 +14,20 @@ impl Chain {
         match self {
             Self::BnbMainnet => "https://bsc-dataseed.binance.org",
             Self::EthereumMainnet => "https://ethereum-rpc.publicnode.com",
+            Self::SolanaMainnet => "https://api.mainnet-beta.solana.com",
+        }
+    }
+
+    pub fn explorer_url_str(&self, address: &str) -> String {
+        match self {
+            Self::BnbMainnet => format!("https://bscscan.com/address/{address}"),
+            Self::EthereumMainnet => format!("https://etherscan.io/address/{address}"),
+            Self::SolanaMainnet => format!("https://solscan.io/account/{address}"),
         }
     }
 
     pub fn explorer_url(&self, address: Address) -> String {
-        match self {
-            Self::BnbMainnet => format!("https://bscscan.com/address/{address}"),
-            Self::EthereumMainnet => format!("https://etherscan.io/address/{address}"),
-        }
+        self.explorer_url_str(&address.to_string())
     }
 }
 
@@ -29,6 +36,7 @@ impl std::fmt::Display for Chain {
         match self {
             Self::BnbMainnet => write!(f, "BNB Chain"),
             Self::EthereumMainnet => write!(f, "Ethereum"),
+            Self::SolanaMainnet => write!(f, "Solana"),
         }
     }
 }

@@ -7,7 +7,7 @@ use eyre::Result;
 #[derive(Parser, Debug)]
 #[command(name = "rwa", version, about = "Real World Asset CLI")]
 pub struct Cli {
-    /// Custom RPC URL (default: public BNB Chain RPC)
+    /// Custom RPC URL (overrides default for the selected chain)
     #[arg(long, global = true, env = "RWA_RPC_URL")]
     pub rpc_url: Option<String>,
 
@@ -17,7 +17,7 @@ pub struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Commands {
-    /// Ondo Global Markets — 264 tokenized stocks & ETFs on BNB Chain (list, price, balance, info, portfolio)
+    /// Ondo Global Markets — 264 tokenized stocks & ETFs on Solana, BNB & Ethereum (list, price, balance, info, portfolio)
     Gm {
         #[command(subcommand)]
         action: cmd::gm::GmAction,
@@ -35,12 +35,8 @@ pub async fn run() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let rpc_url = cli
-        .rpc_url
-        .unwrap_or_else(|| rwa_core::chain::Chain::BnbMainnet.default_rpc_url().to_string());
-
     match cli.command {
-        Commands::Gm { action } => cmd::gm::execute(action, &rpc_url).await?,
+        Commands::Gm { action } => cmd::gm::execute(action, cli.rpc_url.as_deref()).await?,
     }
 
     Ok(())

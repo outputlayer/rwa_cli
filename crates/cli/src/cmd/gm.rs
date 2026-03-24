@@ -1,7 +1,17 @@
 use alloy_primitives::{Address, U256};
 use clap::Subcommand;
 use eyre::Result;
-use rwa_ondo::{api, gm, oracle, provider, token_list};
+use rwa_core::chain::Chain;
+use rwa_ondo::{api, gm, oracle, provider, solana, token_list};
+
+fn parse_chain(s: &str) -> Result<Chain> {
+    match s.to_lowercase().as_str() {
+        "bsc" | "bnb" => Ok(Chain::BnbMainnet),
+        "eth" | "ethereum" => Ok(Chain::EthereumMainnet),
+        "sol" | "solana" => Ok(Chain::SolanaMainnet),
+        _ => Err(eyre::eyre!("Unknown chain: {s}. Use: bsc, eth, or solana")),
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
@@ -14,14 +24,18 @@ pub enum GmAction {
         symbol: String,
     },
 
-    /// <WALLET> [-t TOKEN]  Check GM token balances on BNB Chain
+    /// <WALLET> [-t TOKEN]  Check GM token balances
     Balance {
-        /// Wallet address (0x...)
+        /// Wallet address (0x... for EVM, base58 for Solana)
         wallet: String,
 
         /// Filter by token symbol (optional)
         #[arg(short, long)]
         token: Option<String>,
+
+        /// Chain: solana (default), bsc, or eth
+        #[arg(short, long, default_value = "solana")]
+        chain: String,
     },
 
     /// <SYMBOL>             Detailed token info (price, sValue, holders, 52w)
@@ -32,12 +46,16 @@ pub enum GmAction {
 
     /// <WALLET>             Portfolio with USD values and 24h P&L
     Portfolio {
-        /// Wallet address (0x...)
+        /// Wallet address (0x... for EVM, base58 for Solana)
         wallet: String,
+
+        /// Chain: solana (default), bsc, or eth
+        #[arg(short, long, default_value = "solana")]
+        chain: String,
     },
 }
 
-pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
+pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result<()> {
     // Price only needs the Ondo API — skip token list fetch (~170ms saved)
     if let GmAction::Price { ref symbol } = action {
         return price(symbol).await;
@@ -48,9 +66,28 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
     match action {
         GmAction::List => list_tokens(&tokens),
         GmAction::Price { .. } => unreachable!(),
-        GmAction::Balance { wallet, token } => balance(rpc_url, &wallet, token.as_deref(), &tokens).await,
-        GmAction::Info { symbol } => info(rpc_url, &symbol, &tokens).await,
-        GmAction::Portfolio { wallet } => portfolio(rpc_url, &wallet, &tokens).await,
+        GmAction::Balance { wallet, token, chain } => {
+            let chain = parse_chain(&chain)?;
+            if chain == Chain::SolanaMainnet {
+                balance_solana(&wallet, token.as_deref(), &tokens).await
+            } else {
+                let rpc = rpc_url_override.unwrap_or(chain.default_rpc_url());
+                balance_evm(rpc, &wallet, token.as_deref(), &tokens, chain).await
+            }
+        }
+        GmAction::Info { symbol } => {
+            let rpc = rpc_url_override.unwrap_or(Chain::BnbMainnet.default_rpc_url());
+            info(rpc, &symbol, &tokens).await
+        }
+        GmAction::Portfolio { wallet, chain } => {
+            let chain = parse_chain(&chain)?;
+            if chain == Chain::SolanaMainnet {
+                portfolio_solana(&wallet, &tokens).await
+            } else {
+                let rpc = rpc_url_override.unwrap_or(chain.default_rpc_url());
+                portfolio_evm(rpc, &wallet, &tokens, chain).await
+            }
+        }
     }
 }
 
@@ -124,20 +161,20 @@ async fn price(symbol: &str) -> Result<()> {
     Ok(())
 }
 
-async fn balance(rpc_url: &str, wallet: &str, token: Option<&str>, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+async fn balance_evm(rpc_url: &str, wallet: &str, token: Option<&str>, tokens: &[token_list::GmTokenEntry], chain: Chain) -> Result<()> {
     let wallet_addr: Address = wallet.parse()?;
     let provider = provider::create_provider(rpc_url).await?;
 
     if let Some(sym) = token {
         let entry = gm::resolve_token(sym, tokens)?;
-        let token_addr = entry.bsc_address
-            .ok_or_else(|| eyre::eyre!("No BSC address for {}", entry.symbol))?;
+        let token_addr = gm::token_address_for_chain(entry, chain)
+            .ok_or_else(|| eyre::eyre!("No {} address for {}", chain, entry.symbol))?;
         let bal = gm::get_balance(&provider, token_addr, wallet_addr).await?;
         println!("{}: {}", entry.symbol, format_u256_decimals(bal, 18));
     } else {
-        let balances = gm::get_all_balances(&provider, wallet_addr, tokens).await?;
+        let balances = gm::get_all_balances(&provider, wallet_addr, tokens, chain).await?;
         if balances.is_empty() {
-            println!("No GM token balances found for {wallet}");
+            println!("No GM token balances found on {} for {wallet}", chain);
         } else {
             println!("{:<12} BALANCE", "TOKEN");
             println!("{}", "-".repeat(40));
@@ -165,6 +202,9 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
     if let Some(eth) = entry.eth_address {
         println!("ETH Address:     {}", eth);
     }
+    if let Some(sol) = &entry.solana_address {
+        println!("SOL Address:     {}", sol);
+    }
     println!("Decimals:        {}", token_info.decimals);
     println!("sValue:          {:.6}", oracle_data.value);
     println!("sValue (raw):    {}", format_u256_decimals(oracle_data.raw, 18));
@@ -173,24 +213,24 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
     Ok(())
 }
 
-async fn portfolio(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+async fn portfolio_evm(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEntry], chain: Chain) -> Result<()> {
     let wallet_addr: Address = wallet.parse()?;
     let provider = provider::create_provider(rpc_url).await?;
 
     // Fetch balances and prices in parallel
     let (balances, assets) = tokio::join!(
-        gm::get_all_balances(&provider, wallet_addr, tokens),
+        gm::get_all_balances(&provider, wallet_addr, tokens, chain),
         api::fetch_assets()
     );
     let balances = balances?;
     let assets = assets?;
 
     if balances.is_empty() {
-        println!("No GM token balances found for {wallet}");
+        println!("No GM token balances found on {chain} for {wallet}");
         return Ok(());
     }
 
-    println!("Portfolio for {wallet}\n");
+    println!("{chain} Portfolio for {wallet}\n");
     println!(
         "{:<12} {:>14} {:>12} {:>16} {:>9}",
         "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
@@ -214,7 +254,6 @@ async fn portfolio(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEnt
         };
 
         let value = bal_f64 * price;
-        // previous value = current_value / (1 + pct/100)
         let prev_value = if pct_24h.abs() > f64::EPSILON {
             value / (1.0 + pct_24h / 100.0)
         } else {
@@ -227,6 +266,100 @@ async fn portfolio(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEnt
         println!(
             "{:<12} {:>14.4} {:>11.2} {:>15.2} {:>+8.2}%",
             tb.token.symbol, bal_f64, price, value, pct_24h
+        );
+    }
+
+    println!("{}", "─".repeat(67));
+
+    let total_change = total_value - total_prev_value;
+    let total_pct = if total_prev_value.abs() > f64::EPSILON {
+        (total_change / total_prev_value) * 100.0
+    } else {
+        0.0
+    };
+
+    println!(
+        "{:<12} {:>14} {:>12} {:>15.2}",
+        "TOTAL", "", "", total_value
+    );
+    println!(
+        "\n24h Change: {:+.2} ({:+.2}%)",
+        total_change, total_pct
+    );
+
+    Ok(())
+}
+
+async fn balance_solana(wallet: &str, token: Option<&str>, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    if let Some(sym) = token {
+        let entry = gm::resolve_token(sym, tokens)?;
+        let mint = entry.solana_address.as_deref()
+            .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
+        let bal = solana::get_balance(wallet, mint, None).await?;
+        println!("{}: {}", entry.symbol, bal.balance);
+    } else {
+        let balances = solana::get_all_balances(wallet, tokens, None).await?;
+        if balances.is_empty() {
+            println!("No GM token balances found on Solana for {wallet}");
+        } else {
+            println!("{:<12} BALANCE", "TOKEN");
+            println!("{}", "-".repeat(40));
+            for tb in &balances {
+                println!("{:<12} {}", tb.symbol, tb.balance);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn portfolio_solana(wallet: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let (balances, assets) = tokio::join!(
+        solana::get_all_balances(wallet, tokens, None),
+        api::fetch_assets()
+    );
+    let balances = balances?;
+    let assets = assets?;
+
+    if balances.is_empty() {
+        println!("No GM token balances found on Solana for {wallet}");
+        return Ok(());
+    }
+
+    println!("Solana Portfolio for {wallet}\n");
+    println!(
+        "{:<12} {:>14} {:>12} {:>16} {:>9}",
+        "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
+    );
+    println!("{}", "─".repeat(67));
+
+    let mut total_value = 0.0;
+    let mut total_prev_value = 0.0;
+
+    for tb in &balances {
+        let asset = api::find_asset(&tb.symbol, &assets);
+
+        let (price, pct_24h) = match asset.and_then(|a| a.primary_market.as_ref()) {
+            Some(pm) => {
+                let p = api::parse_price(&pm.price);
+                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+                (p, pct)
+            }
+            None => (0.0, 0.0),
+        };
+
+        let value = tb.balance * price;
+        let prev_value = if pct_24h.abs() > f64::EPSILON {
+            value / (1.0 + pct_24h / 100.0)
+        } else {
+            value
+        };
+
+        total_value += value;
+        total_prev_value += prev_value;
+
+        println!(
+            "{:<12} {:>14.4} {:>11.2} {:>15.2} {:>+8.2}%",
+            tb.symbol, tb.balance, price, value, pct_24h
         );
     }
 

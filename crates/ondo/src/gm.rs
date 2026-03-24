@@ -2,20 +2,28 @@ use alloy_primitives::{Address, U256};
 use alloy_provider::Provider;
 use alloy_sol_types::SolCall;
 use eyre::{Result, eyre};
+use rwa_core::chain::Chain;
 use rwa_core::contracts::{IERC20, IMulticall3, MULTICALL3};
 use rwa_core::types::{GmToken, TokenBalance};
 
 use crate::token_list::GmTokenEntry;
 
 /// Resolve a GM token by symbol or contract address (case-insensitive).
-/// Accepts "TSLA", "TSLAon" formats, or a hex address like "0x2494...".
+/// Accepts "TSLA", "TSLAon" formats, a hex address like "0x2494...", or a Solana base58 address.
 pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a GmTokenEntry> {
-    // Try to parse as contract address first
+    // Try to parse as EVM contract address first
     if let Ok(addr) = symbol.parse::<Address>() {
         return tokens
             .iter()
             .find(|t| t.bsc_address == Some(addr) || t.eth_address == Some(addr))
             .ok_or_else(|| eyre!("No GM token found for address {symbol}. Use `rwa gm list` to see available tokens."));
+    }
+
+    // Try Solana address lookup (base58, typically ends with "ondo")
+    if symbol.len() >= 32 && !symbol.starts_with("0x") {
+        if let Some(entry) = tokens.iter().find(|t| t.solana_address.as_deref() == Some(symbol)) {
+            return Ok(entry);
+        }
     }
 
     let normalized = symbol.to_uppercase();
@@ -58,20 +66,32 @@ pub async fn get_balance<P: Provider>(
     Ok(balance)
 }
 
+/// Get the EVM address for a token on the given chain.
+pub fn token_address_for_chain(entry: &GmTokenEntry, chain: Chain) -> Option<Address> {
+    match chain {
+        Chain::BnbMainnet => entry.bsc_address,
+        Chain::EthereumMainnet => entry.eth_address,
+        Chain::SolanaMainnet => None,
+    }
+}
+
 /// Fetch balances for all GM tokens via Multicall3 (single RPC call).
+/// Works on any EVM chain (BSC, Ethereum) — just pass the right chain.
 pub async fn get_all_balances<P: Provider>(
     provider: &P,
     wallet: Address,
     tokens: &[GmTokenEntry],
+    chain: Chain,
 ) -> Result<Vec<TokenBalance>> {
-    // Collect tokens that have BSC addresses
-    let entries: Vec<&GmTokenEntry> = tokens.iter().filter(|e| e.bsc_address.is_some()).collect();
+    let entries: Vec<&GmTokenEntry> = tokens
+        .iter()
+        .filter(|e| token_address_for_chain(e, chain).is_some())
+        .collect();
 
-    // Build Multicall3 batch: one balanceOf(wallet) per token
     let calls: Vec<IMulticall3::Call3> = entries
         .iter()
         .map(|e| IMulticall3::Call3 {
-            target: e.bsc_address.unwrap(),
+            target: token_address_for_chain(e, chain).unwrap(),
             allowFailure: true,
             callData: IERC20::balanceOfCall { account: wallet }.abi_encode().into(),
         })
@@ -92,7 +112,7 @@ pub async fn get_all_balances<P: Provider>(
                 token: GmToken {
                     symbol: entry.symbol.clone(),
                     name: entry.name.clone(),
-                    address: entry.bsc_address.unwrap(),
+                    address: token_address_for_chain(entry, chain).unwrap(),
                     decimals: entry.decimals,
                 },
                 balance,
