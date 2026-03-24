@@ -58,7 +58,8 @@ fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     println!("{:<12} {}", "SYMBOL", "NAME");
     println!("{}", "-".repeat(60));
     for t in tokens {
-        println!("{:<12} {}", t.symbol, t.name);
+        let name = t.name.trim_end_matches(" (Ondo Tokenized)");
+        println!("{:<12} {}", t.symbol, name);
     }
     println!("\nTotal: {} tokens", tokens.len());
     Ok(())
