@@ -1,4 +1,5 @@
 use alloy_primitives::{Address, U256};
+use chrono::Datelike;
 use clap::Subcommand;
 use eyre::Result;
 use rwa_core::chain::Chain;
@@ -77,6 +78,19 @@ pub enum GmAction {
         #[arg(long)]
         sell: bool,
     },
+
+    /// Execute multiple trades sequentially
+    ///
+    /// Each order: "buy SYMBOL USDC_AMOUNT" or "sell SYMBOL TOKEN_AMOUNT"
+    ///
+    /// Example: rwa gm batch "buy TSLAon 100" "buy AAPLon 200" "sell NVDAon 5"
+    ///
+    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
+    Batch {
+        /// Trade orders: "buy SYMBOL AMOUNT" or "sell SYMBOL AMOUNT"
+        #[arg(required = true, num_args = 1..)]
+        orders: Vec<String>,
+    },
 }
 
 pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result<()> {
@@ -106,6 +120,7 @@ pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result
         GmAction::Buy { symbol, amount } => buy(&symbol, &amount, &tokens).await,
         GmAction::Sell { symbol, amount } => sell(&symbol, &amount, &tokens).await,
         GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, &tokens).await,
+        GmAction::Batch { orders } => batch(&orders, &tokens).await,
     }
 }
 
@@ -429,7 +444,34 @@ const MIN_SOL_FOR_GAS: f64 = 0.005;
 /// Minimum buy/sell amount in USDC.
 const MIN_USDC_AMOUNT: f64 = 1.0;
 
+/// Check if Ondo GM trading is currently open.
+/// Trading window: Sunday 8 PM ET → Friday 8 PM ET (24/5).
+fn check_trading_hours() -> Result<()> {
+    use chrono::Timelike;
+    use chrono_tz::US::Eastern;
+
+    let now = chrono::Utc::now().with_timezone(&Eastern);
+    let wd = now.weekday();
+    let hour = now.hour();
+
+    let closed = matches!(wd, chrono::Weekday::Sat)
+        || (wd == chrono::Weekday::Sun && hour < 20)
+        || (wd == chrono::Weekday::Fri && hour >= 20);
+
+    if closed {
+        return Err(eyre::eyre!(
+            "Ondo GM market is closed right now.\n  \
+             Trading hours: Sunday 8 PM — Friday 8 PM ET (24/5)\n  \
+             Current time:  {} ET",
+            now.format("%A %I:%M %p")
+        ));
+    }
+    Ok(())
+}
+
 async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
+    check_trading_hours()?;
+
     if usdc_amount < MIN_USDC_AMOUNT {
         return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
@@ -441,36 +483,40 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
     let sol = sol?;
     let usdc = usdc?;
 
+    let mut issues = Vec::new();
     if sol < MIN_SOL_FOR_GAS {
-        return Err(eyre::eyre!(
-            "Insufficient SOL for gas fees.\n  \
-             Balance: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS} SOL)\n  \
-             Send SOL to: {pubkey}"
+        issues.push(format!(
+            "Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})"
         ));
     }
     if usdc < usdc_amount {
-        return Err(eyre::eyre!(
-            "Insufficient USDC balance.\n  \
-             Balance: {usdc:.2} USDC (need {usdc_amount:.2} USDC)\n  \
-             Send USDC to: {pubkey}"
+        issues.push(format!(
+            "Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})"
         ));
+    }
+    if !issues.is_empty() {
+        let mut msg = issues.join("\n  ");
+        msg.push_str(&format!("\n  Fund wallet: {pubkey}"));
+        return Err(eyre::eyre!(msg));
     }
     Ok(())
 }
 
 async fn preflight_sell(pubkey: &str) -> Result<()> {
+    check_trading_hours()?;
+
     let sol = solana::get_sol_balance(pubkey, None).await?;
     if sol < MIN_SOL_FOR_GAS {
         return Err(eyre::eyre!(
-            "Insufficient SOL for gas fees.\n  \
-             Balance: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS} SOL)\n  \
-             Send SOL to: {pubkey}"
+            "Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})\n  \
+             Fund wallet: {pubkey}"
         ));
     }
     Ok(())
 }
 
 async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    check_trading_hours()?;
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
@@ -587,4 +633,148 @@ async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -
     println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
+}
+
+/// Parse an order string like "buy TSLAon 100" or "sell AAPLon 5".
+fn parse_order(s: &str) -> Result<(bool, String, String)> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 3 {
+        return Err(eyre::eyre!(
+            "Invalid order: \"{s}\"\n  Expected format: \"buy SYMBOL AMOUNT\" or \"sell SYMBOL AMOUNT\""
+        ));
+    }
+    let is_buy = match parts[0].to_lowercase().as_str() {
+        "buy" => true,
+        "sell" => false,
+        other => return Err(eyre::eyre!(
+            "Invalid action \"{other}\" in order \"{s}\"\n  Use \"buy\" or \"sell\""
+        )),
+    };
+    Ok((is_buy, parts[1].to_string(), parts[2].to_string()))
+}
+
+async fn batch(orders: &[String], tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    // Parse all orders first to fail fast
+    let parsed: Vec<(bool, String, String)> = orders
+        .iter()
+        .map(|o| parse_order(o))
+        .collect::<Result<Vec<_>>>()?;
+
+    check_trading_hours()?;
+
+    let w = load_wallet()?;
+    let taker = w.pubkey();
+
+    // Calculate total USDC needed for all buys
+    let total_usdc: f64 = parsed
+        .iter()
+        .filter(|(is_buy, _, _)| *is_buy)
+        .map(|(_, _, amt)| amt.parse::<f64>().unwrap_or(0.0))
+        .sum();
+
+    if total_usdc > 0.0 {
+        preflight_buy(&taker, total_usdc).await?;
+    } else {
+        preflight_sell(&taker).await?;
+    }
+
+    // Resolve all mints upfront
+    let resolved: Vec<(bool, String, String, String)> = parsed
+        .into_iter()
+        .map(|(is_buy, sym, amt)| {
+            let (sym, mint) = resolve_gm_mint(&sym, tokens)?;
+            Ok((is_buy, sym.to_string(), mint, amt))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    println!("Executing {} orders...\n", resolved.len());
+
+    let gm_dec = jupiter::GM_SOL_DECIMALS;
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (i, (is_buy, sym, gm_mint, amount)) in resolved.iter().enumerate() {
+        let label = if *is_buy { "BUY" } else { "SELL" };
+        println!("[{}/{}] {} {} {} ...", i + 1, resolved.len(), label, amount, sym);
+
+        let result = if *is_buy {
+            execute_single_buy(&w, &taker, sym, gm_mint, amount, gm_dec).await
+        } else {
+            execute_single_sell(&w, &taker, sym, gm_mint, amount, gm_dec).await
+        };
+
+        match result {
+            Ok((filled, sig)) => {
+                println!("  ✓ {}", filled);
+                if let Some(s) = &sig {
+                    println!("    https://solscan.io/tx/{s}");
+                }
+                succeeded.push(format!("{label} {amount} {sym}"));
+            }
+            Err(e) => {
+                println!("  ✗ {e}");
+                failed.push(format!("{label} {amount} {sym}: {e}"));
+            }
+        }
+        println!();
+    }
+
+    // Summary
+    println!("─── Batch Summary ───");
+    println!("  Succeeded: {}/{}", succeeded.len(), resolved.len());
+    if !failed.is_empty() {
+        println!("  Failed:    {}/{}", failed.len(), resolved.len());
+        for f in &failed {
+            println!("    - {f}");
+        }
+    }
+
+    if !failed.is_empty() {
+        return Err(eyre::eyre!("{} of {} orders failed", failed.len(), resolved.len()));
+    }
+    Ok(())
+}
+
+/// Execute a single buy, returns (description, optional tx signature).
+async fn execute_single_buy(
+    w: &wallet::Wallet,
+    taker: &str,
+    sym: &str,
+    gm_mint: &str,
+    amount: &str,
+    gm_dec: u8,
+) -> Result<(String, Option<String>)> {
+    let raw = jupiter::usdc_to_raw(amount)?;
+    let order = jupiter::get_order(jupiter::USDC_MINT, gm_mint, &raw, taker).await?;
+    let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
+    let result = jupiter::execute_order(w, &order).await?;
+    let final_out = result
+        .output_amount_result
+        .as_deref()
+        .map(|r| jupiter::format_amount(r, gm_dec))
+        .unwrap_or(out_fmt);
+    let desc = format!("{} {} for {} USDC", final_out, sym, amount);
+    Ok((desc, result.signature))
+}
+
+/// Execute a single sell, returns (description, optional tx signature).
+async fn execute_single_sell(
+    w: &wallet::Wallet,
+    taker: &str,
+    sym: &str,
+    gm_mint: &str,
+    amount: &str,
+    gm_dec: u8,
+) -> Result<(String, Option<String>)> {
+    let raw = jupiter::token_to_raw(amount, gm_dec)?;
+    let order = jupiter::get_order(gm_mint, jupiter::USDC_MINT, &raw, taker).await?;
+    let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
+    let result = jupiter::execute_order(w, &order).await?;
+    let final_out = result
+        .output_amount_result
+        .as_deref()
+        .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
+        .unwrap_or(out_fmt);
+    let desc = format!("{} {} → {} USDC", amount, sym, final_out);
+    Ok((desc, result.signature))
 }

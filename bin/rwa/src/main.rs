@@ -1,6 +1,7 @@
-use eyre::Result;
-
 #[tokio::main]
-async fn main() -> Result<()> {
-    rwa_cli::run().await
+async fn main() {
+    if let Err(e) = rwa_cli::run().await {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }
