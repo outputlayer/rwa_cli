@@ -55,12 +55,10 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
 }
 
 fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    println!("{:<12} {:<44} ETH ADDRESS", "SYMBOL", "BSC ADDRESS");
-    println!("{}", "-".repeat(100));
+    println!("{:<12} {}", "SYMBOL", "NAME");
+    println!("{}", "-".repeat(60));
     for t in tokens {
-        let bsc = t.bsc_address.as_ref().map(ToString::to_string).unwrap_or_else(|| "-".into());
-        let eth = t.eth_address.as_ref().map(ToString::to_string).unwrap_or_else(|| "-".into());
-        println!("{:<12} {:<44} {}", t.symbol, bsc, eth);
+        println!("{:<12} {}", t.symbol, t.name);
     }
     println!("\nTotal: {} tokens", tokens.len());
     Ok(())
