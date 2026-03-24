@@ -6,9 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rwa-core.workspace = true
 rwa-ondo.workspace = true
-alloy-primitives.workspace = true
 clap.workspace = true
 tokio.workspace = true
 eyre.workspace = true

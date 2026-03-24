@@ -78,3 +78,53 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
 pub fn parse_price(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
+
+// ─── Price history ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCandle {
+    pub timestamp: u64,
+    pub value: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryResponse {
+    primary_market_price: Vec<HistoryCandle>,
+}
+
+/// Valid ranges: "1D", "1W", "1M", "3M", "1Y", "ALL"
+pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandle>> {
+    let range_param = match range.to_uppercase().as_str() {
+        "1D" => "1day",
+        "1W" => "1week",
+        "1M" => "1month",
+        "3M" => "3months",
+        "1Y" => "1year",
+        "ALL" => "all",
+        other => return Err(eyre!("Invalid range: {other}. Use: 1D, 1W, 1M, 3M, 1Y, ALL")),
+    };
+
+    let normalized = symbol.to_lowercase();
+    let sym = if normalized.ends_with("on") {
+        normalized
+    } else {
+        format!("{normalized}on")
+    };
+
+    let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Err(eyre!("Ondo history API returned status {}", resp.status()));
+    }
+    let data: HistoryResponse = resp.json().await?;
+    Ok(data.primary_market_price)
+}

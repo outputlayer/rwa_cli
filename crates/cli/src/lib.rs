@@ -3,7 +3,7 @@ pub mod cmd;
 use clap::Parser;
 use eyre::Result;
 
-/// RWA CLI — interact with Real World Asset protocols from the terminal.
+/// RWA CLI — trade tokenized stocks & ETFs (Ondo GM) on Solana.
 #[derive(Parser, Debug)]
 #[command(name = "rwa", version, about = "Real World Asset CLI")]
 pub struct Cli {
@@ -11,13 +11,17 @@ pub struct Cli {
     #[arg(long, global = true, env = "RWA_RPC_URL")]
     pub rpc_url: Option<String>,
 
+    /// Output JSON instead of human-readable text (for agents/scripts)
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Commands {
-    /// Ondo Global Markets — 264 tokenized stocks & ETFs on Solana, BNB & Ethereum
+    /// Ondo Global Markets — tokenized stocks & ETFs on Solana
     Gm {
         #[command(subcommand)]
         action: cmd::gm::GmAction,
@@ -39,11 +43,10 @@ pub async fn run() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let json = cli.json;
 
     match cli.command {
-        Commands::Gm { action } => cmd::gm::execute(action, cli.rpc_url.as_deref()).await?,
-        Commands::Keys { action } => cmd::keys::execute(action).await?,
+        Commands::Gm { action } => cmd::gm::execute(action, json).await,
+        Commands::Keys { action } => cmd::keys::execute(action).await,
     }
-
-    Ok(())
 }

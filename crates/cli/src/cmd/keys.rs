@@ -84,6 +84,8 @@ async fn import(
 
 async fn show() -> Result<()> {
     let w = Wallet::load_default()?;
-    println!("{}", w.pubkey());
+    let path = wallet::default_key_path()?;
+    println!("Address:  {}", w.pubkey());
+    println!("Key file: {}", path.display());
     Ok(())
 }

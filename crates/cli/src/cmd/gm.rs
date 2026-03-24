@@ -1,257 +1,157 @@
-use alloy_primitives::{Address, U256};
 use chrono::Datelike;
 use clap::Subcommand;
 use eyre::Result;
-use rwa_core::chain::Chain;
-use rwa_ondo::{api, gm, jupiter, oracle, provider, solana, token_list, wallet};
+use rwa_ondo::{api, gm, jupiter, solana, token_list, wallet};
+use serde::Serialize;
 use std::io::{self, Write};
 
-fn parse_chain(s: &str) -> Result<Chain> {
-    match s.to_lowercase().as_str() {
-        "bsc" | "bnb" => Ok(Chain::BnbMainnet),
-        "eth" | "ethereum" => Ok(Chain::EthereumMainnet),
-        "sol" | "solana" => Ok(Chain::SolanaMainnet),
-        _ => Err(eyre::eyre!("Unknown chain: {s}. Use: bsc, eth, or solana")),
-    }
-}
+// ── Subcommand enum ────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
-    /// List all available GM tokens
-    List,
-
-    /// <SYMBOL|all>         Token price
-    Price {
-        /// Token symbol (e.g. TSLA, TSLAon) — or "all" for all tokens
-        symbol: String,
-    },
-
-    /// <SYMBOL>             Detailed token info (price, 24h, sValue, holders, 52w)
-    Info {
-        /// Token symbol (e.g. TSLA, TSLAon)
-        symbol: String,
-    },
-
-    /// Show top gainers and losers (24h)
-    Top {
-        /// Number of tokens to show per side (default: 10)
-        #[arg(short, long, default_value = "10")]
-        n: usize,
-    },
-
-    /// <QUERY>              Search tokens by name or symbol
-    Search {
-        /// Search query (e.g. "Tesla", "tech", "APL")
-        query: String,
-    },
-
-    /// Show trading hours status and countdown
+    /// Check if Ondo GM market is open (24/5: Sun 8pm -- Fri 8pm ET)
     Hours,
 
-    /// <WALLET>             Portfolio with USD values and 24h P&L
-    Portfolio {
-        /// Wallet address (0x... for EVM, base58 for Solana)
-        wallet: String,
-
-        /// Chain: solana (default), bsc, or eth
-        #[arg(short, long, default_value = "solana")]
-        chain: String,
-    },
-
-    /// <SYMBOL> --amount <USDC>  Buy GM token with USDC via Jupiter (Solana)
-    ///
-    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
-    Buy {
-        /// Token symbol (e.g. TSLA, TSLAon)
-        symbol: String,
-
-        /// USDC amount, percentage of balance, or "all" (e.g. 100, 50%, all)
-        #[arg(short, long)]
-        amount: String,
-
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        yes: bool,
-    },
-
-    /// <SYMBOL> --amount <N>     Sell GM token for USDC via Jupiter (Solana)
-    ///
-    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
-    Sell {
-        /// Token symbol (e.g. TSLA, TSLAon)
-        symbol: String,
-
-        /// Token amount, percentage of holdings, or "all" (e.g. 5, 50%, all)
-        #[arg(short, long)]
-        amount: String,
-
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        yes: bool,
-    },
-
-    /// <SYMBOL> --amount <USDC>  Get swap quote without executing (Solana)
+    /// Get swap quote for a GM token via Jupiter
     Quote {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
-
-        /// Amount, percentage, or "all" (e.g. 100, 50%, all)
-        #[arg(short, long)]
+        /// USDC amount to spend (or token amount with --sell)
         amount: String,
-
         /// Quote selling token for USDC instead of buying
         #[arg(long)]
         sell: bool,
     },
 
-    /// Execute multiple trades sequentially
-    ///
-    /// Each order: "buy SYMBOL USDC_AMOUNT" or "sell SYMBOL TOKEN_AMOUNT"
-    ///
-    /// Example: rwa gm batch "buy TSLAon 100" "buy AAPLon 200" "sell NVDAon 5"
-    ///
-    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
-    Batch {
-        /// Trade orders: "buy SYMBOL AMOUNT" or "sell SYMBOL AMOUNT"
-        #[arg(required = true, num_args = 1..)]
-        orders: Vec<String>,
-
+    /// Buy GM token with USDC via Jupiter (Solana)
+    Buy {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+        /// USDC amount, percentage of balance, or "all" (e.g. 100, 50%, all)
+        amount: String,
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Sell GM token for USDC via Jupiter (Solana)
+    Sell {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+        /// Token amount, percentage of holdings, or "all" (e.g. 5, 50%, all)
+        amount: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Portfolio positions and P&L (Solana)
+    Portfolio {
+        /// Wallet address (default: local wallet)
+        wallet: Option<String>,
+    },
+
+    /// Price history for a GM token (1D, 1W, 1M, 3M, 1Y, ALL)
+    History {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+        /// Time range: 1D, 1W, 1M, 3M, 1Y, ALL (default: 1M)
+        #[arg(short, long, default_value = "1M")]
+        range: String,
+    },
 }
 
-pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result<()> {
-    // These commands only need the Ondo API — skip token list fetch
-    match &action {
-        GmAction::Price { ref symbol } => return price(symbol).await,
-        GmAction::Top { n } => return top(*n).await,
-        GmAction::Hours => return hours(),
-        _ => {}
-    }
-
-    let tokens = token_list::get_token_list().await;
-
+pub async fn execute(action: GmAction, json: bool) -> Result<()> {
     match action {
-        GmAction::List => list_tokens(&tokens),
-        GmAction::Price { .. } | GmAction::Top { .. } | GmAction::Hours => unreachable!(),
-        GmAction::Search { query } => search(&query, &tokens).await,
-        GmAction::Info { symbol } => {
-            let rpc = rpc_url_override.unwrap_or(Chain::BnbMainnet.default_rpc_url());
-            info(rpc, &symbol, &tokens).await
-        }
-        GmAction::Portfolio { wallet, chain } => {
-            let chain = parse_chain(&chain)?;
-            if chain == Chain::SolanaMainnet {
-                portfolio_solana(&wallet, &tokens).await
-            } else {
-                let rpc = rpc_url_override.unwrap_or(chain.default_rpc_url());
-                portfolio_evm(rpc, &wallet, &tokens, chain).await
-            }
-        }
-        GmAction::Buy { symbol, amount, yes } => buy(&symbol, &amount, yes, &tokens).await,
-        GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, &tokens).await,
-        GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, &tokens).await,
-        GmAction::Batch { orders, yes } => batch(&orders, yes, &tokens).await,
+        GmAction::Hours => hours(json),
+        GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, json).await,
+        GmAction::Buy { symbol, amount, yes } => buy(&symbol, &amount, yes, json).await,
+        GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json).await,
+        GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json).await,
+        GmAction::History { symbol, range } => history(&symbol, &range, json).await,
     }
 }
 
-fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    println!("{:<12} {}", "SYMBOL", "NAME");
-    println!("{}", "-".repeat(60));
-    for t in tokens {
-        let name = t.name.trim_end_matches(" (Ondo Tokenized)");
-        println!("{:<12} {}", t.symbol, name);
-    }
-    println!("\nTotal: {} tokens", tokens.len());
+// ── JSON output types ──────────────────────────────────────
+
+#[derive(Serialize)]
+struct HoursJson {
+    status: &'static str,
+    now: String,
+    countdown: String,
+}
+
+#[derive(Serialize)]
+struct QuoteJson {
+    input: String,
+    input_token: String,
+    output: String,
+    output_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slippage_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct TradeJson {
+    status: &'static str,
+    amount: String,
+    token: String,
+    counter_amount: String,
+    counter_token: &'static str,
+    tx: String,
+}
+
+#[derive(Serialize)]
+struct PositionJson {
+    token: String,
+    balance: f64,
+    price: f64,
+    value_usd: f64,
+    alloc_pct: f64,
+    change_pct_24h: f64,
+}
+
+#[derive(Serialize)]
+struct PortfolioJson {
+    wallet: String,
+    sol: f64,
+    usdc: f64,
+    positions: Vec<PositionJson>,
+    total_value_usd: f64,
+    change_24h_usd: f64,
+    change_24h_pct: f64,
+}
+
+#[derive(Serialize)]
+struct HistoryJson {
+    symbol: String,
+    range: String,
+    candles: usize,
+    first: HistoryCandleJson,
+    last: HistoryCandleJson,
+    high: f64,
+    low: f64,
+    change_pct: f64,
+}
+
+#[derive(Serialize)]
+struct HistoryCandleJson {
+    timestamp: u64,
+    price: f64,
+}
+
+fn json_out(v: &impl Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string(v)?);
     Ok(())
 }
 
-async fn price(symbol: &str) -> Result<()> {
-    let assets = api::fetch_assets().await?;
+// ── Public command handlers ─────────────────────────────────
 
-    if symbol.eq_ignore_ascii_case("all") {
-        println!("{:<12} {:>12} {:>9}", "TOKEN", "PRICE", "24h %");
-        println!("{}", "-".repeat(36));
-        for asset in &assets {
-            if let Some(pm) = &asset.primary_market {
-                let price = api::parse_price(&pm.price);
-                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-                println!("{:<12} {:>11.2} {:>+8.2}%", asset.symbol, price, pct);
-            }
-        }
-        println!("\nTotal: {} tokens", assets.len());
-    } else {
-        let asset = api::find_asset(symbol, &assets)
-            .ok_or_else(|| eyre::eyre!("Token {} not found", symbol))?;
-        let pm = asset.primary_market.as_ref()
-            .ok_or_else(|| eyre::eyre!("No market data for {}", asset.symbol))?;
-
-        let price = api::parse_price(&pm.price);
-        let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-        println!("{}: ${:.2} ({:+.2}%)", asset.symbol, price, pct);
-    }
-    Ok(())
-}
-
-async fn top(n: usize) -> Result<()> {
-    let assets = api::fetch_assets().await?;
-
-    let mut priced: Vec<(&str, f64, f64)> = assets.iter()
-        .filter_map(|a| {
-            let pm = a.primary_market.as_ref()?;
-            let price = api::parse_price(&pm.price);
-            let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-            Some((a.symbol.as_str(), price, pct))
-        })
-        .collect();
-
-    // Gainers (highest % first)
-    priced.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-    println!("🟢 Top {} Gainers (24h)", n);
-    println!("{:<12} {:>12} {:>9}", "TOKEN", "PRICE", "24h %");
-    println!("{}", "-".repeat(36));
-    for (sym, price, pct) in priced.iter().take(n) {
-        println!("{:<12} {:>11.2} {:>+8.2}%", sym, price, pct);
-    }
-
-    // Losers (lowest % first)
-    println!("\n🔴 Top {} Losers (24h)", n);
-    println!("{:<12} {:>12} {:>9}", "TOKEN", "PRICE", "24h %");
-    println!("{}", "-".repeat(36));
-    for (sym, price, pct) in priced.iter().rev().take(n) {
-        println!("{:<12} {:>11.2} {:>+8.2}%", sym, price, pct);
-    }
-
-    Ok(())
-}
-
-async fn search(query: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let q = query.to_lowercase();
-    let results: Vec<&token_list::GmTokenEntry> = tokens.iter()
-        .filter(|t| {
-            t.symbol.to_lowercase().contains(&q)
-                || t.name.to_lowercase().contains(&q)
-        })
-        .collect();
-
-    if results.is_empty() {
-        println!("No tokens matching \"{}\"", query);
-        return Ok(());
-    }
-
-    println!("{:<12} {}", "SYMBOL", "NAME");
-    println!("{}", "-".repeat(60));
-    for t in &results {
-        let name = t.name.trim_end_matches(" (Ondo Tokenized)");
-        println!("{:<12} {}", t.symbol, name);
-    }
-    println!("\n{} result(s)", results.len());
-    Ok(())
-}
-
-fn hours() -> Result<()> {
+pub fn hours(json: bool) -> Result<()> {
     use chrono::Timelike;
     use chrono_tz::US::Eastern;
 
@@ -266,35 +166,22 @@ fn hours() -> Result<()> {
 
     let time_str = now.format("%A %I:%M %p ET").to_string();
 
-    if closed {
-        println!("🔴 CLOSED");
-        println!("  Now:     {}", time_str);
-        println!("  Hours:   Sunday 8:00 PM — Friday 8:00 PM ET");
-
-        // Calculate time until open (Sunday 8 PM ET)
-        let days_until_sun = match wd {
-            chrono::Weekday::Fri => 2, // Fri 8pm+ → Sun
-            chrono::Weekday::Sat => 1, // Sat → Sun
-            chrono::Weekday::Sun => 0, // Sun <8pm → same day
+    let (status, countdown) = if closed {
+        let days_until_sun: u32 = match wd {
+            chrono::Weekday::Fri => 2,
+            chrono::Weekday::Sat => 1,
+            chrono::Weekday::Sun => 0,
             _ => 0,
         };
-        let mins_today_left = if wd == chrono::Weekday::Sun {
+        let mins_left = if wd == chrono::Weekday::Sun {
             (20 - hour) * 60 - min
         } else {
-            // For Fri/Sat, calculate to end of day + remaining days + 20h on Sunday
             let to_midnight = (24 - hour) * 60 - min;
-            let full_days = if days_until_sun > 1 { days_until_sun - 1 } else { 0 };
+            let full_days = days_until_sun.saturating_sub(1);
             to_midnight + full_days * 24 * 60 + 20 * 60
         };
-        let h = mins_today_left / 60;
-        let m = mins_today_left % 60;
-        println!("  Opens in: {}h {}m", h, m);
+        ("closed", format!("opens in {}h {}m", mins_left / 60, mins_left % 60))
     } else {
-        println!("🟢 OPEN");
-        println!("  Now:     {}", time_str);
-        println!("  Hours:   Sunday 8:00 PM — Friday 8:00 PM ET");
-
-        // Calculate time until close (Friday 8 PM ET)
         let days_until_fri = match wd {
             chrono::Weekday::Sun => 5,
             chrono::Weekday::Mon => 4,
@@ -310,197 +197,47 @@ fn hours() -> Result<()> {
             let to_midnight = (24 - hour) * 60 - min;
             to_midnight + (days_until_fri - 1) * 24 * 60 + 20 * 60
         };
-        let h = mins_left / 60;
-        let m = mins_left % 60;
-        println!("  Closes in: {}h {}m", h, m);
-    }
-    Ok(())
-}
-
-async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let entry = gm::resolve_token(symbol, tokens)?;
-    let address = entry.bsc_address
-        .ok_or_else(|| eyre::eyre!("No BSC address for {}", entry.symbol))?;
-
-    // Fetch on-chain data and Ondo API in parallel
-    let (provider_res, assets_res) = tokio::join!(
-        provider::create_provider(rpc_url),
-        api::fetch_assets()
-    );
-    let provider = provider_res?;
-    let assets = assets_res?;
-
-    let (token_info, oracle_data) = tokio::join!(
-        gm::get_token_info(&provider, address),
-        oracle::get_oracle_data(&provider, address)
-    );
-    let token_info = token_info?;
-    let oracle_data = oracle_data?;
-
-    let asset = api::find_asset(&entry.symbol, &assets);
-
-    println!("{} ({})", token_info.symbol, token_info.name);
-    println!("{}", "─".repeat(50));
-
-    // Price and 24h from Ondo API
-    if let Some(pm) = asset.and_then(|a| a.primary_market.as_ref()) {
-        let price = api::parse_price(&pm.price);
-        let chg = pm.price_change_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-        let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-        println!("  Price:         ${:.2}", price);
-        println!("  24h Change:    {:+.2} ({:+.2}%)", chg, pct);
-        if let Some(sv) = &pm.shares_multiplier {
-            println!("  Shares/Token:  {}", sv);
-        }
-        if let Some(holders) = pm.total_holders {
-            println!("  Holders:       {}", holders);
-        }
-    }
-
-    // On-chain oracle
-    println!("  sValue:        {:.6}", oracle_data.value);
-    println!("  Decimals:      {}", token_info.decimals);
-
-    // Addresses
-    println!("  BSC:           {}", address);
-    if let Some(eth) = entry.eth_address {
-        println!("  ETH:           {}", eth);
-    }
-    if let Some(sol) = &entry.solana_address {
-        println!("  Solana:        {}", sol);
-    }
-
-    // Underlying market
-    if let Some(um) = asset.and_then(|a| a.underlying_market.as_ref()) {
-        println!("\n  ─── {} ───", um.name);
-        if let (Some(hi), Some(lo)) = (&um.price_high_52w, &um.price_low_52w) {
-            println!("  52w Range:     ${} — ${}", lo, hi);
-        }
-        if let Some(vol) = &um.volume {
-            println!("  Volume:        {}", format_compact_usd(vol));
-        }
-        if let Some(cap) = &um.market_cap {
-            println!("  Market Cap:    {}", format_compact_usd(cap));
-        }
-    }
-
-    println!("\n  Liquidity:     Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)");
-    println!("  Explorer:      {}", rwa_core::chain::Chain::BnbMainnet.explorer_url(address));
-
-    Ok(())
-}
-
-async fn portfolio_evm(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEntry], chain: Chain) -> Result<()> {
-    let wallet_addr: Address = wallet.parse()?;
-    let provider = provider::create_provider(rpc_url).await?;
-
-    // Fetch balances and prices in parallel
-    let (balances, assets) = tokio::join!(
-        gm::get_all_balances(&provider, wallet_addr, tokens, chain),
-        api::fetch_assets()
-    );
-    let balances = balances?;
-    let assets = assets?;
-
-    if balances.is_empty() {
-        println!("No GM token balances found on {chain} for {wallet}");
-        return Ok(());
-    }
-
-    println!("{chain} Portfolio for {wallet}\n");
-    println!(
-        "{:<12} {:>14} {:>12} {:>16} {:>9}",
-        "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
-    );
-    println!("{}", "─".repeat(67));
-
-    let mut total_value = 0.0;
-    let mut total_prev_value = 0.0;
-
-    for tb in &balances {
-        let bal_f64 = u256_to_f64(tb.balance, 18);
-        let asset = api::find_asset(&tb.token.symbol, &assets);
-
-        let (price, pct_24h) = match asset.and_then(|a| a.primary_market.as_ref()) {
-            Some(pm) => {
-                let p = api::parse_price(&pm.price);
-                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-                (p, pct)
-            }
-            None => (0.0, 0.0),
-        };
-
-        let value = bal_f64 * price;
-        let prev_value = if pct_24h.abs() > f64::EPSILON {
-            value / (1.0 + pct_24h / 100.0)
-        } else {
-            value
-        };
-
-        total_value += value;
-        total_prev_value += prev_value;
-
-        println!(
-            "{:<12} {:>14.4} {:>11.2} {:>15.2} {:>+8.2}%",
-            tb.token.symbol, bal_f64, price, value, pct_24h
-        );
-    }
-
-    println!("{}", "─".repeat(67));
-
-    let total_change = total_value - total_prev_value;
-    let total_pct = if total_prev_value.abs() > f64::EPSILON {
-        (total_change / total_prev_value) * 100.0
-    } else {
-        0.0
+        ("open", format!("closes in {}h {}m", mins_left / 60, mins_left % 60))
     };
 
-    println!(
-        "{:<12} {:>14} {:>12} {:>15.2}",
-        "TOTAL", "", "", total_value
-    );
-    println!(
-        "\n24h Change: {:+.2} ({:+.2}%)",
-        total_change, total_pct
-    );
+    if json {
+        return json_out(&HoursJson { status, now: time_str, countdown });
+    }
 
+    let label = if closed { "CLOSED" } else { "OPEN" };
+    println!("{}", label);
+    println!("  Now:     {}", time_str);
+    println!("  Hours:   Sunday 8:00 PM -- Friday 8:00 PM ET");
+    let cap = if closed { "Opens" } else { "Closes" };
+    let cd = countdown.trim_start_matches("opens in ").trim_start_matches("closes in ");
+    println!("  {} in: {}", cap, cd);
     Ok(())
 }
 
-async fn portfolio_solana(wallet: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+pub async fn portfolio(wallet: Option<&str>, json: bool) -> Result<()> {
+    let tokens = token_list::get_token_list().await;
+    let pubkey = match wallet {
+        Some(w) => w.to_string(),
+        None => load_wallet()?.pubkey(),
+    };
+
     let (balances, assets, sol_bal, usdc_bal) = tokio::join!(
-        solana::get_all_balances(wallet, tokens, None),
+        solana::get_all_balances(&pubkey, &tokens, None),
         api::fetch_assets(),
-        solana::get_sol_balance(wallet, None),
-        solana::get_usdc_balance(wallet, None)
+        solana::get_sol_balance(&pubkey, None),
+        solana::get_usdc_balance(&pubkey, None)
     );
     let balances = balances?;
     let assets = assets?;
     let sol_bal = sol_bal.unwrap_or(0.0);
     let usdc_bal = usdc_bal.unwrap_or(0.0);
 
-    println!("Solana Portfolio for {wallet}\n");
-    println!("  SOL:   {:.6}", sol_bal);
-    println!("  USDC:  {:.2}", usdc_bal);
-
-    if balances.is_empty() {
-        println!("\nNo GM token positions.");
-        return Ok(());
-    }
-
-    println!();
-    println!(
-        "{:<12} {:>14} {:>12} {:>16} {:>9}",
-        "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
-    );
-    println!("{}", "─".repeat(67));
-
+    let mut positions = Vec::new();
     let mut total_value = 0.0;
     let mut total_prev_value = 0.0;
 
     for tb in &balances {
         let asset = api::find_asset(&tb.symbol, &assets);
-
         let (price, pct_24h) = match asset.and_then(|a| a.primary_market.as_ref()) {
             Some(pm) => {
                 let p = api::parse_price(&pm.price);
@@ -509,24 +246,33 @@ async fn portfolio_solana(wallet: &str, tokens: &[token_list::GmTokenEntry]) -> 
             }
             None => (0.0, 0.0),
         };
-
         let value = tb.balance * price;
         let prev_value = if pct_24h.abs() > f64::EPSILON {
             value / (1.0 + pct_24h / 100.0)
         } else {
             value
         };
-
         total_value += value;
         total_prev_value += prev_value;
-
-        println!(
-            "{:<12} {:>14.4} {:>11.2} {:>15.2} {:>+8.2}%",
-            tb.symbol, tb.balance, price, value, pct_24h
-        );
+        positions.push(PositionJson {
+            token: tb.symbol.clone(),
+            balance: tb.balance,
+            price,
+            value_usd: value,
+            alloc_pct: 0.0,
+            change_pct_24h: pct_24h,
+        });
     }
 
-    println!("{}", "─".repeat(67));
+    // Compute allocation % for each position
+    if total_value.abs() > f64::EPSILON {
+        for p in &mut positions {
+            p.alloc_pct = (p.value_usd / total_value) * 100.0;
+        }
+    }
+
+    // Sort by value descending
+    positions.sort_by(|a, b| b.value_usd.partial_cmp(&a.value_usd).unwrap_or(std::cmp::Ordering::Equal));
 
     let total_change = total_value - total_prev_value;
     let total_pct = if total_prev_value.abs() > f64::EPSILON {
@@ -535,58 +281,51 @@ async fn portfolio_solana(wallet: &str, tokens: &[token_list::GmTokenEntry]) -> 
         0.0
     };
 
+    if json {
+        return json_out(&PortfolioJson {
+            wallet: pubkey.clone(),
+            sol: sol_bal,
+            usdc: usdc_bal,
+            positions,
+            total_value_usd: total_value,
+            change_24h_usd: total_change,
+            change_24h_pct: total_pct,
+        });
+    }
+
+    println!("Portfolio for {pubkey}\n");
+    println!("  SOL:   {:.6}", sol_bal);
+    println!("  USDC:  {:.2}", usdc_bal);
+
+    if positions.is_empty() {
+        println!("\nNo GM token positions.");
+        return Ok(());
+    }
+
+    println!();
     println!(
-        "{:<12} {:>14} {:>12} {:>15.2}",
-        "TOTAL", "", "", total_value
+        "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
+        "TOKEN", "BALANCE", "PRICE", "VALUE", "ALLOC", "24h"
     );
+    println!("{}", "-".repeat(64));
+
+    for p in &positions {
+        println!(
+            "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
+            p.token, p.balance, p.price, p.value_usd, p.alloc_pct, p.change_pct_24h
+        );
+    }
+
+    println!("{}", "-".repeat(64));
     println!(
-        "\n24h Change: {:+.2} ({:+.2}%)",
-        total_change, total_pct
+        "{:<10} {:>12} {:>10} {:>11.2} {:>7} {:>+7.2}%",
+        "TOTAL", "", "", total_value, "", total_pct
     );
 
     Ok(())
 }
 
-fn format_compact_usd(v: &str) -> String {
-    let n: f64 = v.parse().unwrap_or(0.0);
-    if n >= 1e12 {
-        format!("${:.2}T", n / 1e12)
-    } else if n >= 1e9 {
-        format!("${:.2}B", n / 1e9)
-    } else if n >= 1e6 {
-        format!("${:.2}M", n / 1e6)
-    } else if n >= 1e3 {
-        format!("${:.1}K", n / 1e3)
-    } else {
-        format!("${v}")
-    }
-}
-
-/// Format a U256 with 18 decimals into a human-readable string.
-fn format_u256_decimals(value: U256, decimals: u8) -> String {
-    let s = value.to_string();
-    let d = decimals as usize;
-    if s.len() <= d {
-        let zeros = d - s.len();
-        format!("0.{}{}", "0".repeat(zeros), s.trim_end_matches('0'))
-    } else {
-        let (integer, frac) = s.split_at(s.len() - d);
-        let frac = frac.trim_end_matches('0');
-        if frac.is_empty() {
-            integer.to_string()
-        } else {
-            format!("{integer}.{frac}")
-        }
-    }
-}
-
-/// Convert U256 with `decimals` to f64.
-fn u256_to_f64(value: U256, decimals: u8) -> f64 {
-    let s = format_u256_decimals(value, decimals);
-    s.parse::<f64>().unwrap_or(0.0)
-}
-
-// ── Jupiter swap commands ──────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────
 
 fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
     let entry = gm::resolve_token(symbol, tokens)?;
@@ -616,8 +355,7 @@ const MIN_USDC_AMOUNT: f64 = 1.0;
 /// Resolve percentage or "all" amounts into absolute numbers.
 ///  - "100" → 100.0 (passthrough)
 ///  - "50%" → 50% of balance
-///  - "all" → 100% of balance
-/// `balance_fn` is called lazily only when needed.
+///  - "all" → 100% of balance////// `balance_fn` is called lazily only when needed.
 async fn resolve_percent_amount<F, Fut>(raw: &str, balance_fn: F) -> Result<f64>
 where
     F: FnOnce() -> Fut,
@@ -716,9 +454,10 @@ async fn preflight_sell(pubkey: &str) -> Result<()> {
     Ok(())
 }
 
-async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool) -> Result<()> {
+    let tokens = token_list::get_token_list().await;
     check_trading_hours()?;
-    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -758,12 +497,31 @@ async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::
     let in_fmt = jupiter::format_amount(&order.in_amount, in_dec);
     let out_fmt = jupiter::format_amount(&order.out_amount, out_dec);
 
-    println!("Quote: {} {} → {} {}", in_fmt, in_label, out_fmt, out_label);
-    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
-        let slippage = if usd_in > 0.0 { (usd_out - usd_in) / usd_in * 100.0 } else { 0.0 };
+    let (input_usd, output_usd, slippage) = match (order.in_usd_value, order.out_usd_value) {
+        (Some(usd_in), Some(usd_out)) => {
+            let slip = if usd_in > 0.0 { (usd_out - usd_in) / usd_in * 100.0 } else { 0.0 };
+            (Some(usd_in), Some(usd_out), Some(slip))
+        }
+        _ => (None, None, None),
+    };
+
+    if json {
+        return json_out(&QuoteJson {
+            input: in_fmt,
+            input_token: in_label.to_string(),
+            output: out_fmt,
+            output_token: out_label.to_string(),
+            input_usd,
+            output_usd,
+            slippage_pct: slippage,
+        });
+    }
+
+    println!("Quote: {} {} -> {} {}", in_fmt, in_label, out_fmt, out_label);
+    if let (Some(usd_in), Some(usd_out), Some(slip)) = (input_usd, output_usd, slippage) {
         println!("  Input value:   ${:.2}", usd_in);
         println!("  Output value:  ${:.2}", usd_out);
-        println!("  Slippage:      {:.2}%", slippage);
+        println!("  Slippage:      {:.2}%", slip);
     }
 
     Ok(())
@@ -777,8 +535,9 @@ fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-async fn buy(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()> {
+    let tokens = token_list::get_token_list().await;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -793,26 +552,32 @@ async fn buy(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmToke
     let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
-    println!("Getting quote for {} USDC → {} ...", usdc_str, sym);
+    if !json {
+        println!("Getting quote for {} USDC -> {} ...", usdc_str, sym);
+    }
     let order = jupiter::get_order(jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
-    println!("You will receive ~{} {}", out_fmt, sym);
+    if !json {
+        println!("You will receive ~{} {}", out_fmt, sym);
+    }
     if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
         if usd_in > 0.0 {
             let slippage = (usd_out - usd_in) / usd_in * 100.0;
             if slippage < -1.0 {
-                println!("⚠ High slippage: {:.2}%", slippage);
+                println!("Warning: high slippage: {:.2}%", slippage);
             }
         }
     }
 
-    if !yes && !confirm("Proceed?") {
+    if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
         return Ok(());
     }
 
-    println!("Executing swap...");
+    if !json {
+        println!("Executing swap...");
+    }
     let result = jupiter::execute_order(&w, &order).await?;
 
     let final_out = result.output_amount_result.as_deref()
@@ -820,6 +585,18 @@ async fn buy(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmToke
         .unwrap_or(out_fmt);
 
     let sig = result.signature.as_deref().unwrap_or("unknown");
+
+    if json {
+        return json_out(&TradeJson {
+            status: "success",
+            amount: final_out,
+            token: sym,
+            counter_amount: usdc_str,
+            counter_token: "USDC",
+            tx: format!("https://solscan.io/tx/{}", sig),
+        });
+    }
+
     println!("\nSwap successful!");
     println!("  Bought:    {} {}", final_out, sym);
     println!("  Spent:     {} USDC", usdc_str);
@@ -828,8 +605,9 @@ async fn buy(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmToke
     Ok(())
 }
 
-async fn sell(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()> {
+    let tokens = token_list::get_token_list().await;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -849,26 +627,32 @@ async fn sell(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmTok
 
     let raw_gm = jupiter::token_to_raw(&sell_str, gm_dec)?;
 
-    println!("Getting quote for {} {} → USDC ...", sell_str, sym);
+    if !json {
+        println!("Getting quote for {} {} -> USDC ...", sell_str, sym);
+    }
     let order = jupiter::get_order(&gm_mint, jupiter::USDC_MINT, &raw_gm, &taker).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
-    println!("You will receive ~{} USDC", out_fmt);
+    if !json {
+        println!("You will receive ~{} USDC", out_fmt);
+    }
     if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
         if usd_in > 0.0 {
             let slippage = (usd_out - usd_in) / usd_in * 100.0;
             if slippage < -1.0 {
-                println!("⚠ High slippage: {:.2}%", slippage);
+                println!("Warning: high slippage: {:.2}%", slippage);
             }
         }
     }
 
-    if !yes && !confirm("Proceed?") {
+    if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
         return Ok(());
     }
 
-    println!("Executing swap...");
+    if !json {
+        println!("Executing swap...");
+    }
     let result = jupiter::execute_order(&w, &order).await?;
 
     let final_out = result.output_amount_result.as_deref()
@@ -876,178 +660,66 @@ async fn sell(symbol: &str, amount: &str, yes: bool, tokens: &[token_list::GmTok
         .unwrap_or(out_fmt);
 
     let sig = result.signature.as_deref().unwrap_or("unknown");
+
+    if json {
+        return json_out(&TradeJson {
+            status: "success",
+            amount: sell_str,
+            token: sym,
+            counter_amount: final_out,
+            counter_token: "USDC",
+            tx: format!("https://solscan.io/tx/{}", sig),
+        });
+    }
+
     println!("\nSwap successful!");
-    println!("  Sold:      {} {}", amount, sym);
+    println!("  Sold:      {} {}", sell_str, sym);
     println!("  Received:  {} USDC", final_out);
     println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
 }
 
-/// Parse an order string like "buy TSLAon 100" or "sell AAPLon 5".
-fn parse_order(s: &str) -> Result<(bool, String, String)> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() != 3 {
-        return Err(eyre::eyre!(
-            "Invalid order: \"{s}\"\n  Expected format: \"buy SYMBOL AMOUNT\" or \"sell SYMBOL AMOUNT\""
-        ));
+async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
+    let candles = api::fetch_history(symbol, range).await?;
+    if candles.is_empty() {
+        return Err(eyre::eyre!("No price history for {} (range: {})", symbol, range));
     }
-    let is_buy = match parts[0].to_lowercase().as_str() {
-        "buy" => true,
-        "sell" => false,
-        other => return Err(eyre::eyre!(
-            "Invalid action \"{other}\" in order \"{s}\"\n  Use \"buy\" or \"sell\""
-        )),
-    };
-    Ok((is_buy, parts[1].to_string(), parts[2].to_string()))
-}
 
-async fn batch(orders: &[String], yes: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    // Parse all orders first to fail fast
-    let parsed: Vec<(bool, String, String)> = orders
-        .iter()
-        .map(|o| parse_order(o))
-        .collect::<Result<Vec<_>>>()?;
+    let sym = symbol.to_uppercase();
+    let sym = if sym.ends_with("ON") { sym } else { format!("{sym}ON") };
 
-    check_trading_hours()?;
-
-    let w = load_wallet()?;
-    let taker = w.pubkey();
-
-    // Calculate total USDC needed for all buys
-    let total_usdc: f64 = parsed
-        .iter()
-        .filter(|(is_buy, _, _)| *is_buy)
-        .map(|(_, _, amt)| amt.parse::<f64>().unwrap_or(0.0))
-        .sum();
-
-    if total_usdc > 0.0 {
-        preflight_buy(&taker, total_usdc).await?;
+    let first = candles.first().unwrap();
+    let last = candles.last().unwrap();
+    let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+    let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+    let change_pct = if first.open > 0.0 {
+        (last.close - first.open) / first.open * 100.0
     } else {
-        preflight_sell(&taker).await?;
+        0.0
+    };
+
+    if json {
+        return json_out(&HistoryJson {
+            symbol: sym,
+            range: range.to_uppercase(),
+            candles: candles.len(),
+            first: HistoryCandleJson { timestamp: first.timestamp, price: first.open },
+            last: HistoryCandleJson { timestamp: last.timestamp, price: last.close },
+            high,
+            low,
+            change_pct,
+        });
     }
 
-    // Resolve all mints upfront
-    let resolved: Vec<(bool, String, String, String)> = parsed
-        .into_iter()
-        .map(|(is_buy, sym, amt)| {
-            let (sym, mint) = resolve_gm_mint(&sym, tokens)?;
-            Ok((is_buy, sym.to_string(), mint, amt))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    println!("{} Price History ({})", sym, range.to_uppercase());
+    println!("{}", "-".repeat(50));
+    println!("  Period:    {} candles", candles.len());
+    println!("  Open:      ${:.2}", first.open);
+    println!("  Close:     ${:.2}", last.close);
+    println!("  High:      ${:.2}", high);
+    println!("  Low:       ${:.2}", low);
+    println!("  Change:    {:+.2}%", change_pct);
 
-    println!("{} orders:", resolved.len());
-    for (is_buy, sym, _, amt) in &resolved {
-        let label = if *is_buy { "BUY" } else { "SELL" };
-        println!("  {} {} {}", label, amt, sym);
-    }
-    if !yes && !confirm("Execute all?") {
-        println!("Cancelled.");
-        return Ok(());
-    }
-
-    println!();
-
-    let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let mut succeeded = Vec::new();
-    let mut failed = Vec::new();
-
-    for (i, (is_buy, sym, gm_mint, amount)) in resolved.iter().enumerate() {
-        let label = if *is_buy { "BUY" } else { "SELL" };
-        println!("[{}/{}] {} {} {} ...", i + 1, resolved.len(), label, amount, sym);
-
-        let result = if *is_buy {
-            execute_single_buy(&w, &taker, sym, gm_mint, amount, gm_dec).await
-        } else {
-            execute_single_sell(&w, &taker, sym, gm_mint, amount, gm_dec).await
-        };
-
-        match result {
-            Ok((filled, sig)) => {
-                println!("  ✓ {}", filled);
-                if let Some(s) = &sig {
-                    println!("    https://solscan.io/tx/{s}");
-                }
-                succeeded.push(format!("{label} {amount} {sym}"));
-            }
-            Err(e) => {
-                println!("  ✗ {e}");
-                failed.push(format!("{label} {amount} {sym}: {e}"));
-            }
-        }
-        println!();
-    }
-
-    // Summary
-    println!("─── Batch Summary ───");
-    println!("  Succeeded: {}/{}", succeeded.len(), resolved.len());
-    if !failed.is_empty() {
-        println!("  Failed:    {}/{}", failed.len(), resolved.len());
-        for f in &failed {
-            println!("    - {f}");
-        }
-    }
-
-    if !failed.is_empty() {
-        return Err(eyre::eyre!("{} of {} orders failed", failed.len(), resolved.len()));
-    }
     Ok(())
-}
-
-/// Execute a single buy, returns (description, optional tx signature).
-async fn execute_single_buy(
-    w: &wallet::Wallet,
-    taker: &str,
-    sym: &str,
-    gm_mint: &str,
-    amount: &str,
-    gm_dec: u8,
-) -> Result<(String, Option<String>)> {
-    let usdc_f = resolve_percent_amount(amount, || {
-        let t = taker.to_string();
-        async move { solana::get_usdc_balance(&t, None).await }
-    }).await?;
-    let usdc_str = format!("{usdc_f:.2}");
-    let raw = jupiter::usdc_to_raw(&usdc_str)?;
-    let order = jupiter::get_order(jupiter::USDC_MINT, gm_mint, &raw, taker).await?;
-    let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
-    let result = jupiter::execute_order(w, &order).await?;
-    let final_out = result
-        .output_amount_result
-        .as_deref()
-        .map(|r| jupiter::format_amount(r, gm_dec))
-        .unwrap_or(out_fmt);
-    let desc = format!("{} {} for {} USDC", final_out, sym, usdc_str);
-    Ok((desc, result.signature))
-}
-
-/// Execute a single sell, returns (description, optional tx signature).
-async fn execute_single_sell(
-    w: &wallet::Wallet,
-    taker: &str,
-    sym: &str,
-    gm_mint: &str,
-    amount: &str,
-    gm_dec: u8,
-) -> Result<(String, Option<String>)> {
-    let sell_f = resolve_percent_amount(amount, || {
-        let t = taker.to_string();
-        let m = gm_mint.to_string();
-        async move {
-            let bal = solana::get_balance(&t, &m, None).await?;
-            Ok(bal.balance)
-        }
-    }).await?;
-    let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
-    let raw = jupiter::token_to_raw(&sell_str, gm_dec)?;
-    let order = jupiter::get_order(gm_mint, jupiter::USDC_MINT, &raw, taker).await?;
-    let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
-    let result = jupiter::execute_order(w, &order).await?;
-    let final_out = result
-        .output_amount_result
-        .as_deref()
-        .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
-        .unwrap_or(out_fmt);
-    let desc = format!("{} {} → {} USDC", sell_str, sym, final_out);
-    Ok((desc, result.signature))
 }

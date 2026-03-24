@@ -94,7 +94,7 @@ pub async fn execute_order(
     };
 
     let resp: ExecuteResponse = reqwest::Client::new()
-        .post(&format!("{ULTRA_API_BASE}/execute"))
+        .post(format!("{ULTRA_API_BASE}/execute"))
         .header("x-client-platform", "rwa.cli")
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))

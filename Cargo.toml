@@ -1,5 +1,5 @@
 [workspace]
-members = ["bin/rwa", "crates/cli", "crates/core", "crates/ondo"]
+members = ["bin/rwa", "crates/cli", "crates/ondo"]
 default-members = ["bin/rwa"]
 resolver = "2"
 
@@ -12,27 +12,14 @@ rust-version = "1.91"
 [workspace.dependencies]
 # Internal crates
 rwa-cli = { path = "crates/cli" }
-rwa-core = { path = "crates/core" }
 rwa-ondo = { path = "crates/ondo" }
-
-# Alloy (EVM interaction)
-alloy-primitives = "1.5"
-alloy-sol-types = "1.5"
-alloy-provider = { version = "1.7", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
-alloy-transport-http = { version = "1.7", default-features = false, features = ["reqwest-rustls-tls"] }
-alloy-contract = "1.7"
-alloy-network = "1.7"
-alloy-rpc-types = "1.7"
-alloy-chains = "0.2"
-alloy-signer = "1.7"
-alloy-signer-local = "1.7"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -62,5 +49,4 @@ chrono = "0.4"
 chrono-tz = "0.10"
 
 # Misc
-hex = "0.4"
 dirs = "6"
