@@ -9,13 +9,6 @@ pub enum Chain {
 }
 
 impl Chain {
-    pub const fn chain_id(&self) -> u64 {
-        match self {
-            Self::BnbMainnet => 56,
-            Self::EthereumMainnet => 1,
-        }
-    }
-
     pub fn default_rpc_url(&self) -> &'static str {
         match self {
             Self::BnbMainnet => "https://bsc-dataseed.binance.org",

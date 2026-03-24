@@ -9,27 +9,14 @@ const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
 #[serde(rename_all = "camelCase")]
 pub struct OndoAsset {
     pub symbol: String,
-    #[serde(default)]
-    pub ticker: Option<String>,
     pub asset_name: String,
-    #[serde(default)]
-    pub tags: Vec<Tag>,
     pub primary_market: Option<PrimaryMarket>,
     pub underlying_market: Option<UnderlyingMarket>,
-    pub timestamp: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tag {
-    pub category_label: String,
-    pub tag_label: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrimaryMarket {
-    pub symbol: String,
     pub price: String,
     #[serde(default)]
     pub price_change_24h: Option<String>,
@@ -46,7 +33,6 @@ pub struct PrimaryMarket {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnderlyingMarket {
-    pub ticker: String,
     pub name: String,
     #[serde(default)]
     pub price_high_52w: Option<String>,
@@ -54,10 +40,6 @@ pub struct UnderlyingMarket {
     pub price_low_52w: Option<String>,
     #[serde(default)]
     pub volume: Option<String>,
-    #[serde(default)]
-    pub average_volume: Option<String>,
-    #[serde(default)]
-    pub shares_outstanding: Option<String>,
     #[serde(default)]
     pub market_cap: Option<String>,
 }
