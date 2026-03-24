@@ -12,11 +12,20 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 
 ## Agent Install
 
-For automated agent workflows, ensure `rwa` is on `$PATH`:
+I'd like you to set up `rwa`, the CLI for trading tokenized stocks on Solana.
+
+Install as a skill if I have npm:
 ```bash
-# Non-interactive install:
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
-# Verify:
+npx skills add outputlayer/rwa_cli --skill rwa-trading -g
+```
+
+If not, do this instead:
+```bash
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
+```
+
+Verify:
+```bash
 rwa --version
 ```
 
