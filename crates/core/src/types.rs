@@ -14,13 +14,8 @@ pub struct GmToken {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleData {
     /// How many underlying shares one token represents (18 decimals).
+    /// Dividends are reinvested, so this value grows over time.
     pub shares_per_token: U256,
-    /// When the oracle was last updated (unix timestamp).
-    pub last_update_timestamp: u64,
-    /// Maximum absolute price change allowed (basis points).
-    pub max_absolute_diff_bps: u64,
-    /// Minimum seconds between oracle updates.
-    pub min_price_update_window: u64,
 }
 
 /// Token balance info for display.

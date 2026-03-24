@@ -58,11 +58,8 @@ async fn price(rpc_url: &str, symbol: &str) -> Result<()> {
     let data = oracle::get_oracle_data(&provider, address).await?;
     let shares = format_u256_decimals(data.shares_per_token, 18);
 
-    println!("Oracle data for {_sym}:");
-    println!("  Shares per token:      {shares}");
-    println!("  Last updated:          {} (unix)", data.last_update_timestamp);
-    println!("  Max diff (bps):        {}", data.max_absolute_diff_bps);
-    println!("  Min update window:     {}s", data.min_price_update_window);
+    println!("{_sym}:");
+    println!("  Shares per token:  {shares}");
 
     Ok(())
 }
@@ -105,7 +102,6 @@ async fn info(rpc_url: &str, symbol: &str) -> Result<()> {
     println!("Address:         {}", token_info.address);
     println!("Decimals:        {}", token_info.decimals);
     println!("Shares/Token:    {}", format_u256_decimals(oracle_data.shares_per_token, 18));
-    println!("Oracle updated:  {} (unix)", oracle_data.last_update_timestamp);
     println!("Explorer:        {}", rwa_core::chain::Chain::BnbMainnet.explorer_url(address));
 
     Ok(())

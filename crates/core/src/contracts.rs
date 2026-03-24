@@ -34,15 +34,12 @@ sol! {
     }
 
     /// Ondo SyntheticSharesOracle — returns per-token oracle data.
+    /// On-chain verified: selector 0x41fee44a returns (uint256, uint256).
     #[sol(rpc)]
     interface ISyntheticSharesOracle {
         function assetData(address token) external view returns (
             uint256 sharesPerToken,
-            uint256 field2,
-            uint256 lastUpdateTimestamp,
-            uint256 field4,
-            uint256 maxAbsoluteDiffBps,
-            uint256 minPriceUpdateWindow
+            uint256 field2
         );
     }
 

@@ -11,8 +11,5 @@ pub async fn get_oracle_data<P: Provider>(provider: &P, token: Address) -> Resul
 
     Ok(OracleData {
         shares_per_token: result.sharesPerToken,
-        last_update_timestamp: result.lastUpdateTimestamp.to::<u64>(),
-        max_absolute_diff_bps: result.maxAbsoluteDiffBps.to::<u64>(),
-        min_price_update_window: result.minPriceUpdateWindow.to::<u64>(),
     })
 }
