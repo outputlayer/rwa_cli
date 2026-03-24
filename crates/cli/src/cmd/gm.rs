@@ -8,13 +8,13 @@ pub enum GmAction {
     /// List all available GM tokens
     List,
 
-    /// Get token price from Ondo API [e.g. price TSLAon | price all]
+    /// <SYMBOL|all>         Get token USD price and 24h change
     Price {
         /// Token symbol (e.g. TSLA, TSLAon) — or "all" for all tokens
         symbol: String,
     },
 
-    /// Check GM token balances [e.g. balance 0x... | balance 0x... -t TSLA]
+    /// <WALLET> [-t TOKEN]  Check GM token balances on BNB Chain
     Balance {
         /// Wallet address (0x...)
         wallet: String,
@@ -24,13 +24,13 @@ pub enum GmAction {
         token: Option<String>,
     },
 
-    /// Detailed token info [e.g. info TSLAon]
+    /// <SYMBOL>             Detailed token info (price, sValue, holders, 52w)
     Info {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
     },
 
-    /// Portfolio: balances × prices with 24h P&L [e.g. portfolio 0x...]
+    /// <WALLET>             Portfolio with USD values and 24h P&L
     Portfolio {
         /// Wallet address (0x...)
         wallet: String,
