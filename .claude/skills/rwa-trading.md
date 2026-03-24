@@ -1,75 +1,69 @@
-# RWA Trading — Ondo GM Tokenized Stocks on Solana
+# RWA Trading — Tokenized Stocks on Solana
+
+Trade 264 tokenized stocks & ETFs (Ondo Global Markets) on Solana via Jupiter.
 
 ## Install
 
 ```bash
-# From source (requires Rust):
-cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
-
-# Or via install script (installs Rust if missing):
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
-```
-
-## Agent Install
-
-> Copy this prompt to any AI agent:
-
-```
-Install rwa — CLI for trading tokenized stocks on Solana:
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
-
-Then run: rwa --json gm hours
 ```
 
-All commands support `--json` for machine-readable output and `-y` to skip confirmation on trades.
+## Trading Workflow
 
-Verify:
+1. Check market hours (24/5, Sun 8pm – Fri 8pm ET):
 ```bash
-rwa --version
+rwa --json gm hours
 ```
 
-All commands support `--json` for machine-readable output. `-y` skips confirmation on trades.
-
-## Commands
-
-```
-rwa gm hours                          # OPEN/CLOSED + countdown
-rwa gm list                           # All 264 available tokens
-rwa gm quote <SYMBOL> <AMOUNT>        # Swap quote (buy)
-rwa gm quote <SYMBOL> <AMOUNT> --sell # Swap quote (sell)
-rwa gm buy <SYMBOL> <AMOUNT> -y       # Buy with USDC
-rwa gm sell <SYMBOL> <AMOUNT> -y      # Sell for USDC
-rwa gm portfolio [WALLET]             # Positions + allocation + 24h change
-rwa gm history <SYMBOL> [-r RANGE]    # Price history (1D/1W/1M/3M/1Y/ALL)
-rwa keys generate                     # New wallet
-rwa keys import --seed-phrase "..."   # Import wallet
-rwa keys show                         # Address + key file path
+2. Discover tokens:
+```bash
+rwa --json gm list
 ```
 
-`--json` on any command for machine-readable output. Amount: number, `50%`, or `all`.
+3. Get a quote before trading:
+```bash
+rwa --json gm quote TSLA 100          # buy quote
+rwa --json gm quote TSLA 5 --sell     # sell quote
+```
 
-## Workflow
+4. Execute trade:
+```bash
+rwa gm buy TSLA 100 -y               # buy with USDC
+rwa gm sell TSLA all -y              # sell all holdings
+```
 
-1. `rwa gm hours` — check market (Sun 8pm – Fri 8pm ET)
-2. `rwa gm list` or `rwa --json gm list` — discover tokens
-3. `rwa gm quote SYMBOL AMOUNT` — preview before trade
-4. `rwa gm buy/sell SYMBOL AMOUNT -y` — execute
+5. Check portfolio:
+```bash
+rwa --json gm portfolio              # own wallet
+rwa --json gm portfolio <ADDRESS>    # any wallet
+```
 
-## Token Discovery
+## Flags
 
-264 tokenized stocks & ETFs. Use `rwa --json gm list` to get all symbols with names and Solana mint addresses. Both `TSLA` and `TSLAon` formats accepted.
+- `--json` — machine-readable output (use on every command for agent workflows)
+- `-y` — skip confirmation on buy/sell (required for non-interactive agents)
+
+## Amount Formats
+
+- Exact: `100` (USDC for buy, tokens for sell)
+- Percentage: `50%` (half of balance)
+- All: `all` (entire balance)
 
 ## Key JSON Outputs
 
 ```json
-// rwa --json gm list → array of all tokens
-[{"symbol":"TSLAon","name":"Tesla","mint":"..."},...]
+// rwa --json gm hours
+{"status":"OPEN","next_close":"2026-03-28T00:00:00Z","countdown":"2d 15h 30m"}
 
 // rwa --json gm portfolio
 {"wallet":"...","sol":1.5,"usdc":500.0,"positions":[{"token":"TSLAon","balance":0.26,"price":385.0,"value_usd":100.1,"alloc_pct":15.2,"change_pct_24h":1.2}],"total_value_usd":600.1}
 
-// rwa --json gm history TSLAon -r 1M
-{"symbol":"TSLAON","range":"1M","candles":527,"first":{"timestamp":...,"price":407.04},"last":{"timestamp":...,"price":385.75},"high":419.42,"low":356.83,"change_pct":-5.23}
+// rwa --json gm list
+[{"symbol":"TSLAon","name":"Tesla","mint":"..."},...]
 ```
 
-Fund wallet with SOL (gas) + USDC (trading) before first trade.
+## Notes
+
+- Both `TSLA` and `TSLAon` symbol formats accepted
+- Fund wallet with SOL (gas) + USDC (trading) before first trade
+- If RPC errors occur, retry or set `RWA_RPC_URL` to a private endpoint
