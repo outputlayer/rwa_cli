@@ -16,17 +16,16 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 
 ## Agent Install
 
-I'd like you to set up `rwa`, the CLI for trading tokenized stocks on Solana.
+> Copy this prompt to any AI agent (Claude, ChatGPT, Copilot, etc.):
 
-Install as a skill if I have npm:
-```bash
-npx skills add outputlayer/rwa_cli --skill rwa-trading -g
 ```
-
-If not, do this instead:
-```bash
+Install rwa — CLI for trading tokenized stocks on Solana:
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
+
+Then run: rwa --json gm hours
 ```
+
+All commands support `--json` for machine-readable output and `-y` to skip confirmation on trades.
 
 ## Quick Start
 
