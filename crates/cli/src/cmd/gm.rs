@@ -43,7 +43,7 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
 }
 
 fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    println!("{:<12} {:<44} {}", "SYMBOL", "BSC ADDRESS", "ETH ADDRESS");
+    println!("{:<12} {:<44} ETH ADDRESS", "SYMBOL", "BSC ADDRESS");
     println!("{}", "-".repeat(100));
     for t in tokens {
         let bsc = t.bsc_address.map(|a| format!("{a}")).unwrap_or_else(|| "-".into());
@@ -128,7 +128,7 @@ async fn balance(rpc_url: &str, wallet: &str, token: Option<&str>, tokens: &[tok
         if balances.is_empty() {
             println!("No GM token balances found for {wallet}");
         } else {
-            println!("{:<12} {}", "TOKEN", "BALANCE");
+            println!("{:<12} BALANCE", "TOKEN");
             println!("{}", "-".repeat(40));
             for tb in &balances {
                 println!("{:<12} {}", tb.token.symbol, format_u256_decimals(tb.balance, 18));
@@ -171,7 +171,7 @@ fn format_volume(v: &str) -> String {
     } else if n >= 1_000.0 {
         format!("${:.1}K", n / 1_000.0)
     } else {
-        format!("{}", v)
+        v.to_string()
     }
 }
 

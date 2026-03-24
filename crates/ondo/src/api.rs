@@ -70,7 +70,9 @@ struct AssetsResponse {
 
 /// Fetch all assets from the official Ondo API (free, no auth required).
 pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
     let resp = client.get(ONDO_API_URL).send().await?;
     if !resp.status().is_success() {
         return Err(eyre!("Ondo API returned status {}", resp.status()));

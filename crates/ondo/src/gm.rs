@@ -35,8 +35,8 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
 pub async fn get_token_info<P: Provider>(provider: &P, address: Address) -> Result<GmToken> {
     let erc20 = IERC20::new(address, provider);
 
-    let name = erc20.name().call().await?.into();
-    let symbol = erc20.symbol().call().await?.into();
+    let name = erc20.name().call().await?;
+    let symbol = erc20.symbol().call().await?;
     let decimals = erc20.decimals().call().await?;
 
     Ok(GmToken {
