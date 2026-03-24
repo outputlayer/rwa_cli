@@ -484,8 +484,14 @@ fn load_wallet() -> Result<wallet::Wallet> {
 
 /// Minimum SOL needed for transaction fees (~0.005 SOL).
 const MIN_SOL_FOR_GAS: f64 = 0.005;
+/// Minimum buy/sell amount in USDC.
+const MIN_USDC_AMOUNT: f64 = 1.0;
 
 async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
+    if usdc_amount < MIN_USDC_AMOUNT {
+        return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
+    }
+
     let (sol, usdc) = tokio::join!(
         solana::get_sol_balance(pubkey, None),
         solana::get_usdc_balance(pubkey, None)
