@@ -469,9 +469,62 @@ fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<
     Ok((entry.symbol.clone(), mint.to_string()))
 }
 
+fn load_wallet() -> Result<wallet::Wallet> {
+    wallet::Wallet::load_default().map_err(|_| {
+        eyre::eyre!(
+            "No wallet found.\n\n\
+             Create or import one first:\n  \
+             rwa keys generate                          Create a new wallet\n  \
+             rwa keys import --seed-phrase \"word1 ...\"   Import from seed phrase\n  \
+             rwa keys import --private-key <BASE58>     Import from private key\n  \
+             rwa keys import --file <PATH>              Import from key file"
+        )
+    })
+}
+
+/// Minimum SOL needed for transaction fees (~0.005 SOL).
+const MIN_SOL_FOR_GAS: f64 = 0.005;
+
+async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
+    let (sol, usdc) = tokio::join!(
+        solana::get_sol_balance(pubkey, None),
+        solana::get_usdc_balance(pubkey, None)
+    );
+    let sol = sol?;
+    let usdc = usdc?;
+
+    if sol < MIN_SOL_FOR_GAS {
+        return Err(eyre::eyre!(
+            "Insufficient SOL for gas fees.\n  \
+             Balance: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS} SOL)\n  \
+             Send SOL to: {pubkey}"
+        ));
+    }
+    if usdc < usdc_amount {
+        return Err(eyre::eyre!(
+            "Insufficient USDC balance.\n  \
+             Balance: {usdc:.2} USDC (need {usdc_amount:.2} USDC)\n  \
+             Send USDC to: {pubkey}"
+        ));
+    }
+    Ok(())
+}
+
+async fn preflight_sell(pubkey: &str) -> Result<()> {
+    let sol = solana::get_sol_balance(pubkey, None).await?;
+    if sol < MIN_SOL_FOR_GAS {
+        return Err(eyre::eyre!(
+            "Insufficient SOL for gas fees.\n  \
+             Balance: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS} SOL)\n  \
+             Send SOL to: {pubkey}"
+        ));
+    }
+    Ok(())
+}
+
 async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
-    let w = wallet::Wallet::load_default()?;
+    let w = load_wallet()?;
     let taker = w.pubkey();
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -509,8 +562,11 @@ async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::
 
 async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
-    let w = wallet::Wallet::load_default()?;
+    let w = load_wallet()?;
     let taker = w.pubkey();
+
+    let usdc_f: f64 = amount.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
+    preflight_buy(&taker, usdc_f).await?;
 
     let raw_usdc = jupiter::usdc_to_raw(amount)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -536,18 +592,21 @@ async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) ->
         .map(|r| jupiter::format_amount(r, gm_dec))
         .unwrap_or(out_fmt);
 
+    let sig = result.signature.as_deref().unwrap_or("unknown");
     println!("\nSwap successful!");
     println!("  Bought:    {} {}", final_out, sym);
     println!("  Spent:     {} USDC", amount);
-    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+    println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
 }
 
 async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
-    let w = wallet::Wallet::load_default()?;
+    let w = load_wallet()?;
     let taker = w.pubkey();
+
+    preflight_sell(&taker).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
     let raw_gm = jupiter::token_to_raw(amount, gm_dec)?;
@@ -573,10 +632,11 @@ async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
         .unwrap_or(out_fmt);
 
+    let sig = result.signature.as_deref().unwrap_or("unknown");
     println!("\nSwap successful!");
     println!("  Sold:      {} {}", amount, sym);
     println!("  Received:  {} USDC", final_out);
-    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+    println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
 }

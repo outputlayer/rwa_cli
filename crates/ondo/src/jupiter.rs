@@ -37,7 +37,11 @@ struct ExecuteRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResponse {
-    pub signature: String,
+    pub status: Option<String>,
+    pub signature: Option<String>,
+    pub code: Option<i32>,
+    pub error: Option<String>,
+    pub error_message: Option<String>,
     pub input_amount_result: Option<String>,
     pub output_amount_result: Option<String>,
 }
@@ -93,11 +97,29 @@ pub async fn execute_order(
         .post(&format!("{ULTRA_API_BASE}/execute"))
         .header("x-client-platform", "rwa.cli")
         .json(&req)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await?
         .json()
         .await?;
+
+    // Check for failure
+    if let Some(status) = &resp.status {
+        if status == "Failed" {
+            let msg = resp.error_message.as_deref()
+                .or(resp.error.as_deref())
+                .unwrap_or("Unknown execution error");
+            let code = resp.code.map(|c| format!(" (code {c})")).unwrap_or_default();
+            return Err(eyre!("Swap failed{code}: {msg}"));
+        }
+    }
+
+    if resp.signature.is_none() {
+        let msg = resp.error_message.as_deref()
+            .or(resp.error.as_deref())
+            .unwrap_or("No signature returned — transaction may have failed");
+        return Err(eyre!("Swap failed: {msg}"));
+    }
 
     Ok(resp)
 }
