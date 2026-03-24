@@ -1,16 +1,16 @@
 use alloy_primitives::{Address, U256};
 use clap::Subcommand;
 use eyre::Result;
-use rwa_ondo::{gm, oracle, provider, token_list};
+use rwa_ondo::{api, gm, oracle, provider, token_list};
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
     /// List all available GM tokens
     List,
 
-    /// Get sValue (shares-per-token multiplier) from SyntheticSharesOracle
+    /// Get GM token price (USD) from official Ondo API
     Price {
-        /// Token symbol (e.g. TSLA, TSLAon) — or "all" for batch query
+        /// Token symbol (e.g. TSLA, TSLAon) — or "all" for all tokens
         symbol: String,
     },
 
@@ -24,7 +24,7 @@ pub enum GmAction {
         token: Option<String>,
     },
 
-    /// Show detailed info about a GM token (BSC)
+    /// Show detailed info about a GM token
     Info {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
@@ -36,7 +36,7 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
 
     match action {
         GmAction::List => list_tokens(&tokens),
-        GmAction::Price { symbol } => price(rpc_url, &symbol, &tokens).await,
+        GmAction::Price { symbol } => price(&symbol).await,
         GmAction::Balance { wallet, token } => balance(rpc_url, &wallet, token.as_deref(), &tokens).await,
         GmAction::Info { symbol } => info(rpc_url, &symbol, &tokens).await,
     }
@@ -54,35 +54,60 @@ fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     Ok(())
 }
 
-async fn price(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let provider = provider::create_provider(rpc_url).await?;
+async fn price(symbol: &str) -> Result<()> {
+    let assets = api::fetch_assets().await?;
 
     if symbol.eq_ignore_ascii_case("all") {
-        // Batch: query sValue for all tokens with BSC addresses
-        let addrs: Vec<Address> = tokens
-            .iter()
-            .filter_map(|t| t.bsc_address)
-            .collect();
-        let results = oracle::get_svalue_batch(&provider, &addrs).await?;
-
-        println!("{:<12} {}", "TOKEN", "sVALUE");
-        println!("{}", "-".repeat(40));
-        for (addr, sv) in &results {
-            if let Some(entry) = tokens.iter().find(|t| t.bsc_address == Some(*addr)) {
-                println!("{:<12} {:.6}", entry.symbol, sv.value);
+        println!("{:<12} {:>12} {:>10} {:>8} {:>10}", "TOKEN", "PRICE (USD)", "24h CHG", "24h %", "sVALUE");
+        println!("{}", "-".repeat(60));
+        for asset in &assets {
+            if let Some(pm) = &asset.primary_market {
+                let price = api::parse_price(&pm.price);
+                let chg = pm.price_change_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+                let sv = pm.shares_multiplier.as_deref().unwrap_or("-");
+                println!(
+                    "{:<12} {:>12.2} {:>+10.2} {:>7.2}% {:>10}",
+                    asset.symbol, price, chg, pct, sv
+                );
             }
         }
-        println!("\nTotal: {} tokens", results.len());
+        println!("\nTotal: {} tokens", assets.len());
     } else {
-        let entry = gm::resolve_token(symbol, tokens)?;
-        let address = entry.bsc_address
-            .ok_or_else(|| eyre::eyre!("No BSC address for {}", entry.symbol))?;
-        let sv = oracle::get_svalue(&provider, address).await?;
+        let asset = api::find_asset(symbol, &assets)
+            .ok_or_else(|| eyre::eyre!("Token {} not found in Ondo API", symbol))?;
+        let pm = asset.primary_market.as_ref()
+            .ok_or_else(|| eyre::eyre!("No market data for {}", asset.symbol))?;
 
-        println!("{}:", entry.symbol);
-        println!("  sValue:            {:.6}", sv.value);
-        println!("  sValue (raw):      {}", sv.raw);
-        println!("  Formula:           GM Price = Equity Market Price × {:.6}", sv.value);
+        let price = api::parse_price(&pm.price);
+        let chg = pm.price_change_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+        let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+
+        println!("{} ({}):", asset.symbol, asset.asset_name);
+        println!("  Price (USD):       ${:.2}", price);
+        println!("  24h Change:        {:+.2} ({:+.2}%)", chg, pct);
+        if let Some(sv) = &pm.shares_multiplier {
+            println!("  sValue:            {}", sv);
+        }
+        if let Some(holders) = pm.total_holders {
+            println!("  Holders:           {}", holders);
+        }
+        if !pm.tradable_sessions.is_empty() {
+            println!("  Trading:           {}", pm.tradable_sessions.join(", "));
+        }
+
+        if let Some(um) = &asset.underlying_market {
+            println!("  ─── Underlying: {} ───", um.name);
+            if let (Some(hi), Some(lo)) = (&um.price_high_52w, &um.price_low_52w) {
+                println!("  52w Range:         ${} — ${}", lo, hi);
+            }
+            if let Some(vol) = &um.volume {
+                println!("  Volume:            {}", format_volume(vol));
+            }
+            if let Some(cap) = &um.market_cap {
+                println!("  Market Cap:        {}", format_market_cap(cap));
+            }
+        }
     }
 
     Ok(())
@@ -135,6 +160,32 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
     println!("Explorer:        {}", rwa_core::chain::Chain::BnbMainnet.explorer_url(address));
 
     Ok(())
+}
+
+fn format_volume(v: &str) -> String {
+    let n: f64 = v.parse().unwrap_or(0.0);
+    if n >= 1_000_000_000.0 {
+        format!("${:.2}B", n / 1_000_000_000.0)
+    } else if n >= 1_000_000.0 {
+        format!("${:.2}M", n / 1_000_000.0)
+    } else if n >= 1_000.0 {
+        format!("${:.1}K", n / 1_000.0)
+    } else {
+        format!("{}", v)
+    }
+}
+
+fn format_market_cap(v: &str) -> String {
+    let n: f64 = v.parse().unwrap_or(0.0);
+    if n >= 1_000_000_000_000.0 {
+        format!("${:.2}T", n / 1_000_000_000_000.0)
+    } else if n >= 1_000_000_000.0 {
+        format!("${:.2}B", n / 1_000_000_000.0)
+    } else if n >= 1_000_000.0 {
+        format!("${:.2}M", n / 1_000_000.0)
+    } else {
+        format!("${}", v)
+    }
 }
 
 /// Format a U256 with 18 decimals into a human-readable string.
