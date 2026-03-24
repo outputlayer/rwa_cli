@@ -1,0 +1,50 @@
+[workspace]
+members = ["bin/rwa", "crates/cli", "crates/core", "crates/ondo"]
+default-members = ["bin/rwa"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.91"
+
+[workspace.dependencies]
+# Internal crates
+rwa-cli = { path = "crates/cli" }
+rwa-core = { path = "crates/core" }
+rwa-ondo = { path = "crates/ondo" }
+
+# Alloy (EVM interaction)
+alloy-primitives = "1.5"
+alloy-sol-types = "1.5"
+alloy-provider = { version = "1.7", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-transport-http = { version = "1.7", default-features = false, features = ["reqwest-rustls-tls"] }
+alloy-contract = "1.7"
+alloy-network = "1.7"
+alloy-rpc-types = "1.7"
+alloy-chains = "0.2"
+alloy-signer = "1.7"
+alloy-signer-local = "1.7"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+eyre = "0.6"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Misc
+hex = "0.4"

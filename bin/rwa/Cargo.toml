@@ -1,0 +1,15 @@
+[package]
+name = "rwa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rwa"
+path = "src/main.rs"
+
+[dependencies]
+rwa-cli.workspace = true
+tokio.workspace = true
+eyre.workspace = true

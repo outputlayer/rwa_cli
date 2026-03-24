@@ -1,0 +1,23 @@
+[package]
+name = "rwa-ondo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rwa-core.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+alloy-provider.workspace = true
+alloy-transport-http.workspace = true
+alloy-contract.workspace = true
+alloy-network.workspace = true
+alloy-rpc-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eyre.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
