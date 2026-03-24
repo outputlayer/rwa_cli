@@ -17,7 +17,7 @@ pub struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Commands {
-    /// Ondo Global Markets — 264 tokenized stocks & ETFs on Solana, BNB & Ethereum (list, price, balance, info, portfolio)
+    /// Ondo Global Markets — 264 tokenized stocks & ETFs on Solana, BNB & Ethereum
     Gm {
         #[command(subcommand)]
         action: cmd::gm::GmAction,

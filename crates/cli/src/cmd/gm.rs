@@ -24,20 +24,6 @@ pub enum GmAction {
         symbol: String,
     },
 
-    /// <WALLET> [-t TOKEN]  Check GM token balances
-    Balance {
-        /// Wallet address (0x... for EVM, base58 for Solana)
-        wallet: String,
-
-        /// Filter by token symbol (optional)
-        #[arg(short, long)]
-        token: Option<String>,
-
-        /// Chain: solana (default), bsc, or eth
-        #[arg(short, long, default_value = "solana")]
-        chain: String,
-    },
-
     /// <SYMBOL>             Detailed token info (price, sValue, holders, 52w)
     Info {
         /// Token symbol (e.g. TSLA, TSLAon)
@@ -55,6 +41,8 @@ pub enum GmAction {
     },
 
     /// <SYMBOL> --amount <USDC>  Buy GM token with USDC via Jupiter (Solana)
+    ///
+    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
     Buy {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
@@ -65,6 +53,8 @@ pub enum GmAction {
     },
 
     /// <SYMBOL> --amount <N>     Sell GM token for USDC via Jupiter (Solana)
+    ///
+    /// Liquidity: Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)
     Sell {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
@@ -100,15 +90,6 @@ pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result
     match action {
         GmAction::List => list_tokens(&tokens),
         GmAction::Price { .. } => unreachable!(),
-        GmAction::Balance { wallet, token, chain } => {
-            let chain = parse_chain(&chain)?;
-            if chain == Chain::SolanaMainnet {
-                balance_solana(&wallet, token.as_deref(), &tokens).await
-            } else {
-                let rpc = rpc_url_override.unwrap_or(chain.default_rpc_url());
-                balance_evm(rpc, &wallet, token.as_deref(), &tokens, chain).await
-            }
-        }
         GmAction::Info { symbol } => {
             let rpc = rpc_url_override.unwrap_or(Chain::BnbMainnet.default_rpc_url());
             info(rpc, &symbol, &tokens).await
@@ -198,32 +179,6 @@ async fn price(symbol: &str) -> Result<()> {
     Ok(())
 }
 
-async fn balance_evm(rpc_url: &str, wallet: &str, token: Option<&str>, tokens: &[token_list::GmTokenEntry], chain: Chain) -> Result<()> {
-    let wallet_addr: Address = wallet.parse()?;
-    let provider = provider::create_provider(rpc_url).await?;
-
-    if let Some(sym) = token {
-        let entry = gm::resolve_token(sym, tokens)?;
-        let token_addr = gm::token_address_for_chain(entry, chain)
-            .ok_or_else(|| eyre::eyre!("No {} address for {}", chain, entry.symbol))?;
-        let bal = gm::get_balance(&provider, token_addr, wallet_addr).await?;
-        println!("{}: {}", entry.symbol, format_u256_decimals(bal, 18));
-    } else {
-        let balances = gm::get_all_balances(&provider, wallet_addr, tokens, chain).await?;
-        if balances.is_empty() {
-            println!("No GM token balances found on {} for {wallet}", chain);
-        } else {
-            println!("{:<12} BALANCE", "TOKEN");
-            println!("{}", "-".repeat(40));
-            for tb in &balances {
-                println!("{:<12} {}", tb.token.symbol, format_u256_decimals(tb.balance, 18));
-            }
-        }
-    }
-
-    Ok(())
-}
-
 async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     let entry = gm::resolve_token(symbol, tokens)?;
     let address = entry.bsc_address
@@ -246,6 +201,7 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
     println!("sValue:          {:.6}", oracle_data.value);
     println!("sValue (raw):    {}", format_u256_decimals(oracle_data.raw, 18));
     println!("Explorer:        {}", rwa_core::chain::Chain::BnbMainnet.explorer_url(address));
+    println!("Liquidity:       Ondo JIT mint/redeem, 24/5 (Sun 8pm — Fri 8pm ET)");
 
     Ok(())
 }
@@ -327,42 +283,28 @@ async fn portfolio_evm(rpc_url: &str, wallet: &str, tokens: &[token_list::GmToke
     Ok(())
 }
 
-async fn balance_solana(wallet: &str, token: Option<&str>, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    if let Some(sym) = token {
-        let entry = gm::resolve_token(sym, tokens)?;
-        let mint = entry.solana_address.as_deref()
-            .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
-        let bal = solana::get_balance(wallet, mint, None).await?;
-        println!("{}: {}", entry.symbol, bal.balance);
-    } else {
-        let balances = solana::get_all_balances(wallet, tokens, None).await?;
-        if balances.is_empty() {
-            println!("No GM token balances found on Solana for {wallet}");
-        } else {
-            println!("{:<12} BALANCE", "TOKEN");
-            println!("{}", "-".repeat(40));
-            for tb in &balances {
-                println!("{:<12} {}", tb.symbol, tb.balance);
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn portfolio_solana(wallet: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let (balances, assets) = tokio::join!(
+    let (balances, assets, sol_bal, usdc_bal) = tokio::join!(
         solana::get_all_balances(wallet, tokens, None),
-        api::fetch_assets()
+        api::fetch_assets(),
+        solana::get_sol_balance(wallet, None),
+        solana::get_usdc_balance(wallet, None)
     );
     let balances = balances?;
     let assets = assets?;
+    let sol_bal = sol_bal.unwrap_or(0.0);
+    let usdc_bal = usdc_bal.unwrap_or(0.0);
+
+    println!("Solana Portfolio for {wallet}\n");
+    println!("  SOL:   {:.6}", sol_bal);
+    println!("  USDC:  {:.2}", usdc_bal);
 
     if balances.is_empty() {
-        println!("No GM token balances found on Solana for {wallet}");
+        println!("\nNo GM token positions.");
         return Ok(());
     }
 
-    println!("Solana Portfolio for {wallet}\n");
+    println!();
     println!(
         "{:<12} {:>14} {:>12} {:>16} {:>9}",
         "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
