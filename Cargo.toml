@@ -46,5 +46,12 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Crypto (Solana signing)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
+bs58 = "0.5"
+
 # Misc
 hex = "0.4"
+dirs = "6"

@@ -22,6 +22,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: cmd::gm::GmAction,
     },
+    /// Solana wallet management (generate, import, show)
+    Keys {
+        #[command(subcommand)]
+        action: cmd::keys::KeysAction,
+    },
 }
 
 /// Run the CLI.
@@ -37,6 +42,7 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Gm { action } => cmd::gm::execute(action, cli.rpc_url.as_deref()).await?,
+        Commands::Keys { action } => cmd::keys::execute(action).await?,
     }
 
     Ok(())

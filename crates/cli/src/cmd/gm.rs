@@ -2,7 +2,7 @@ use alloy_primitives::{Address, U256};
 use clap::Subcommand;
 use eyre::Result;
 use rwa_core::chain::Chain;
-use rwa_ondo::{api, gm, oracle, provider, solana, token_list};
+use rwa_ondo::{api, gm, jupiter, oracle, provider, solana, token_list, wallet};
 
 fn parse_chain(s: &str) -> Result<Chain> {
     match s.to_lowercase().as_str() {
@@ -53,6 +53,40 @@ pub enum GmAction {
         #[arg(short, long, default_value = "solana")]
         chain: String,
     },
+
+    /// <SYMBOL> --amount <USDC>  Buy GM token with USDC via Jupiter (Solana)
+    Buy {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+
+        /// USDC amount to spend
+        #[arg(short, long)]
+        amount: String,
+    },
+
+    /// <SYMBOL> --amount <N>     Sell GM token for USDC via Jupiter (Solana)
+    Sell {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+
+        /// Token amount to sell
+        #[arg(short, long)]
+        amount: String,
+    },
+
+    /// <SYMBOL> --amount <USDC>  Get swap quote without executing (Solana)
+    Quote {
+        /// Token symbol (e.g. TSLA, TSLAon)
+        symbol: String,
+
+        /// USDC amount (for buy quote) or token amount (with --sell)
+        #[arg(short, long)]
+        amount: String,
+
+        /// Quote selling token for USDC instead of buying
+        #[arg(long)]
+        sell: bool,
+    },
 }
 
 pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result<()> {
@@ -88,6 +122,9 @@ pub async fn execute(action: GmAction, rpc_url_override: Option<&str>) -> Result
                 portfolio_evm(rpc, &wallet, &tokens, chain).await
             }
         }
+        GmAction::Buy { symbol, amount } => buy(&symbol, &amount, &tokens).await,
+        GmAction::Sell { symbol, amount } => sell(&symbol, &amount, &tokens).await,
+        GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, &tokens).await,
     }
 }
 
@@ -421,4 +458,122 @@ fn format_u256_decimals(value: U256, decimals: u8) -> String {
 fn u256_to_f64(value: U256, decimals: u8) -> f64 {
     let s = format_u256_decimals(value, decimals);
     s.parse::<f64>().unwrap_or(0.0)
+}
+
+// ── Jupiter swap commands ──────────────────────────────────
+
+fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
+    let entry = gm::resolve_token(symbol, tokens)?;
+    let mint = entry.solana_address.as_deref()
+        .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
+    Ok((entry.symbol.clone(), mint.to_string()))
+}
+
+async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+    let w = wallet::Wallet::load_default()?;
+    let taker = w.pubkey();
+
+    let gm_dec = jupiter::GM_SOL_DECIMALS;
+    let usdc_dec = jupiter::USDC_DECIMALS;
+
+    let (input_mint, output_mint, raw_amount, direction) = if is_sell {
+        let raw = jupiter::token_to_raw(amount, gm_dec)?;
+        (gm_mint.as_str(), jupiter::USDC_MINT, raw, "sell")
+    } else {
+        let raw = jupiter::usdc_to_raw(amount)?;
+        (jupiter::USDC_MINT, gm_mint.as_str(), raw, "buy")
+    };
+
+    let order = jupiter::get_order(input_mint, output_mint, &raw_amount, &taker).await?;
+
+    let (in_label, out_label, in_dec, out_dec) = if direction == "buy" {
+        ("USDC", sym.as_str(), usdc_dec, gm_dec)
+    } else {
+        (sym.as_str(), "USDC", gm_dec, usdc_dec)
+    };
+
+    let in_fmt = jupiter::format_amount(&order.in_amount, in_dec);
+    let out_fmt = jupiter::format_amount(&order.out_amount, out_dec);
+
+    println!("Quote: {} {} → {} {}", in_fmt, in_label, out_fmt, out_label);
+    if let Some(usd_in) = order.in_usd_value {
+        println!("  Input value:   ${:.2}", usd_in);
+    }
+    if let Some(usd_out) = order.out_usd_value {
+        println!("  Output value:  ${:.2}", usd_out);
+    }
+    if let Some(impact) = order.price_impact {
+        println!("  Price impact:  {:.3}%", impact * 100.0);
+    }
+
+    Ok(())
+}
+
+async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+    let w = wallet::Wallet::load_default()?;
+    let taker = w.pubkey();
+
+    let raw_usdc = jupiter::usdc_to_raw(amount)?;
+    let gm_dec = jupiter::GM_SOL_DECIMALS;
+
+    println!("Getting quote for {} USDC → {} ...", amount, sym);
+    let order = jupiter::get_order(jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker).await?;
+
+    let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
+    println!("You will receive ~{} {}", out_fmt, sym);
+    if let Some(impact) = order.price_impact {
+        if impact > 0.01 {
+            println!("⚠ High price impact: {:.2}%", impact * 100.0);
+        }
+    }
+
+    println!("Executing swap...");
+    let result = jupiter::execute_order(&w, &order).await?;
+
+    let final_out = result.output_amount_result.as_deref()
+        .map(|r| jupiter::format_amount(r, gm_dec))
+        .unwrap_or(out_fmt);
+
+    println!("\nSwap successful!");
+    println!("  Bought:    {} {}", final_out, sym);
+    println!("  Spent:     {} USDC", amount);
+    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+
+    Ok(())
+}
+
+async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
+    let w = wallet::Wallet::load_default()?;
+    let taker = w.pubkey();
+
+    let gm_dec = jupiter::GM_SOL_DECIMALS;
+    let raw_gm = jupiter::token_to_raw(amount, gm_dec)?;
+
+    println!("Getting quote for {} {} → USDC ...", amount, sym);
+    let order = jupiter::get_order(&gm_mint, jupiter::USDC_MINT, &raw_gm, &taker).await?;
+
+    let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
+    println!("You will receive ~{} USDC", out_fmt);
+    if let Some(impact) = order.price_impact {
+        if impact > 0.01 {
+            println!("⚠ High price impact: {:.2}%", impact * 100.0);
+        }
+    }
+
+    println!("Executing swap...");
+    let result = jupiter::execute_order(&w, &order).await?;
+
+    let final_out = result.output_amount_result.as_deref()
+        .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
+        .unwrap_or(out_fmt);
+
+    println!("\nSwap successful!");
+    println!("  Sold:      {} {}", amount, sym);
+    println!("  Received:  {} USDC", final_out);
+    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+
+    Ok(())
 }
