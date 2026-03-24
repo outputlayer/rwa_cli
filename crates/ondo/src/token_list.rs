@@ -1,6 +1,107 @@
-/// Complete list of Ondo GM tokens on BNB Chain (263 tokens).
-/// Auto-generated from: https://github.com/ondoprotocol/ondo-global-markets-token-list
-pub static GM_TOKENS: &[(&str, &str)] = &[
+use alloy_primitives::Address;
+use eyre::Result;
+use serde::Deserialize;
+use std::collections::HashMap;
+use tracing::warn;
+
+const TOKENLIST_URL: &str = "https://raw.githubusercontent.com/ondoprotocol/ondo-global-markets-token-list/main/tokenlist.json";
+
+/// A GM token entry with addresses on both Ethereum and BNB Chain.
+#[derive(Debug, Clone)]
+pub struct GmTokenEntry {
+    pub symbol: String,
+    pub name: String,
+    pub decimals: u8,
+    pub bsc_address: Option<Address>,
+    pub eth_address: Option<Address>,
+}
+
+#[derive(Deserialize)]
+struct TokenListJson {
+    tokens: Vec<TokenListItem>,
+}
+
+#[derive(Deserialize)]
+struct TokenListItem {
+    #[serde(rename = "chainId")]
+    chain_id: u64,
+    address: String,
+    name: String,
+    symbol: String,
+    decimals: u8,
+}
+
+/// Fetch the GM token list from GitHub, falling back to the static list on error.
+pub async fn get_token_list() -> Vec<GmTokenEntry> {
+    match fetch_token_list().await {
+        Ok(tokens) => {
+            tracing::info!("Loaded {} tokens from GitHub tokenlist", tokens.len());
+            tokens
+        }
+        Err(e) => {
+            warn!("Failed to fetch token list from GitHub, using static fallback: {e}");
+            static_token_list()
+        }
+    }
+}
+
+/// Fetch and parse the Ondo tokenlist from GitHub.
+pub async fn fetch_token_list() -> Result<Vec<GmTokenEntry>> {
+    let text = reqwest::Client::new()
+        .get(TOKENLIST_URL)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    let list: TokenListJson = serde_json::from_str(&text)?;
+    Ok(group_tokens(list.tokens))
+}
+
+fn group_tokens(items: Vec<TokenListItem>) -> Vec<GmTokenEntry> {
+    let mut map: HashMap<String, GmTokenEntry> = HashMap::new();
+
+    for item in items {
+        let entry = map.entry(item.symbol.clone()).or_insert_with(|| GmTokenEntry {
+            symbol: item.symbol.clone(),
+            name: item.name.clone(),
+            decimals: item.decimals,
+            bsc_address: None,
+            eth_address: None,
+        });
+
+        if let Ok(addr) = item.address.parse::<Address>() {
+            match item.chain_id {
+                56 => entry.bsc_address = Some(addr),
+                1 => entry.eth_address = Some(addr),
+                _ => {}
+            }
+        }
+    }
+
+    let mut tokens: Vec<_> = map.into_values().collect();
+    tokens.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    tokens
+}
+
+/// Convert the static fallback list to `GmTokenEntry` entries.
+pub fn static_token_list() -> Vec<GmTokenEntry> {
+    GM_TOKENS_STATIC
+        .iter()
+        .map(|&(symbol, addr)| GmTokenEntry {
+            symbol: symbol.to_string(),
+            name: String::new(),
+            decimals: 18,
+            bsc_address: addr.parse().ok(),
+            eth_address: None,
+        })
+        .collect()
+}
+
+/// Static fallback list of Ondo GM tokens on BNB Chain (263 tokens).
+static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("AALon", "0x02D608506Ca0048d0d991a11f1e7FB8CaD1E44f8"),
     ("AAPLon", "0x390a684EF9cADE28A7AD0DFa61AB1Eb3842618c4"),
     ("ABBVon", "0x8677abad7B458Bf16A0Fb2676Dfc7D3F55aC202a"),

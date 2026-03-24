@@ -4,11 +4,11 @@ use eyre::{Result, eyre};
 use rwa_core::contracts::IERC20;
 use rwa_core::types::{GmToken, TokenBalance};
 
-use crate::token_list::GM_TOKENS;
+use crate::token_list::GmTokenEntry;
 
 /// Resolve a GM token by symbol (case-insensitive).
 /// Accepts both "TSLA" and "TSLAon" formats.
-pub fn resolve_token(symbol: &str) -> Result<&'static (&'static str, &'static str)> {
+pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a GmTokenEntry> {
     let normalized = symbol.to_uppercase();
     let lookup = if normalized.ends_with("ON") {
         normalized.clone()
@@ -16,9 +16,9 @@ pub fn resolve_token(symbol: &str) -> Result<&'static (&'static str, &'static st
         format!("{normalized}ON")
     };
 
-    GM_TOKENS
+    tokens
         .iter()
-        .find(|(sym, _)| sym.to_uppercase() == lookup)
+        .find(|t| t.symbol.to_uppercase() == lookup)
         .ok_or_else(|| eyre!("Unknown GM token: {symbol}. Use `rwa gm list` to see available tokens."))
 }
 
@@ -53,21 +53,25 @@ pub async fn get_balance<P: Provider>(
 pub async fn get_all_balances<P: Provider>(
     provider: &P,
     wallet: Address,
+    tokens: &[GmTokenEntry],
 ) -> Result<Vec<TokenBalance>> {
     let mut balances = Vec::new();
 
-    for &(symbol, addr_str) in GM_TOKENS.iter() {
-        let address: Address = addr_str.parse()?;
+    for entry in tokens {
+        let address = match entry.bsc_address {
+            Some(a) => a,
+            None => continue,
+        };
         let erc20 = IERC20::new(address, provider);
         let balance = erc20.balanceOf(wallet).call().await?;
 
         if balance > U256::ZERO {
             balances.push(TokenBalance {
                 token: GmToken {
-                    symbol: symbol.to_string(),
-                    name: String::new(),
+                    symbol: entry.symbol.clone(),
+                    name: entry.name.clone(),
                     address,
-                    decimals: 18,
+                    decimals: entry.decimals,
                 },
                 balance,
             });
