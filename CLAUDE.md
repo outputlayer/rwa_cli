@@ -53,8 +53,18 @@ rwa keys show                         # Show address + key file path
 
 ```bash
 cargo build                  # Build all crates
-cargo run -- hours           # Run CLI
+cargo run -- gm hours        # Run CLI
 cargo install --path bin/rwa # Install to ~/.cargo/bin
+```
+
+## Installation
+
+```bash
+# From source (requires Rust):
+cargo install --git https://github.com/user/rwa_cli --bin rwa
+
+# Or via install script:
+curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
 ```
 
 ## Conventions
@@ -63,4 +73,4 @@ cargo install --path bin/rwa # Install to ~/.cargo/bin
 - Amount accepts: exact (`100`), percentage (`50%`), or `all`
 - `--json` flag on any command for machine-readable output
 - `-y` flag skips confirmation on buy/sell
-- Error handling: `eyre` in binary/CLI, `thiserror` in libraries
+- Error handling: `eyre` for all error types

@@ -1,5 +1,13 @@
 # RWA Trading — Ondo GM Tokenized Stocks on Solana
 
+## Install
+
+```bash
+cargo install --git https://github.com/user/rwa_cli --bin rwa
+```
+
+Or: `curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh`
+
 ## Commands
 
 ```

@@ -226,7 +226,13 @@ pub fn hours(json: bool) -> Result<()> {
 pub async fn portfolio(wallet: Option<&str>, json: bool) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     let pubkey = match wallet {
-        Some(w) => w.to_string(),
+        Some(w) => {
+            // Basic validation: base58, reasonable length for Solana address
+            if w.len() < 32 || w.len() > 44 || w.chars().any(|c| c.is_whitespace()) {
+                return Err(eyre::eyre!("Invalid Solana address: {w}"));
+            }
+            w.to_string()
+        }
         None => load_wallet()?.pubkey(),
     };
 

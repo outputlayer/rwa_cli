@@ -55,13 +55,14 @@ pub async fn get_order(
     amount: &str,
     taker: &str,
 ) -> Result<OrderResponse> {
-    let url = format!(
-        "{ULTRA_API_BASE}/order?inputMint={input_mint}&outputMint={output_mint}\
-         &amount={amount}&taker={taker}"
-    );
-
     let resp: OrderResponse = reqwest::Client::new()
-        .get(&url)
+        .get(format!("{ULTRA_API_BASE}/order"))
+        .query(&[
+            ("inputMint", input_mint),
+            ("outputMint", output_mint),
+            ("amount", amount),
+            ("taker", taker),
+        ])
         .header("x-client-platform", "rwa.cli")
         .timeout(std::time::Duration::from_secs(15))
         .send()
