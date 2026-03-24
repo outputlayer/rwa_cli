@@ -48,7 +48,7 @@ pub enum GmAction {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
 
-        /// USDC amount to spend
+        /// USDC amount, percentage of balance, or "all" (e.g. 100, 50%, all)
         #[arg(short, long)]
         amount: String,
     },
@@ -60,7 +60,7 @@ pub enum GmAction {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
 
-        /// Token amount to sell
+        /// Token amount, percentage of holdings, or "all" (e.g. 5, 50%, all)
         #[arg(short, long)]
         amount: String,
     },
@@ -70,7 +70,7 @@ pub enum GmAction {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
 
-        /// USDC amount (for buy quote) or token amount (with --sell)
+        /// Amount, percentage, or "all" (e.g. 100, 50%, all)
         #[arg(short, long)]
         amount: String,
 
@@ -444,6 +444,38 @@ const MIN_SOL_FOR_GAS: f64 = 0.005;
 /// Minimum buy/sell amount in USDC.
 const MIN_USDC_AMOUNT: f64 = 1.0;
 
+/// Resolve percentage or "all" amounts into absolute numbers.
+///  - "100" → 100.0 (passthrough)
+///  - "50%" → 50% of balance
+///  - "all" → 100% of balance
+/// `balance_fn` is called lazily only when needed.
+async fn resolve_percent_amount<F, Fut>(raw: &str, balance_fn: F) -> Result<f64>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<f64>>,
+{
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("all") {
+        let bal = balance_fn().await?;
+        if bal <= 0.0 {
+            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
+        }
+        return Ok(bal);
+    }
+    if let Some(pct_str) = s.strip_suffix('%') {
+        let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
+        }
+        let bal = balance_fn().await?;
+        if bal <= 0.0 {
+            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
+        }
+        return Ok(bal * pct / 100.0);
+    }
+    s.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {s}"))
+}
+
 /// Check if Ondo GM trading is currently open.
 /// Trading window: Sunday 8 PM ET → Friday 8 PM ET (24/5).
 fn check_trading_hours() -> Result<()> {
@@ -525,14 +557,28 @@ async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::
     let usdc_dec = jupiter::USDC_DECIMALS;
 
     let (input_mint, output_mint, raw_amount, direction) = if is_sell {
-        let raw = jupiter::token_to_raw(amount, gm_dec)?;
-        (gm_mint.as_str(), jupiter::USDC_MINT, raw, "sell")
+        let sell_f = resolve_percent_amount(amount, || {
+            let t = taker.clone();
+            let m = gm_mint.clone();
+            async move {
+                let bal = solana::get_balance(&t, &m, None).await?;
+                Ok(bal.balance)
+            }
+        }).await?;
+        let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
+        let raw = jupiter::token_to_raw(&sell_str, gm_dec)?;
+        (gm_mint.as_str().to_string(), jupiter::USDC_MINT.to_string(), raw, "sell")
     } else {
-        let raw = jupiter::usdc_to_raw(amount)?;
-        (jupiter::USDC_MINT, gm_mint.as_str(), raw, "buy")
+        let buy_f = resolve_percent_amount(amount, || {
+            let t = taker.clone();
+            async move { solana::get_usdc_balance(&t, None).await }
+        }).await?;
+        let buy_str = format!("{buy_f:.2}");
+        let raw = jupiter::usdc_to_raw(&buy_str)?;
+        (jupiter::USDC_MINT.to_string(), gm_mint.clone(), raw, "buy")
     };
 
-    let order = jupiter::get_order(input_mint, output_mint, &raw_amount, &taker).await?;
+    let order = jupiter::get_order(&input_mint, &output_mint, &raw_amount, &taker).await?;
 
     let (in_label, out_label, in_dec, out_dec) = if direction == "buy" {
         ("USDC", sym.as_str(), usdc_dec, gm_dec)
@@ -559,13 +605,18 @@ async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) ->
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    let usdc_f: f64 = amount.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
+    let usdc_f = resolve_percent_amount(amount, || {
+        let t = taker.clone();
+        async move { solana::get_usdc_balance(&t, None).await }
+    }).await?;
+    let usdc_str = format!("{usdc_f:.2}");
+
     preflight_buy(&taker, usdc_f).await?;
 
-    let raw_usdc = jupiter::usdc_to_raw(amount)?;
+    let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
-    println!("Getting quote for {} USDC → {} ...", amount, sym);
+    println!("Getting quote for {} USDC → {} ...", usdc_str, sym);
     let order = jupiter::get_order(jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
@@ -589,7 +640,7 @@ async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) ->
     let sig = result.signature.as_deref().unwrap_or("unknown");
     println!("\nSwap successful!");
     println!("  Bought:    {} {}", final_out, sym);
-    println!("  Spent:     {} USDC", amount);
+    println!("  Spent:     {} USDC", usdc_str);
     println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
@@ -603,9 +654,20 @@ async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -
     preflight_sell(&taker).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let raw_gm = jupiter::token_to_raw(amount, gm_dec)?;
 
-    println!("Getting quote for {} {} → USDC ...", amount, sym);
+    let sell_f = resolve_percent_amount(amount, || {
+        let t = taker.clone();
+        let m = gm_mint.clone();
+        async move {
+            let bal = solana::get_balance(&t, &m, None).await?;
+            Ok(bal.balance)
+        }
+    }).await?;
+    let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
+
+    let raw_gm = jupiter::token_to_raw(&sell_str, gm_dec)?;
+
+    println!("Getting quote for {} {} → USDC ...", sell_str, sym);
     let order = jupiter::get_order(&gm_mint, jupiter::USDC_MINT, &raw_gm, &taker).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
@@ -744,7 +806,12 @@ async fn execute_single_buy(
     amount: &str,
     gm_dec: u8,
 ) -> Result<(String, Option<String>)> {
-    let raw = jupiter::usdc_to_raw(amount)?;
+    let usdc_f = resolve_percent_amount(amount, || {
+        let t = taker.to_string();
+        async move { solana::get_usdc_balance(&t, None).await }
+    }).await?;
+    let usdc_str = format!("{usdc_f:.2}");
+    let raw = jupiter::usdc_to_raw(&usdc_str)?;
     let order = jupiter::get_order(jupiter::USDC_MINT, gm_mint, &raw, taker).await?;
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
     let result = jupiter::execute_order(w, &order).await?;
@@ -753,7 +820,7 @@ async fn execute_single_buy(
         .as_deref()
         .map(|r| jupiter::format_amount(r, gm_dec))
         .unwrap_or(out_fmt);
-    let desc = format!("{} {} for {} USDC", final_out, sym, amount);
+    let desc = format!("{} {} for {} USDC", final_out, sym, usdc_str);
     Ok((desc, result.signature))
 }
 
@@ -766,7 +833,16 @@ async fn execute_single_sell(
     amount: &str,
     gm_dec: u8,
 ) -> Result<(String, Option<String>)> {
-    let raw = jupiter::token_to_raw(amount, gm_dec)?;
+    let sell_f = resolve_percent_amount(amount, || {
+        let t = taker.to_string();
+        let m = gm_mint.to_string();
+        async move {
+            let bal = solana::get_balance(&t, &m, None).await?;
+            Ok(bal.balance)
+        }
+    }).await?;
+    let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
+    let raw = jupiter::token_to_raw(&sell_str, gm_dec)?;
     let order = jupiter::get_order(gm_mint, jupiter::USDC_MINT, &raw, taker).await?;
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
     let result = jupiter::execute_order(w, &order).await?;
@@ -775,6 +851,6 @@ async fn execute_single_sell(
         .as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
         .unwrap_or(out_fmt);
-    let desc = format!("{} {} → {} USDC", amount, sym, final_out);
+    let desc = format!("{} {} → {} USDC", sell_str, sym, final_out);
     Ok((desc, result.signature))
 }
