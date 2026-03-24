@@ -38,11 +38,16 @@ pub enum GmAction {
 }
 
 pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
+    // Price only needs the Ondo API — skip token list fetch (~170ms saved)
+    if let GmAction::Price { ref symbol } = action {
+        return price(symbol).await;
+    }
+
     let tokens = token_list::get_token_list().await;
 
     match action {
         GmAction::List => list_tokens(&tokens),
-        GmAction::Price { symbol } => price(&symbol).await,
+        GmAction::Price { .. } => unreachable!(),
         GmAction::Balance { wallet, token } => balance(rpc_url, &wallet, token.as_deref(), &tokens).await,
         GmAction::Info { symbol } => info(rpc_url, &symbol, &tokens).await,
         GmAction::Portfolio { wallet } => portfolio(rpc_url, &wallet, &tokens).await,
@@ -53,8 +58,8 @@ fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     println!("{:<12} {:<44} ETH ADDRESS", "SYMBOL", "BSC ADDRESS");
     println!("{}", "-".repeat(100));
     for t in tokens {
-        let bsc = t.bsc_address.map(|a| format!("{a}")).unwrap_or_else(|| "-".into());
-        let eth = t.eth_address.map(|a| format!("{a}")).unwrap_or_else(|| "-".into());
+        let bsc = t.bsc_address.as_ref().map(ToString::to_string).unwrap_or_else(|| "-".into());
+        let eth = t.eth_address.as_ref().map(ToString::to_string).unwrap_or_else(|| "-".into());
         println!("{:<12} {:<44} {}", t.symbol, bsc, eth);
     }
     println!("\nTotal: {} tokens", tokens.len());
@@ -109,10 +114,10 @@ async fn price(symbol: &str) -> Result<()> {
                 println!("  52w Range:         ${} — ${}", lo, hi);
             }
             if let Some(vol) = &um.volume {
-                println!("  Volume:            {}", format_volume(vol));
+                println!("  Volume:            {}", format_compact_usd(vol));
             }
             if let Some(cap) = &um.market_cap {
-                println!("  Market Cap:        {}", format_market_cap(cap));
+                println!("  Market Cap:        {}", format_compact_usd(cap));
             }
         }
     }
@@ -247,29 +252,18 @@ async fn portfolio(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEnt
     Ok(())
 }
 
-fn format_volume(v: &str) -> String {
+fn format_compact_usd(v: &str) -> String {
     let n: f64 = v.parse().unwrap_or(0.0);
-    if n >= 1_000_000_000.0 {
-        format!("${:.2}B", n / 1_000_000_000.0)
-    } else if n >= 1_000_000.0 {
-        format!("${:.2}M", n / 1_000_000.0)
-    } else if n >= 1_000.0 {
-        format!("${:.1}K", n / 1_000.0)
+    if n >= 1e12 {
+        format!("${:.2}T", n / 1e12)
+    } else if n >= 1e9 {
+        format!("${:.2}B", n / 1e9)
+    } else if n >= 1e6 {
+        format!("${:.2}M", n / 1e6)
+    } else if n >= 1e3 {
+        format!("${:.1}K", n / 1e3)
     } else {
-        v.to_string()
-    }
-}
-
-fn format_market_cap(v: &str) -> String {
-    let n: f64 = v.parse().unwrap_or(0.0);
-    if n >= 1_000_000_000_000.0 {
-        format!("${:.2}T", n / 1_000_000_000_000.0)
-    } else if n >= 1_000_000_000.0 {
-        format!("${:.2}B", n / 1_000_000_000.0)
-    } else if n >= 1_000_000.0 {
-        format!("${:.2}M", n / 1_000_000.0)
-    } else {
-        format!("${}", v)
+        format!("${v}")
     }
 }
 

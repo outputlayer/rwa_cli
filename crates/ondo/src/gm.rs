@@ -20,7 +20,7 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
 
     let normalized = symbol.to_uppercase();
     let lookup = if normalized.ends_with("ON") {
-        normalized.clone()
+        normalized
     } else {
         format!("{normalized}ON")
     };
