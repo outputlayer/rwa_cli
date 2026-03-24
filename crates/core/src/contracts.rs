@@ -19,6 +19,9 @@ pub const GM_LIMIT_ORDER: Address = address!("96b525B1a93f31E65F4aAf18C53842eD28
 /// OndoIDRegistry on BNB Chain.
 pub const ONDO_ID_REGISTRY: Address = address!("898128f9f22c0192da0c5acd394d9eeac461d911");
 
+/// Multicall3 — universal batching contract (same address on all EVM chains).
+pub const MULTICALL3: Address = address!("cA11bde05977b3631167028862bE2a173976CA11");
+
 // ─── Solidity interfaces (ABI bindings) ─────────────────────────────────────
 
 sol! {
@@ -33,14 +36,22 @@ sol! {
         function allowance(address owner, address spender) external view returns (uint256);
     }
 
-    /// Ondo SyntheticSharesOracle — returns per-token oracle data.
-    /// On-chain verified: selector 0x41fee44a returns (uint256, uint256).
+    /// Ondo SyntheticSharesOracle — official on-chain oracle for GM token sValue.
+    /// sValue (shares-per-token multiplier) is the core pricing input.
+    /// GM Token Price = Underlying Equity Market Price × sValue
     #[sol(rpc)]
     interface ISyntheticSharesOracle {
+        /// Legacy: returns (sharesPerToken, field2) for a single token.
         function assetData(address token) external view returns (
             uint256 sharesPerToken,
             uint256 field2
         );
+
+        /// Get sValue for a single token (18 decimals).
+        function getSValue(address token) external view returns (uint128);
+
+        /// Batch: get sValue for multiple tokens in one call.
+        function getSValueBatch(address[] calldata tokens) external view returns (uint128[]);
     }
 
     /// Ondo GMTokenManager — subscribe (mint) and redeem.
@@ -51,18 +62,21 @@ sol! {
         function ondoIDRegistry() external view returns (address);
     }
 
-    /// Chainlink AggregatorV3Interface — standard price feed interface.
+    /// Multicall3 — batch multiple calls into one RPC request.
     #[sol(rpc)]
-    interface IAggregatorV3 {
-        function latestRoundData() external view returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-        function decimals() external view returns (uint8);
-        function description() external view returns (string);
+    interface IMulticall3 {
+        struct Call3 {
+            address target;
+            bool allowFailure;
+            bytes callData;
+        }
+
+        struct Result {
+            bool success;
+            bytes returnData;
+        }
+
+        function aggregate3(Call3[] calldata calls) external payable returns (Result[] memory returnData);
     }
 
     /// Ondo GMTokenLimitOrder — limit order functions.

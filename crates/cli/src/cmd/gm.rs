@@ -8,18 +8,10 @@ pub enum GmAction {
     /// List all available GM tokens
     List,
 
-    /// Get token price from Chainlink Tokenized Equity Feed (ETH Mainnet)
+    /// Get sValue (shares-per-token multiplier) from SyntheticSharesOracle
     Price {
-        /// Token symbol (e.g. TSLA, TSLAon, SPY, QQQ, CRCL)
+        /// Token symbol (e.g. TSLA, TSLAon) — or "all" for batch query
         symbol: String,
-
-        /// Custom Chainlink feed address (overrides built-in registry)
-        #[arg(short, long)]
-        feed: Option<String>,
-
-        /// Ethereum RPC URL (default: public ETH RPC)
-        #[arg(long, env = "RWA_ETH_RPC_URL")]
-        eth_rpc_url: Option<String>,
     },
 
     /// Check GM token balances for a wallet (BSC)
@@ -44,11 +36,7 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
 
     match action {
         GmAction::List => list_tokens(&tokens),
-        GmAction::Price { symbol, feed, eth_rpc_url } => {
-            let eth_rpc = eth_rpc_url
-                .unwrap_or_else(|| rwa_core::chain::Chain::EthereumMainnet.default_rpc_url().to_string());
-            price(&eth_rpc, &symbol, feed.as_deref(), &tokens).await
-        }
+        GmAction::Price { symbol } => price(rpc_url, &symbol, &tokens).await,
         GmAction::Balance { wallet, token } => balance(rpc_url, &wallet, token.as_deref(), &tokens).await,
         GmAction::Info { symbol } => info(rpc_url, &symbol, &tokens).await,
     }
@@ -66,17 +54,36 @@ fn list_tokens(tokens: &[token_list::GmTokenEntry]) -> Result<()> {
     Ok(())
 }
 
-async fn price(eth_rpc_url: &str, symbol: &str, feed: Option<&str>, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
-    let entry = gm::resolve_token(symbol, tokens)?;
-    let eth_provider = provider::create_provider(eth_rpc_url).await?;
+async fn price(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let provider = provider::create_provider(rpc_url).await?;
 
-    let feed_override: Option<Address> = feed.map(|f| f.parse()).transpose()?;
+    if symbol.eq_ignore_ascii_case("all") {
+        // Batch: query sValue for all tokens with BSC addresses
+        let addrs: Vec<Address> = tokens
+            .iter()
+            .filter_map(|t| t.bsc_address)
+            .collect();
+        let results = oracle::get_svalue_batch(&provider, &addrs).await?;
 
-    let tp = oracle::get_token_price(&eth_provider, &entry.symbol, feed_override).await?;
+        println!("{:<12} {}", "TOKEN", "sVALUE");
+        println!("{}", "-".repeat(40));
+        for (addr, sv) in &results {
+            if let Some(entry) = tokens.iter().find(|t| t.bsc_address == Some(*addr)) {
+                println!("{:<12} {:.6}", entry.symbol, sv.value);
+            }
+        }
+        println!("\nTotal: {} tokens", results.len());
+    } else {
+        let entry = gm::resolve_token(symbol, tokens)?;
+        let address = entry.bsc_address
+            .ok_or_else(|| eyre::eyre!("No BSC address for {}", entry.symbol))?;
+        let sv = oracle::get_svalue(&provider, address).await?;
 
-    println!("{}:", entry.symbol);
-    println!("  Token price (USD): ${:.2}  ({})", tp.token_price_usd, tp.feed_description);
-    println!("  Feed updated:      {}", tp.price_updated_at);
+        println!("{}:", entry.symbol);
+        println!("  sValue:            {:.6}", sv.value);
+        println!("  sValue (raw):      {}", sv.raw);
+        println!("  Formula:           GM Price = Equity Market Price × {:.6}", sv.value);
+    }
 
     Ok(())
 }
@@ -123,7 +130,8 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
         println!("ETH Address:     {}", eth);
     }
     println!("Decimals:        {}", token_info.decimals);
-    println!("Shares/Token:    {}", format_u256_decimals(oracle_data.shares_per_token, 18));
+    println!("sValue:          {:.6}", oracle_data.value);
+    println!("sValue (raw):    {}", format_u256_decimals(oracle_data.raw, 18));
     println!("Explorer:        {}", rwa_core::chain::Chain::BnbMainnet.explorer_url(address));
 
     Ok(())
