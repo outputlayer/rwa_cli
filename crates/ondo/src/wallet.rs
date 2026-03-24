@@ -31,7 +31,8 @@ impl Wallet {
         if bytes.len() != 64 {
             return Err(eyre!("Invalid key file: expected 64 bytes, got {}", bytes.len()));
         }
-        let secret: [u8; 32] = bytes[..32].try_into().unwrap();
+        let secret: [u8; 32] = bytes[..32].try_into()
+            .map_err(|_| eyre!("Failed to extract secret key from file"))?;
         let signing_key = SigningKey::from_bytes(&secret);
         Ok(Self { signing_key })
     }
@@ -41,8 +42,10 @@ impl Wallet {
         let bytes = bs58::decode(key_str).into_vec()
             .map_err(|e| eyre!("Invalid base58 private key: {e}"))?;
         let secret: [u8; 32] = match bytes.len() {
-            64 => bytes[..32].try_into().unwrap(),
-            32 => bytes.try_into().unwrap(),
+            64 => bytes[..32].try_into()
+                .map_err(|_| eyre!("Failed to extract secret key"))?,
+            32 => bytes.try_into()
+                .map_err(|_| eyre!("Failed to convert to secret key"))?,
             n => return Err(eyre!("Invalid key length: expected 32 or 64 bytes, got {n}")),
         };
         let signing_key = SigningKey::from_bytes(&secret);
@@ -57,7 +60,8 @@ impl Wallet {
         let seed = mnemonic.to_seed("");
 
         // SLIP-10 master key generation
-        let mut mac = HmacSha512::new_from_slice(SLIP10_ED25519_SEED).unwrap();
+        let mut mac = HmacSha512::new_from_slice(SLIP10_ED25519_SEED)
+            .map_err(|e| eyre!("HMAC init failed: {e}"))?;
         mac.update(&seed);
         let result = mac.finalize().into_bytes();
         let mut secret = result[..32].to_vec();
@@ -66,7 +70,8 @@ impl Wallet {
         // Derive hardened child keys for m/44'/501'/0'/0'
         for &index in SOLANA_DERIVATION_PATH {
             let hardened = index | 0x80000000;
-            let mut mac = HmacSha512::new_from_slice(&chain_code).unwrap();
+            let mut mac = HmacSha512::new_from_slice(&chain_code)
+                .map_err(|e| eyre!("HMAC derive failed: {e}"))?;
             mac.update(&[0x00]);
             mac.update(&secret);
             mac.update(&hardened.to_be_bytes());
@@ -75,7 +80,8 @@ impl Wallet {
             chain_code = result[32..].to_vec();
         }
 
-        let secret_bytes: [u8; 32] = secret.try_into().unwrap();
+        let secret_bytes: [u8; 32] = secret.try_into()
+            .map_err(|_| eyre!("SLIP-10 derivation produced invalid key length"))?;
         let signing_key = SigningKey::from_bytes(&secret_bytes);
         Ok(Self { signing_key })
     }

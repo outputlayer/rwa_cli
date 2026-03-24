@@ -64,8 +64,6 @@ struct TokenInfo {
 #[serde(rename_all = "camelCase")]
 struct TokenAmount {
     ui_amount: Option<f64>,
-    amount: String,
-    decimals: u8,
 }
 
 #[derive(Deserialize)]
@@ -144,11 +142,8 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
 #[derive(Debug, Clone)]
 pub struct SolanaTokenBalance {
     pub symbol: String,
-    pub name: String,
     pub mint: String,
-    pub balance_raw: String,
     pub balance: f64,
-    pub decimals: u8,
 }
 
 /// Fetch all GM token balances for a Solana wallet.
@@ -204,11 +199,8 @@ pub async fn get_all_balances(
         if let Some(entry) = mint_map.get(info.mint.as_str()) {
             balances.push(SolanaTokenBalance {
                 symbol: entry.symbol.clone(),
-                name: entry.name.clone(),
                 mint: info.mint.clone(),
-                balance_raw: info.token_amount.amount.clone(),
                 balance: amount,
-                decimals: info.token_amount.decimals,
             });
         }
     }
@@ -258,10 +250,7 @@ pub async fn get_balance(
     let info = &acc.account.data.parsed.info;
     Ok(SolanaTokenBalance {
         symbol: String::new(),
-        name: String::new(),
         mint: info.mint.clone(),
-        balance_raw: info.token_amount.amount.clone(),
         balance: info.token_amount.ui_amount.unwrap_or(0.0),
-        decimals: info.token_amount.decimals,
     })
 }

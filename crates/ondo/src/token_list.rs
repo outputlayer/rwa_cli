@@ -1,7 +1,6 @@
 use eyre::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
-use tracing::warn;
 
 const TOKENLIST_URL: &str = "https://raw.githubusercontent.com/ondoprotocol/ondo-global-markets-token-list/main/tokenlist.json";
 
@@ -21,11 +20,6 @@ struct TokenListJson {
 
 #[derive(Deserialize)]
 struct TokenListItem {
-    #[allow(dead_code)]
-    #[serde(rename = "chainId")]
-    chain_id: u64,
-    #[allow(dead_code)]
-    address: String,
     name: String,
     symbol: String,
     decimals: u8,
@@ -36,7 +30,7 @@ pub async fn get_token_list() -> Vec<GmTokenEntry> {
     match fetch_token_list().await {
         Ok(tokens) => tokens,
         Err(e) => {
-            warn!("Failed to fetch token list from GitHub, using static fallback: {e}");
+            eprintln!("Warning: failed to fetch token list, using static fallback: {e}");
             static_token_list()
         }
     }
@@ -66,12 +60,16 @@ fn group_tokens(items: Vec<TokenListItem>) -> Vec<GmTokenEntry> {
     let mut map: HashMap<String, GmTokenEntry> = HashMap::new();
 
     for item in items {
-        // We only need one entry per symbol (any chain_id gives us symbol/name/decimals)
-        map.entry(item.symbol.clone()).or_insert_with(|| GmTokenEntry {
-            symbol: item.symbol.clone(),
-            name: item.name.clone(),
-            decimals: item.decimals,
-            solana_address: sol_lookup.get(item.symbol.as_str()).map(|s| s.to_string()),
+        // One entry per symbol (any chainId gives us symbol/name/decimals)
+        let sym_upper = item.symbol.clone();
+        map.entry(sym_upper).or_insert_with(|| {
+            let solana_address = sol_lookup.get(item.symbol.as_str()).map(|s| s.to_string());
+            GmTokenEntry {
+                symbol: item.symbol,
+                name: item.name,
+                decimals: item.decimals,
+                solana_address,
+            }
         });
     }
 

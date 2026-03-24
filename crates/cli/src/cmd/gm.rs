@@ -171,9 +171,7 @@ pub fn hours(json: bool) -> Result<()> {
     let hour = now.hour();
     let min = now.minute();
 
-    let closed = matches!(wd, chrono::Weekday::Sat)
-        || (wd == chrono::Weekday::Sun && hour < 20)
-        || (wd == chrono::Weekday::Fri && hour >= 20);
+    let closed = !is_market_open();
 
     let time_str = now.format("%A %I:%M %p ET").to_string();
 
@@ -396,7 +394,7 @@ where
 
 /// Check if Ondo GM trading is currently open.
 /// Trading window: Sunday 8 PM ET → Friday 8 PM ET (24/5).
-fn check_trading_hours() -> Result<()> {
+fn is_market_open() -> bool {
     use chrono::Timelike;
     use chrono_tz::US::Eastern;
 
@@ -404,11 +402,15 @@ fn check_trading_hours() -> Result<()> {
     let wd = now.weekday();
     let hour = now.hour();
 
-    let closed = matches!(wd, chrono::Weekday::Sat)
+    !(matches!(wd, chrono::Weekday::Sat)
         || (wd == chrono::Weekday::Sun && hour < 20)
-        || (wd == chrono::Weekday::Fri && hour >= 20);
+        || (wd == chrono::Weekday::Fri && hour >= 20))
+}
 
-    if closed {
+fn check_trading_hours() -> Result<()> {
+    if !is_market_open() {
+        use chrono_tz::US::Eastern;
+        let now = chrono::Utc::now().with_timezone(&Eastern);
         return Err(eyre::eyre!(
             "Ondo GM market is closed right now.\n  \
              Trading hours: Sunday 8 PM — Friday 8 PM ET (24/5)\n  \
