@@ -64,13 +64,13 @@ pub enum GmAction {
     List,
 }
 
-pub async fn execute(action: GmAction, json: bool) -> Result<()> {
+pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours => hours(json),
-        GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, json).await,
-        GmAction::Buy { symbol, amount, yes } => buy(&symbol, &amount, yes, json).await,
-        GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json).await,
-        GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json).await,
+        GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, json, rpc_url).await,
+        GmAction::Buy { symbol, amount, yes } => buy(&symbol, &amount, yes, json, rpc_url).await,
+        GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json, rpc_url).await,
+        GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
         GmAction::List => list(json).await,
     }
@@ -223,7 +223,7 @@ pub fn hours(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn portfolio(wallet: Option<&str>, json: bool) -> Result<()> {
+pub async fn portfolio(wallet: Option<&str>, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     let pubkey = match wallet {
         Some(w) => {
@@ -236,16 +236,15 @@ pub async fn portfolio(wallet: Option<&str>, json: bool) -> Result<()> {
         None => load_wallet()?.pubkey(),
     };
 
-    let (balances, assets, sol_bal, usdc_bal) = tokio::join!(
-        solana::get_all_balances(&pubkey, &tokens, None),
-        api::fetch_assets(),
-        solana::get_sol_balance(&pubkey, None),
-        solana::get_usdc_balance(&pubkey, None)
+    let (portfolio_bal, assets) = tokio::join!(
+        solana::get_portfolio_balances(&pubkey, &tokens, rpc_url),
+        api::fetch_assets()
     );
-    let balances = balances?;
+    let portfolio_bal = portfolio_bal?;
     let assets = assets?;
-    let sol_bal = sol_bal.unwrap_or(0.0);
-    let usdc_bal = usdc_bal.unwrap_or(0.0);
+    let sol_bal = portfolio_bal.sol;
+    let usdc_bal = portfolio_bal.usdc;
+    let balances = portfolio_bal.gm_tokens;
 
     let mut positions = Vec::new();
     let mut total_value = 0.0;
@@ -427,7 +426,7 @@ fn check_trading_hours() -> Result<()> {
     Ok(())
 }
 
-async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
+async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
 
     if usdc_amount < MIN_USDC_AMOUNT {
@@ -435,8 +434,8 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
     }
 
     let (sol, usdc) = tokio::join!(
-        solana::get_sol_balance(pubkey, None),
-        solana::get_usdc_balance(pubkey, None)
+        solana::get_sol_balance(pubkey, rpc_url),
+        solana::get_usdc_balance(pubkey, rpc_url)
     );
     let sol = sol?;
     let usdc = usdc?;
@@ -460,10 +459,10 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64) -> Result<()> {
     Ok(())
 }
 
-async fn preflight_sell(pubkey: &str) -> Result<()> {
+async fn preflight_sell(pubkey: &str, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
 
-    let sol = solana::get_sol_balance(pubkey, None).await?;
+    let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     if sol < MIN_SOL_FOR_GAS {
         return Err(eyre::eyre!(
             "Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})\n  \
@@ -473,7 +472,7 @@ async fn preflight_sell(pubkey: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool) -> Result<()> {
+pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     check_trading_hours()?;
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
@@ -487,8 +486,9 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool) -> Res
         let sell_f = resolve_percent_amount(amount, || {
             let t = taker.clone();
             let m = gm_mint.clone();
+            let rpc = rpc_url.map(str::to_string);
             async move {
-                let bal = solana::get_balance(&t, &m, None).await?;
+                let bal = solana::get_balance(&t, &m, rpc.as_deref()).await?;
                 Ok(bal.balance)
             }
         }).await?;
@@ -498,7 +498,8 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool) -> Res
     } else {
         let buy_f = resolve_percent_amount(amount, || {
             let t = taker.clone();
-            async move { solana::get_usdc_balance(&t, None).await }
+            let rpc = rpc_url.map(str::to_string);
+            async move { solana::get_usdc_balance(&t, rpc.as_deref()).await }
         }).await?;
         let buy_str = format!("{buy_f:.2}");
         let raw = jupiter::usdc_to_raw(&buy_str)?;
@@ -554,7 +555,7 @@ fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()> {
+pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
@@ -562,11 +563,12 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()
 
     let usdc_f = resolve_percent_amount(amount, || {
         let t = taker.clone();
-        async move { solana::get_usdc_balance(&t, None).await }
+        let rpc = rpc_url.map(str::to_string);
+        async move { solana::get_usdc_balance(&t, rpc.as_deref()).await }
     }).await?;
     let usdc_str = format!("{usdc_f:.2}");
 
-    preflight_buy(&taker, usdc_f).await?;
+    preflight_buy(&taker, usdc_f, rpc_url).await?;
 
     let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -624,21 +626,22 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()
     Ok(())
 }
 
-pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool) -> Result<()> {
+pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    preflight_sell(&taker).await?;
+    preflight_sell(&taker, rpc_url).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
     let sell_f = resolve_percent_amount(amount, || {
         let t = taker.clone();
         let m = gm_mint.clone();
+        let rpc = rpc_url.map(str::to_string);
         async move {
-            let bal = solana::get_balance(&t, &m, None).await?;
+            let bal = solana::get_balance(&t, &m, rpc.as_deref()).await?;
             Ok(bal.balance)
         }
     }).await?;

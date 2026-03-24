@@ -11,7 +11,10 @@ rwa-cli/
 │   ├── cli/           # CLI layer: clap commands, output formatting
 │   │   └── src/cmd/   # Command implementations (gm.rs, keys.rs)
 │   └── ondo/          # Ondo protocol: token list, Jupiter, Solana RPC, wallet
+│       └── src/       # api.rs, gm.rs, jupiter.rs, solana.rs, token_list.rs, wallet.rs
 ├── .claude/skills/    # Agent skills (rwa-trading.md)
+├── .github/           # copilot-instructions.md
+├── install.sh         # Cross-platform installer (installs Rust if missing)
 ├── Cargo.toml         # Workspace root with centralized dependencies
 └── CLAUDE.md          # This file
 ```
@@ -74,3 +77,12 @@ curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
 - `--json` flag on any command for machine-readable output
 - `-y` flag skips confirmation on buy/sell
 - Error handling: `eyre` for all error types
+- Solana RPC calls must be sequential (not concurrent) — public endpoints rate-limit aggressively
+- `rpc_call_with_retry` handles 429 retries with exponential backoff
+- Portfolio uses `get_portfolio_balances()` — sequential RPC with shared HTTP client
+
+## Cross-Platform
+
+- macOS + Linux: fully supported
+- Windows: works via WSL 2 or Git Bash; wallet file permissions (`0o600`) only enforced on Unix
+- Pure Rust dependencies: `rustls-tls`, `ed25519-dalek`, `bip39` — no native C deps

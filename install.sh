@@ -1,11 +1,16 @@
 #!/bin/sh
 # Install rwa — CLI for trading tokenized stocks on Solana
 # Usage: curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
+#
+# Environment variables:
+#   INSTALL_DIR   — target directory (default: ~/.cargo/bin)
+#   RWA_VERSION   — git ref to install (default: main)
 set -e
 
 REPO="user/rwa_cli"
 BIN_NAME="rwa"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.cargo/bin}"
+VERSION="${RWA_VERSION:-main}"
 
 # --- Detect OS and architecture ---
 detect_platform() {
@@ -28,37 +33,27 @@ detect_platform() {
     PLATFORM="${ARCH}-${OS}"
 }
 
-# --- Check for required tools ---
-check_deps() {
-    for cmd in curl tar; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo "Error: '$cmd' is required but not found" >&2
-            exit 1
-        fi
-    done
-}
-
-# --- Install from source (requires Rust) ---
-install_from_source() {
+# --- Install Rust if not present ---
+ensure_rust() {
     if command -v cargo >/dev/null 2>&1; then
-        echo "Installing $BIN_NAME from source..."
-        cargo install --git "https://github.com/${REPO}" --bin "$BIN_NAME"
-        echo ""
-        echo "Installed: $(which $BIN_NAME)"
-        echo "Version:   $($BIN_NAME --version)"
         return 0
     fi
-    return 1
+
+    echo "Rust not found. Installing via rustup..."
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Error: 'curl' is required to install Rust" >&2
+        exit 1
+    fi
+
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --quiet
+    # shellcheck disable=SC1091
+    . "$HOME/.cargo/env"
 }
 
-# --- Install Rust if not present ---
-install_rust() {
-    if ! command -v cargo >/dev/null 2>&1; then
-        echo "Rust not found. Installing via rustup..."
-        curl -fsSL https://sh.rustup.rs | sh -s -- -y --quiet
-        # shellcheck disable=SC1091
-        . "$HOME/.cargo/env"
-    fi
+# --- Install from source ---
+install_from_source() {
+    echo "Installing $BIN_NAME from source (ref: $VERSION)..."
+    cargo install --git "https://github.com/${REPO}" --rev "$VERSION" --bin "$BIN_NAME"
 }
 
 # --- Main ---
@@ -69,12 +64,20 @@ main() {
     detect_platform
     echo "Platform: $PLATFORM"
 
-    # Try source install (most reliable for any platform)
-    install_rust
+    ensure_rust
     install_from_source
 
     echo ""
-    echo "Setup:"
+    if command -v "$BIN_NAME" >/dev/null 2>&1; then
+        echo "Installed: $(command -v $BIN_NAME)"
+        echo "Version:   $($BIN_NAME --version 2>/dev/null || echo 'unknown')"
+    else
+        echo "Installed to: $INSTALL_DIR/$BIN_NAME"
+        echo "Make sure $INSTALL_DIR is in your PATH"
+    fi
+
+    echo ""
+    echo "Quick start:"
     echo "  rwa keys generate     # Create Solana wallet"
     echo "  rwa gm list           # See all 264 tokenized stocks"
     echo "  rwa gm hours          # Check if market is open"

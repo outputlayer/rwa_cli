@@ -39,7 +39,7 @@ pub async fn run() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Gm { action } => cmd::gm::execute(action, json).await,
+        Commands::Gm { action } => cmd::gm::execute(action, json, cli.rpc_url.as_deref()).await,
         Commands::Keys { action } => cmd::keys::execute(action).await,
     }
 }
