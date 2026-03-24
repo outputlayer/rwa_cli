@@ -59,6 +59,9 @@ pub enum GmAction {
         #[arg(short, long, default_value = "1M")]
         range: String,
     },
+
+    /// List all available GM tokens
+    List,
 }
 
 pub async fn execute(action: GmAction, json: bool) -> Result<()> {
@@ -69,6 +72,7 @@ pub async fn execute(action: GmAction, json: bool) -> Result<()> {
         GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json).await,
         GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json).await,
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
+        GmAction::List => list(json).await,
     }
 }
 
@@ -142,6 +146,13 @@ struct HistoryJson {
 struct HistoryCandleJson {
     timestamp: u64,
     price: f64,
+}
+
+#[derive(Serialize)]
+struct ListItemJson<'a> {
+    symbol: &'a str,
+    name: &'a str,
+    mint: &'a str,
 }
 
 fn json_out(v: &impl Serialize) -> Result<()> {
@@ -721,5 +732,28 @@ async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
     println!("  Low:       ${:.2}", low);
     println!("  Change:    {:+.2}%", change_pct);
 
+    Ok(())
+}
+
+async fn list(json: bool) -> Result<()> {
+    let tokens = token_list::get_token_list().await;
+
+    if json {
+        let items: Vec<_> = tokens.iter().map(|t| ListItemJson {
+            symbol: &t.symbol,
+            name: &t.name,
+            mint: t.solana_address.as_deref().unwrap_or(""),
+        }).collect();
+        return json_out(&items);
+    }
+
+    println!("{} GM tokens available\n", tokens.len());
+    for t in &tokens {
+        if t.name.is_empty() {
+            println!("  {}", t.symbol);
+        } else {
+            println!("  {:<12} {}", t.symbol, t.name);
+        }
+    }
     Ok(())
 }

@@ -36,6 +36,7 @@ rwa gm portfolio                      # Portfolio (local wallet)
 rwa gm portfolio <WALLET>             # Portfolio (any address)
 rwa gm history TSLAon                 # Price history (default 1M)
 rwa gm history TSLAon -r 1W           # Price history (1D/1W/1M/3M/1Y/ALL)
+rwa gm list                           # List all 264 available tokens
 rwa --json gm hours                   # JSON output for any command
 rwa keys generate                     # Generate wallet
 rwa keys show                         # Show address + key file path

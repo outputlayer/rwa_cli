@@ -10,6 +10,7 @@ rwa gm buy <SYMBOL> <AMOUNT> -y       # Execute buy (USDC -> token)
 rwa gm sell <SYMBOL> <AMOUNT> -y      # Execute sell (token -> USDC)
 rwa gm portfolio [WALLET]             # Positions + PnL (default: local wallet)
 rwa gm history <SYMBOL> [-r RANGE]    # Price history (1D, 1W, 1M, 3M, 1Y, ALL)
+rwa gm list                           # List all 264 available tokens
 ```
 
 Add `--json` for machine-readable output on any command.
