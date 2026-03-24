@@ -1,7 +1,6 @@
 use clap::Subcommand;
 use eyre::Result;
 use rwa_ondo::wallet::{self, Wallet};
-use rwa_ondo::solana;
 
 #[derive(Subcommand, Debug)]
 pub enum KeysAction {
@@ -25,9 +24,6 @@ pub enum KeysAction {
 
     /// Show the active wallet address
     Show,
-
-    /// Show SOL and USDC balances for the active wallet
-    Balance,
 }
 
 pub async fn execute(action: KeysAction) -> Result<()> {
@@ -37,7 +33,6 @@ pub async fn execute(action: KeysAction) -> Result<()> {
             import(file, private_key, seed_phrase).await
         }
         KeysAction::Show => show().await,
-        KeysAction::Balance => balance().await,
     }
 }
 
@@ -90,23 +85,5 @@ async fn import(
 async fn show() -> Result<()> {
     let w = Wallet::load_default()?;
     println!("{}", w.pubkey());
-    Ok(())
-}
-
-async fn balance() -> Result<()> {
-    let w = Wallet::load_default()?;
-    let pubkey = w.pubkey();
-
-    let (sol, usdc) = tokio::join!(
-        solana::get_sol_balance(&pubkey, None),
-        solana::get_usdc_balance(&pubkey, None)
-    );
-
-    let sol = sol?;
-    let usdc = usdc?;
-
-    println!("Wallet:  {}", pubkey);
-    println!("SOL:     {:.6}", sol);
-    println!("USDC:    {:.2}", usdc);
     Ok(())
 }
