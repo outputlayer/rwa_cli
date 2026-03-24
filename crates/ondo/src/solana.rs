@@ -6,6 +6,8 @@ use crate::token_list::GmTokenEntry;
 const SOLANA_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 /// Ondo GM tokens use Token-2022 (Token Extensions) on Solana.
 const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/// USDC on Solana
+pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 #[derive(Serialize)]
 struct RpcRequest<'a> {
@@ -64,6 +66,78 @@ struct TokenAmount {
     ui_amount: Option<f64>,
     amount: String,
     decimals: u8,
+}
+
+#[derive(Deserialize)]
+struct GetBalanceResult {
+    value: u64,
+}
+
+/// Get SOL balance in SOL (not lamports).
+pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
+    let url = rpc_url.unwrap_or(SOLANA_RPC_URL);
+
+    let req = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getBalance",
+        params: serde_json::json!([wallet]),
+    };
+
+    let resp: RpcResponse<GetBalanceResult> = reqwest::Client::new()
+        .post(url)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    if let Some(err) = resp.error {
+        return Err(eyre!("Solana RPC error: {}", err.message));
+    }
+
+    let result = resp.result
+        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
+
+    Ok(result.value as f64 / 1_000_000_000.0)
+}
+
+/// Get USDC balance for a wallet on Solana.
+pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
+    let url = rpc_url.unwrap_or(SOLANA_RPC_URL);
+
+    let req = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTokenAccountsByOwner",
+        params: serde_json::json!([
+            wallet,
+            { "mint": USDC_MINT },
+            { "encoding": "jsonParsed" }
+        ]),
+    };
+
+    let resp: RpcResponse<GetTokenAccountsResult> = reqwest::Client::new()
+        .post(url)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    if let Some(err) = resp.error {
+        return Err(eyre!("Solana RPC error: {}", err.message));
+    }
+
+    let accounts = resp.result
+        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
+
+    match accounts.value.first() {
+        Some(acc) => Ok(acc.account.data.parsed.info.token_amount.ui_amount.unwrap_or(0.0)),
+        None => Ok(0.0),
+    }
 }
 
 /// A Solana SPL token balance.

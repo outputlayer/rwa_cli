@@ -497,14 +497,11 @@ async fn quote(symbol: &str, amount: &str, is_sell: bool, tokens: &[token_list::
     let out_fmt = jupiter::format_amount(&order.out_amount, out_dec);
 
     println!("Quote: {} {} → {} {}", in_fmt, in_label, out_fmt, out_label);
-    if let Some(usd_in) = order.in_usd_value {
+    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
+        let slippage = if usd_in > 0.0 { (usd_out - usd_in) / usd_in * 100.0 } else { 0.0 };
         println!("  Input value:   ${:.2}", usd_in);
-    }
-    if let Some(usd_out) = order.out_usd_value {
         println!("  Output value:  ${:.2}", usd_out);
-    }
-    if let Some(impact) = order.price_impact {
-        println!("  Price impact:  {:.3}%", impact * 100.0);
+        println!("  Slippage:      {:.2}%", slippage);
     }
 
     Ok(())
@@ -523,9 +520,12 @@ async fn buy(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) ->
 
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
     println!("You will receive ~{} {}", out_fmt, sym);
-    if let Some(impact) = order.price_impact {
-        if impact > 0.01 {
-            println!("⚠ High price impact: {:.2}%", impact * 100.0);
+    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
+        if usd_in > 0.0 {
+            let slippage = (usd_out - usd_in) / usd_in * 100.0;
+            if slippage < -1.0 {
+                println!("⚠ High slippage: {:.2}%", slippage);
+            }
         }
     }
 
@@ -557,9 +557,12 @@ async fn sell(symbol: &str, amount: &str, tokens: &[token_list::GmTokenEntry]) -
 
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
     println!("You will receive ~{} USDC", out_fmt);
-    if let Some(impact) = order.price_impact {
-        if impact > 0.01 {
-            println!("⚠ High price impact: {:.2}%", impact * 100.0);
+    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
+        if usd_in > 0.0 {
+            let slippage = (usd_out - usd_in) / usd_in * 100.0;
+            if slippage < -1.0 {
+                println!("⚠ High slippage: {:.2}%", slippage);
+            }
         }
     }
 

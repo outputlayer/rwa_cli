@@ -52,6 +52,11 @@ rand = "0.8"
 base64 = "0.22"
 bs58 = "0.5"
 
+# BIP39 / SLIP-10 (mnemonic import)
+bip39 = "2"
+hmac = "0.12"
+sha2 = "0.10"
+
 # Misc
 hex = "0.4"
 dirs = "6"

@@ -1,6 +1,15 @@
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use eyre::{Result, eyre};
+use hmac::{Hmac, Mac};
+use sha2::Sha512;
 use std::path::{Path, PathBuf};
+
+type HmacSha512 = Hmac<Sha512>;
+
+/// SLIP-10 master key derivation constant for Ed25519.
+const SLIP10_ED25519_SEED: &[u8] = b"ed25519 seed";
+/// Standard Solana derivation path: m/44'/501'/0'/0'
+const SOLANA_DERIVATION_PATH: &[u32] = &[44, 501, 0, 0];
 
 /// A Solana wallet backed by an Ed25519 keypair.
 pub struct Wallet {
@@ -24,6 +33,50 @@ impl Wallet {
         }
         let secret: [u8; 32] = bytes[..32].try_into().unwrap();
         let signing_key = SigningKey::from_bytes(&secret);
+        Ok(Self { signing_key })
+    }
+
+    /// Import from a base58-encoded private key (64-byte keypair or 32-byte secret).
+    pub fn from_private_key(key_str: &str) -> Result<Self> {
+        let bytes = bs58::decode(key_str).into_vec()
+            .map_err(|e| eyre!("Invalid base58 private key: {e}"))?;
+        let secret: [u8; 32] = match bytes.len() {
+            64 => bytes[..32].try_into().unwrap(),
+            32 => bytes.try_into().unwrap(),
+            n => return Err(eyre!("Invalid key length: expected 32 or 64 bytes, got {n}")),
+        };
+        let signing_key = SigningKey::from_bytes(&secret);
+        Ok(Self { signing_key })
+    }
+
+    /// Import from a BIP39 mnemonic phrase (12 or 24 words).
+    /// Derives via SLIP-10 at m/44'/501'/0'/0' (standard Solana path).
+    pub fn from_mnemonic(phrase: &str) -> Result<Self> {
+        let mnemonic: bip39::Mnemonic = phrase.parse()
+            .map_err(|e| eyre!("Invalid mnemonic: {e}"))?;
+        let seed = mnemonic.to_seed("");
+
+        // SLIP-10 master key generation
+        let mut mac = HmacSha512::new_from_slice(SLIP10_ED25519_SEED).unwrap();
+        mac.update(&seed);
+        let result = mac.finalize().into_bytes();
+        let mut secret = result[..32].to_vec();
+        let mut chain_code = result[32..].to_vec();
+
+        // Derive hardened child keys for m/44'/501'/0'/0'
+        for &index in SOLANA_DERIVATION_PATH {
+            let hardened = index | 0x80000000;
+            let mut mac = HmacSha512::new_from_slice(&chain_code).unwrap();
+            mac.update(&[0x00]);
+            mac.update(&secret);
+            mac.update(&hardened.to_be_bytes());
+            let result = mac.finalize().into_bytes();
+            secret = result[..32].to_vec();
+            chain_code = result[32..].to_vec();
+        }
+
+        let secret_bytes: [u8; 32] = secret.try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(&secret_bytes);
         Ok(Self { signing_key })
     }
 

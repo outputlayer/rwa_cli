@@ -22,7 +22,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: cmd::gm::GmAction,
     },
-    /// Solana wallet management (generate, import, show)
+    /// Solana wallet management (generate, import, show, balance)
     Keys {
         #[command(subcommand)]
         action: cmd::keys::KeysAction,
