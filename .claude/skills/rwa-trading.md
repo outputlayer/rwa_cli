@@ -4,10 +4,10 @@
 
 ```bash
 # From source (requires Rust):
-cargo install --git https://github.com/user/rwa_cli --bin rwa
+cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 
 # Or via install script (installs Rust if missing):
-curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 ```
 
 ## Agent Install
@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
 For automated agent workflows, ensure `rwa` is on `$PATH`:
 ```bash
 # Non-interactive install:
-curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 # Verify:
 rwa --version
 ```

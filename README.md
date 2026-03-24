@@ -8,10 +8,10 @@ CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https:
 
 ```bash
 # From source (requires Rust 1.91+):
-cargo install --git https://github.com/user/rwa_cli --bin rwa
+cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 
 # Or via install script:
-curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 ```
 
 ## Quick Start

@@ -1,13 +1,13 @@
 #!/bin/sh
 # Install rwa — CLI for trading tokenized stocks on Solana
-# Usage: curl -fsSL https://raw.githubusercontent.com/user/rwa_cli/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 #
 # Environment variables:
 #   INSTALL_DIR   — target directory (default: ~/.cargo/bin)
 #   RWA_VERSION   — git ref to install (default: main)
 set -e
 
-REPO="user/rwa_cli"
+REPO="outputlayer/rwa_cli"
 BIN_NAME="rwa"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.cargo/bin}"
 VERSION="${RWA_VERSION:-main}"

@@ -9,7 +9,7 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.91"
 description = "CLI for trading tokenized stocks & ETFs (Ondo GM) on Solana via Jupiter"
-repository = "https://github.com/user/rwa_cli"
+repository = "https://github.com/outputlayer/rwa_cli"
 keywords = ["solana", "cli", "trading", "rwa", "ondo"]
 categories = ["command-line-utilities", "finance"]
 
