@@ -29,6 +29,12 @@ pub enum GmAction {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
     },
+
+    /// Show portfolio: balances × USD prices with 24h change
+    Portfolio {
+        /// Wallet address
+        wallet: String,
+    },
 }
 
 pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
@@ -39,6 +45,7 @@ pub async fn execute(action: GmAction, rpc_url: &str) -> Result<()> {
         GmAction::Price { symbol } => price(&symbol).await,
         GmAction::Balance { wallet, token } => balance(rpc_url, &wallet, token.as_deref(), &tokens).await,
         GmAction::Info { symbol } => info(rpc_url, &symbol, &tokens).await,
+        GmAction::Portfolio { wallet } => portfolio(rpc_url, &wallet, &tokens).await,
     }
 }
 
@@ -162,6 +169,84 @@ async fn info(rpc_url: &str, symbol: &str, tokens: &[token_list::GmTokenEntry]) 
     Ok(())
 }
 
+async fn portfolio(rpc_url: &str, wallet: &str, tokens: &[token_list::GmTokenEntry]) -> Result<()> {
+    let wallet_addr: Address = wallet.parse()?;
+    let provider = provider::create_provider(rpc_url).await?;
+
+    // Fetch balances and prices in parallel
+    let (balances, assets) = tokio::join!(
+        gm::get_all_balances(&provider, wallet_addr, tokens),
+        api::fetch_assets()
+    );
+    let balances = balances?;
+    let assets = assets?;
+
+    if balances.is_empty() {
+        println!("No GM token balances found for {wallet}");
+        return Ok(());
+    }
+
+    println!("Portfolio for {wallet}\n");
+    println!(
+        "{:<12} {:>14} {:>12} {:>16} {:>9}",
+        "TOKEN", "BALANCE", "PRICE", "VALUE (USD)", "24h %"
+    );
+    println!("{}", "─".repeat(67));
+
+    let mut total_value = 0.0;
+    let mut total_prev_value = 0.0;
+
+    for tb in &balances {
+        let bal_f64 = u256_to_f64(tb.balance, 18);
+        let asset = api::find_asset(&tb.token.symbol, &assets);
+
+        let (price, pct_24h) = match asset.and_then(|a| a.primary_market.as_ref()) {
+            Some(pm) => {
+                let p = api::parse_price(&pm.price);
+                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
+                (p, pct)
+            }
+            None => (0.0, 0.0),
+        };
+
+        let value = bal_f64 * price;
+        // previous value = current_value / (1 + pct/100)
+        let prev_value = if pct_24h.abs() > f64::EPSILON {
+            value / (1.0 + pct_24h / 100.0)
+        } else {
+            value
+        };
+
+        total_value += value;
+        total_prev_value += prev_value;
+
+        println!(
+            "{:<12} {:>14.4} {:>11.2} {:>15.2} {:>+8.2}%",
+            tb.token.symbol, bal_f64, price, value, pct_24h
+        );
+    }
+
+    println!("{}", "─".repeat(67));
+
+    let total_change = total_value - total_prev_value;
+    let total_pct = if total_prev_value.abs() > f64::EPSILON {
+        (total_change / total_prev_value) * 100.0
+    } else {
+        0.0
+    };
+
+    println!(
+        "{:<12} {:>14} {:>12} {:>15.2}",
+        "TOTAL", "", "", total_value
+    );
+    println!(
+        "\n24h Change: {:+.2} ({:+.2}%)",
+        total_change, total_pct
+    );
+
+    Ok(())
+}
+
 fn format_volume(v: &str) -> String {
     let n: f64 = v.parse().unwrap_or(0.0);
     if n >= 1_000_000_000.0 {
@@ -204,4 +289,10 @@ fn format_u256_decimals(value: U256, decimals: u8) -> String {
             format!("{integer}.{frac}")
         }
     }
+}
+
+/// Convert U256 with `decimals` to f64.
+fn u256_to_f64(value: U256, decimals: u8) -> f64 {
+    let s = format_u256_decimals(value, decimals);
+    s.parse::<f64>().unwrap_or(0.0)
 }
