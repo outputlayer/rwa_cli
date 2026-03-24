@@ -5,34 +5,34 @@ use rwa_ondo::{api, gm, oracle, provider, token_list};
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
-    /// List all available GM tokens
+    /// List all 264 available GM tokens (symbol + company name). No arguments needed
     List,
 
-    /// Get GM token price (USD) from official Ondo API
+    /// Get USD price, 24h change, sValue for a token. Use "all" to see all prices
     Price {
         /// Token symbol (e.g. TSLA, TSLAon) — or "all" for all tokens
         symbol: String,
     },
 
-    /// Check GM token balances for a wallet (BSC)
+    /// Check GM token balances for a wallet on BNB Chain. Shows all tokens with non-zero balance by default
     Balance {
-        /// Wallet address to check
+        /// Wallet address (0x...)
         wallet: String,
 
-        /// Specific token symbol (optional, shows all if omitted)
+        /// Filter by token symbol (optional, shows all non-zero if omitted)
         #[arg(short, long)]
         token: Option<String>,
     },
 
-    /// Show detailed info about a GM token
+    /// Detailed token info: price, 24h change, sValue, holders, trading sessions, 52w range, volume, market cap
     Info {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
     },
 
-    /// Show portfolio: balances × USD prices with 24h change
+    /// Full portfolio view: balances × USD prices, 24h P&L per token and total. Requires wallet address
     Portfolio {
-        /// Wallet address
+        /// Wallet address (0x...)
         wallet: String,
     },
 }
