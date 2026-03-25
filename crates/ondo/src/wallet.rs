@@ -134,8 +134,9 @@ impl Wallet {
 
     /// Sign a serialized Solana transaction (legacy or versioned).
     ///
-    /// Decodes base64, signs the message portion, inserts signature at slot 0,
-    /// returns re-encoded base64.
+    /// Decodes base64, finds the correct signature slot by matching our pubkey
+    /// in the transaction's account keys, signs the message, and returns
+    /// re-encoded base64.
     pub fn sign_transaction(&self, tx_base64: &str) -> Result<String> {
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
@@ -143,22 +144,55 @@ impl Wallet {
         let mut tx_bytes = engine.decode(tx_base64)?;
 
         // Parse compact-u16 for number of signatures
-        let (num_sigs, header_len) = decode_compact_u16(&tx_bytes)?;
+        let (num_sigs, sig_count_len) = decode_compact_u16(&tx_bytes)?;
         if num_sigs == 0 {
             return Err(eyre!("Transaction has 0 signature slots"));
         }
 
-        let sigs_end = header_len + (num_sigs as usize) * 64;
-        if tx_bytes.len() < sigs_end + 1 {
+        let sigs_start = sig_count_len;
+        let sigs_end = sigs_start + (num_sigs as usize) * 64;
+        if tx_bytes.len() < sigs_end + 4 {
             return Err(eyre!("Transaction too short"));
         }
 
         // Message = everything after the signature slots
         let message = &tx_bytes[sigs_end..];
+
+        // Determine version: V0 messages start with 0x80
+        let header_offset = if message[0] & 0x80 != 0 { 1 } else { 0 };
+
+        // Message header: [num_required_sigs, num_readonly_signed, num_readonly_unsigned]
+        let num_required_sigs = message[header_offset] as usize;
+        let keys_compact_start = header_offset + 3;
+        let (num_keys, keys_count_len) = decode_compact_u16(&message[keys_compact_start..])?;
+        let keys_start = keys_compact_start + keys_count_len;
+
+        // Find our pubkey among the required signers
+        let verifying_key = self.signing_key.verifying_key();
+        let our_pubkey = verifying_key.as_bytes();
+        let search_limit = std::cmp::min(num_keys as usize, num_required_sigs);
+        let mut sig_index = None;
+        for i in 0..search_limit {
+            let offset = keys_start + i * 32;
+            if offset + 32 > message.len() {
+                break;
+            }
+            if &message[offset..offset + 32] == our_pubkey.as_slice() {
+                sig_index = Some(i);
+                break;
+            }
+        }
+
+        let sig_index = sig_index.ok_or_else(|| {
+            eyre!("Wallet pubkey not found in transaction signers — wrong wallet?")
+        })?;
+
+        // Sign the message portion
         let signature = self.signing_key.sign(message);
 
-        // Write signature into slot 0
-        tx_bytes[header_len..header_len + 64].copy_from_slice(&signature.to_bytes());
+        // Write signature into the correct slot
+        let slot_offset = sigs_start + sig_index * 64;
+        tx_bytes[slot_offset..slot_offset + 64].copy_from_slice(&signature.to_bytes());
 
         Ok(engine.encode(&tx_bytes))
     }
