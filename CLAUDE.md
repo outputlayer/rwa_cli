@@ -6,7 +6,7 @@ Rust CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via
 
 ```bash
 cargo build                  # Build all crates
-cargo build --release        # Release build (LTO, strip → ~3.3 MB)
+cargo build --release        # Release build (LTO, strip → ~3.5 MB)
 cargo clippy --all-targets   # Lint (must pass with 0 warnings)
 cargo run -- gm hours        # Quick smoke test
 cargo install --path bin/rwa # Install locally
@@ -16,10 +16,11 @@ cargo install --path bin/rwa # Install locally
 
 - `bin/rwa/` — Binary entry point (thin — just calls `rwa_cli::run()`)
 - `crates/cli/` — CLI layer: clap v4 derive commands, output formatting, `--json` flag
-- `crates/cli/src/cmd/gm.rs` — All GM command implementations (~1000 lines)
+- `crates/cli/src/cmd/gm.rs` — All GM command implementations (~1340 lines)
 - `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
 - `crates/ondo/src/solana.rs` — All Solana RPC calls (retry + URL rotation)
 - `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API
+- `crates/ondo/src/api.rs` — Ondo API (prices, sectors, history)
 
 ## Code Conventions
 
@@ -49,7 +50,7 @@ cargo install --path bin/rwa # Install locally
 
 ```
 rwa gm hours                       # Market status
-rwa gm list --search <keyword>     # Search tokens
+rwa gm list --search <keyword>     # Search tokens by name, symbol, or sector
 rwa gm quote <SYM> <AMT>          # Swap quote
 rwa gm buy <SYM> <AMT> -y         # Buy token
 rwa gm sell <SYM> <AMT> -y        # Sell token
@@ -77,8 +78,8 @@ rwa keys generate|import|show      # Wallet management
 - **NEVER use `send USDC all`** when user wants to send just sell proceeds — use exact amount from sell result
 
 ### Token search
-- **Always** use `rwa --json gm list --search <keyword>` to filter tokens
-- **Never** dump the full token list (`rwa --json gm list` without `--search`) — it wastes context
+- **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)
+- Sectors: Technology, Healthcare, Financials, Consumer Discretionary, Energy, Industrials, Materials, Utilities, Real Estate, Infrastructure
 
 ### Error handling
 - With `--json`, errors return `{"status":"error","error":"..."}` on stdout (exit code 1)
