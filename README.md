@@ -40,8 +40,11 @@ Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for m
 rwa keys generate               # Create Solana wallet
 rwa gm hours                    # Check market (Sun 8pm – Fri 8pm ET)
 rwa gm list                     # See all 264 tokens
+rwa gm list --search biotech    # Search tokens by keyword
 rwa gm quote TSLA 100           # Quote: 100 USDC → TSLA
 rwa gm buy TSLA 100 -y          # Execute buy
+rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
+rwa gm close-all -y             # Sell ALL positions (sequential)
 rwa gm portfolio                # View holdings + P&L
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 ```
@@ -54,10 +57,12 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 |---------|-------------|
 | `rwa gm hours` | Market status (OPEN/CLOSED + countdown) |
 | `rwa gm list` | All 264 available tokens |
+| `rwa gm list --search <keyword>` | Search tokens by name/symbol/sector |
 | `rwa gm quote <SYM> <AMT>` | Swap quote (buy) |
 | `rwa gm quote <SYM> <AMT> --sell` | Swap quote (sell) |
 | `rwa gm buy <SYM> <AMT> -y` | Buy with USDC |
-| `rwa gm sell <SYM> <AMT> -y` | Sell for USDC |
+| `rwa gm sell <SYM> <AMT> -y` | Sell for USDC (exact, `50%`, or `all`) |
+| `rwa gm close-all -y` | Sell ALL positions sequentially |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
@@ -83,9 +88,12 @@ Every command supports `--json` for agent/script integration:
 
 ```bash
 rwa --json gm portfolio
-rwa --json gm list
+rwa --json gm list --search biotech
 rwa --json gm hours
 rwa --json gm quote TSLA 100
+rwa --json gm buy TSLA 100 -y
+rwa --json gm sell TSLA 50% -y
+rwa --json gm close-all -y
 ```
 
 ## About Ondo GM Tokens
