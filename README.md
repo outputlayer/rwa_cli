@@ -21,15 +21,19 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 ```
 I'd like to trade tokenized stocks on Solana.
 
-Install skills if npm is available: npx skills add outputlayer/rwa_skills -g
+First install the CLI: curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
 
-Otherwise install the CLI directly: curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
+Then if npm is available, install skills: npx skills add outputlayer/rwa_skills -g -y
 ```
 
 Install the rwa skill for AI agents via [Agent Skills](https://agentskills.io/):
 
 ```bash
-npx skills add outputlayer/rwa_skills -g
+# 1. Install the CLI first (required)
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
+
+# 2. Then install skills for your AI agent
+npx skills add outputlayer/rwa_skills -g -y
 ```
 
 Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for manual install (Cursor, Claude Code, OpenCode, etc.).
@@ -45,6 +49,7 @@ rwa gm quote TSLA 100           # Quote: 100 USDC → TSLA
 rwa gm buy TSLA 100 -y          # Execute buy
 rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
 rwa gm close-all -y             # Sell ALL positions (sequential)
+rwa gm close-all 50% -y         # Sell 50% of every position
 rwa gm portfolio                # View holdings + P&L
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 ```
@@ -63,6 +68,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 | `rwa gm buy <SYM> <AMT> -y` | Buy with USDC |
 | `rwa gm sell <SYM> <AMT> -y` | Sell for USDC (exact, `50%`, or `all`) |
 | `rwa gm close-all -y` | Sell ALL positions sequentially |
+| `rwa gm close-all <PCT> -y` | Sell percentage of every position (e.g. `10%`, `50%`) |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
@@ -94,6 +100,7 @@ rwa --json gm quote TSLA 100
 rwa --json gm buy TSLA 100 -y
 rwa --json gm sell TSLA 50% -y
 rwa --json gm close-all -y
+rwa --json gm close-all 50% -y
 ```
 
 ## About Ondo GM Tokens

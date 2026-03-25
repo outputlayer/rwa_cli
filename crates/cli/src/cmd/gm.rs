@@ -82,6 +82,8 @@ pub enum GmAction {
 
     /// Close all GM positions — sell every token for USDC sequentially
     CloseAll {
+        /// Percentage of each position to sell (e.g. 10%, 50%). Sells 100% if omitted.
+        amount: Option<String>,
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
@@ -98,7 +100,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
         GmAction::List { search } => list(json, search.as_deref()).await,
         GmAction::Send { token, amount, to, yes } => send(&token, &amount, &to, yes, json, rpc_url).await,
-        GmAction::CloseAll { yes } => close_all(yes, json, rpc_url).await,
+        GmAction::CloseAll { amount, yes } => close_all(amount.as_deref(), yes, json, rpc_url).await,
     }
 }
 
@@ -177,11 +179,11 @@ struct HistoryCandleJson {
 }
 
 #[derive(Serialize)]
-struct ListItemJson<'a> {
-    symbol: &'a str,
-    name: &'a str,
+struct ListItemJson {
+    symbol: String,
+    name: String,
     #[serde(rename = "type")]
-    kind: &'a str,
+    kind: &'static str,
 }
 
 fn json_out(v: &impl Serialize) -> Result<()> {
@@ -871,8 +873,24 @@ struct CloseFailJson {
     error: String,
 }
 
-pub async fn close_all(yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
+
+    // Parse optional percentage (e.g. "10%", "50%"). None = sell 100%.
+    let sell_pct: f64 = match amount {
+        Some(s) => {
+            let s = s.trim();
+            let pct_str = s.strip_suffix('%')
+                .ok_or_else(|| eyre::eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
+            let pct: f64 = pct_str.parse()
+                .map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
+            if !(0.0..=100.0).contains(&pct) {
+                return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
+            }
+            pct
+        }
+        None => 100.0,
+    };
 
     let tokens = token_list::get_token_list().await;
     let w = load_wallet()?;
@@ -893,15 +911,25 @@ pub async fn close_all(yes: bool, json: bool, rpc_url: Option<&str>) -> Result<(
         return Ok(());
     }
 
+    let pct_label = if sell_pct < 100.0 { format!(" ({}%)", sell_pct) } else { String::new() };
     if !json {
-        println!("Positions to close:");
+        println!("Positions to close{}:", pct_label);
         for b in &balances {
-            println!("  {} — {} tokens", b.symbol, b.balance);
+            if sell_pct < 100.0 {
+                println!("  {} — {} of {} tokens", b.symbol, format_args!("{:.4}", b.balance * sell_pct / 100.0), b.balance);
+            } else {
+                println!("  {} — {} tokens", b.symbol, b.balance);
+            }
         }
         println!();
     }
 
-    if !yes && !json && !confirm("Sell all positions?") {
+    let prompt = if sell_pct < 100.0 {
+        format!("Sell {}% of all positions?", sell_pct)
+    } else {
+        "Sell all positions?".to_string()
+    };
+    if !yes && !json && !confirm(&prompt) {
         println!("Cancelled.");
         return Ok(());
     }
@@ -918,20 +946,33 @@ pub async fn close_all(yes: bool, json: bool, rpc_url: Option<&str>) -> Result<(
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
 
+        // Compute raw amount to sell
+        let sell_raw = if sell_pct < 100.0 {
+            let raw: u128 = tb.raw_amount.parse().unwrap_or(0);
+            let partial = (raw as f64 * sell_pct / 100.0) as u128;
+            if partial == 0 {
+                continue; // skip dust
+            }
+            partial.to_string()
+        } else {
+            tb.raw_amount.clone()
+        };
+
+        let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
         if !json {
-            println!("Selling {} {} ...", tb.balance, tb.symbol);
+            println!("Selling {} {} ...", sell_display, tb.symbol);
         }
 
-        match sell_one_position(&w, &tb.symbol, &tb.mint, &tb.raw_amount, &taker, json).await {
+        match sell_one_position(&w, &tb.symbol, &tb.mint, &sell_raw, &taker, json).await {
             Ok((usdc_str, tx)) => {
                 let usdc_f: f64 = usdc_str.parse().unwrap_or(0.0);
                 total_usdc += usdc_f;
                 if !json {
-                    println!("  ✓ {} {} → {} USDC  tx: {}", tb.balance, tb.symbol, usdc_str, tx);
+                    println!("  ✓ {} {} → {} USDC  tx: {}", sell_display, tb.symbol, usdc_str, tx);
                 }
                 sold.push(CloseItemJson {
                     token: tb.symbol.clone(),
-                    amount: format!("{}", tb.balance),
+                    amount: sell_display,
                     usdc: usdc_str,
                     tx,
                 });
@@ -957,7 +998,7 @@ pub async fn close_all(yes: bool, json: bool, rpc_url: Option<&str>) -> Result<(
         });
     }
 
-    println!("\nClose-all complete:");
+    println!("\nClose-all{} complete:", pct_label);
     println!("  Sold:   {} positions → {:.2} USDC", sold.len(), total_usdc);
     if !failed.is_empty() {
         println!("  Failed: {} positions (skipped)", failed.len());
@@ -1062,10 +1103,9 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
 
     if json {
         let items: Vec<_> = filtered.iter().map(|t| {
-            let name = clean_name(&t.name);
             ListItemJson {
-                symbol: &t.symbol,
-                name: Box::leak(name.into_boxed_str()),
+                symbol: t.symbol.clone(),
+                name: clean_name(&t.name),
                 kind: token_type(&t.name),
             }
         }).collect();
@@ -1184,7 +1224,8 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
         return Err(eyre::eyre!("USDC balance is 0"));
     }
 
-    let raw = (usdc_f * 1_000_000.0) as u64;
+    let raw_str = jupiter::usdc_to_raw(&format!("{usdc_f:.2}"))?;
+    let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
 
     if !json {
         println!("Send {usdc_f:.2} USDC → {to}");

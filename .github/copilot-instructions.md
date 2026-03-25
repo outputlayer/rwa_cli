@@ -31,6 +31,7 @@ rwa gm list                        # All 264 tokens
 rwa gm quote <SYM> <AMT>           # Swap quote
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
 rwa gm close-all -y                # Sell ALL positions (sequential, skips failures)
+rwa gm close-all 50% -y            # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]    # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y  # Transfer tokens

@@ -16,7 +16,7 @@ cargo install --path bin/rwa # Install locally
 
 - `bin/rwa/` — Binary entry point (thin — just calls `rwa_cli::run()`)
 - `crates/cli/` — CLI layer: clap v4 derive commands, output formatting, `--json` flag
-- `crates/cli/src/cmd/gm.rs` — All GM command implementations (~770 lines)
+- `crates/cli/src/cmd/gm.rs` — All GM command implementations (~1000 lines)
 - `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
 - `crates/ondo/src/solana.rs` — All Solana RPC calls (retry + URL rotation)
 - `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API
@@ -26,7 +26,7 @@ cargo install --path bin/rwa # Install locally
 - **Error handling**: `eyre` everywhere. No `thiserror`, no `anyhow`, no `.unwrap()` on fallible ops.
 - **Dependencies**: centralized `[workspace.dependencies]` in root Cargo.toml. Add versions there, reference with `.workspace = true` in crate Cargo.toml.
 - **Solana RPC**: NEVER fire concurrent RPC calls — sequential only, via `rpc_call_with_retry`. Public endpoints rate-limit at ~10 req/s.
-- **RPC rotation**: 3 fallback URLs in `RPC_URLS`. User can override with `--rpc-url` or `RWA_RPC_URL` env var.
+- **RPC rotation**: 5 fallback URLs in `RPC_URLS` (publicnode, extrnode, solana, ankr, drpc). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
 - **Token symbols**: both `TSLA` and `TSLAon` accepted — resolved in `gm::resolve_token`.
 - **Amounts**: exact number (`100`), percentage (`50%`), or `all`.
 - **HTTP**: `reqwest` with `rustls-tls` only. No native TLS, no OpenSSL.
@@ -54,6 +54,7 @@ rwa gm quote <SYM> <AMT>          # Swap quote
 rwa gm buy <SYM> <AMT> -y         # Buy token
 rwa gm sell <SYM> <AMT> -y        # Sell token
 rwa gm close-all -y               # Sell ALL positions (sequential, skips failures)
+rwa gm close-all 50% -y           # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]   # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y # Transfer tokens
@@ -71,6 +72,7 @@ rwa keys generate|import|show      # Wallet management
 - Always use `--json` flag and `-y` for buy/sell
 - **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
 - **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
+- **To reduce all positions**: use `rwa --json gm close-all 50% -y` — sells given % of every position
 - **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC
 - **NEVER use `send USDC all`** when user wants to send just sell proceeds — use exact amount from sell result
 
