@@ -79,6 +79,13 @@ pub enum GmAction {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Close all GM positions — sell every token for USDC sequentially
+    CloseAll {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
@@ -91,6 +98,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
         GmAction::List { search } => list(json, search.as_deref()).await,
         GmAction::Send { token, amount, to, yes } => send(&token, &amount, &to, yes, json, rpc_url).await,
+        GmAction::CloseAll { yes } => close_all(yes, json, rpc_url).await,
     }
 }
 
@@ -817,6 +825,145 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     println!("  Tx:        https://solscan.io/tx/{}", sig);
 
     Ok(())
+}
+
+// ── Close All ──────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct CloseAllResultJson {
+    status: &'static str,
+    sold: Vec<CloseItemJson>,
+    failed: Vec<CloseFailJson>,
+    total_usdc: String,
+}
+
+#[derive(Serialize)]
+struct CloseItemJson {
+    token: String,
+    amount: String,
+    usdc: String,
+    tx: String,
+}
+
+#[derive(Serialize)]
+struct CloseFailJson {
+    token: String,
+    error: String,
+}
+
+pub async fn close_all(yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    check_trading_hours()?;
+
+    let tokens = token_list::get_token_list().await;
+    let w = load_wallet()?;
+    let taker = w.pubkey();
+
+    // Get all GM token balances
+    let balances = solana::get_all_balances(&taker, &tokens, rpc_url).await?;
+    if balances.is_empty() {
+        if json {
+            return json_out(&CloseAllResultJson {
+                status: "success",
+                sold: vec![],
+                failed: vec![],
+                total_usdc: "0".to_string(),
+            });
+        }
+        println!("No GM positions to close.");
+        return Ok(());
+    }
+
+    if !json {
+        println!("Positions to close:");
+        for b in &balances {
+            println!("  {} — {} tokens", b.symbol, b.balance);
+        }
+        println!();
+    }
+
+    if !yes && !json && !confirm("Sell all positions?") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // Ensure SOL for gas
+    preflight_sell(&taker, &w, json, rpc_url).await?;
+
+    let mut sold = Vec::new();
+    let mut failed = Vec::new();
+    let mut total_usdc: f64 = 0.0;
+
+    for (i, tb) in balances.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+
+        if !json {
+            println!("Selling {} {} ...", tb.balance, tb.symbol);
+        }
+
+        match sell_one_position(&w, &tb.symbol, &tb.mint, &tb.raw_amount, &taker, json).await {
+            Ok((usdc_str, tx)) => {
+                let usdc_f: f64 = usdc_str.parse().unwrap_or(0.0);
+                total_usdc += usdc_f;
+                if !json {
+                    println!("  ✓ {} {} → {} USDC  tx: {}", tb.balance, tb.symbol, usdc_str, tx);
+                }
+                sold.push(CloseItemJson {
+                    token: tb.symbol.clone(),
+                    amount: format!("{}", tb.balance),
+                    usdc: usdc_str,
+                    tx,
+                });
+            }
+            Err(e) => {
+                if !json {
+                    eprintln!("  ✗ {} — {}", tb.symbol, e);
+                }
+                failed.push(CloseFailJson {
+                    token: tb.symbol.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    if json {
+        return json_out(&CloseAllResultJson {
+            status: "success",
+            sold,
+            failed,
+            total_usdc: format!("{total_usdc:.2}"),
+        });
+    }
+
+    println!("\nClose-all complete:");
+    println!("  Sold:   {} positions → {:.2} USDC", sold.len(), total_usdc);
+    if !failed.is_empty() {
+        println!("  Failed: {} positions (skipped)", failed.len());
+    }
+    Ok(())
+}
+
+/// Sell a single position (helper for close_all). Returns (usdc_received, tx_url).
+async fn sell_one_position(
+    w: &wallet::Wallet,
+    _symbol: &str,
+    mint: &str,
+    raw_amount: &str,
+    taker: &str,
+    json: bool,
+) -> Result<(String, String)> {
+    let order = jupiter::get_order(mint, jupiter::USDC_MINT, raw_amount, taker).await?;
+    let result = execute_with_retry(w, &order, json, mint, jupiter::USDC_MINT, raw_amount, taker).await?;
+
+    let usdc_out = result.output_amount_result.as_deref()
+        .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
+        .unwrap_or_else(|| jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS));
+    let sig = result.signature.as_deref().unwrap_or("unknown");
+    let tx = format!("https://solscan.io/tx/{sig}");
+
+    Ok((usdc_out, tx))
 }
 
 async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {

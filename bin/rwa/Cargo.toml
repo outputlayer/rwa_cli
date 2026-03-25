@@ -17,3 +17,4 @@ path = "src/main.rs"
 rwa-cli.workspace = true
 tokio.workspace = true
 eyre.workspace = true
+serde_json.workspace = true
