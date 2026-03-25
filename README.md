@@ -16,6 +16,14 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 
 ## Agent Skills
 
+> **Send this to any AI agent to get started:**
+>
+> I'd like to trade tokenized stocks on Solana.
+>
+> Install skills if npm is available: `npx skills add outputlayer/rwa_skills -g`
+>
+> Otherwise install the CLI directly: `curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash`
+
 Install the rwa skill for AI agents via [Agent Skills](https://agentskills.io/):
 
 ```bash
