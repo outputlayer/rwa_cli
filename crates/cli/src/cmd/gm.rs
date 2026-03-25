@@ -62,6 +62,19 @@ pub enum GmAction {
 
     /// List all available GM tokens
     List,
+
+    /// Send SOL, USDC, or GM tokens to another wallet
+    Send {
+        /// What to send: SOL, USDC, or token symbol (e.g. TSLA)
+        token: String,
+        /// Amount to send (e.g. 100, 50%, all)
+        amount: String,
+        /// Recipient Solana address
+        to: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
@@ -73,6 +86,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
         GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
         GmAction::List => list(json).await,
+        GmAction::Send { token, amount, to, yes } => send(&token, &amount, &to, yes, json, rpc_url).await,
     }
 }
 
@@ -762,5 +776,184 @@ async fn list(json: bool) -> Result<()> {
             println!("  {:<12} {}", t.symbol, t.name);
         }
     }
+    Ok(())
+}
+
+// ── Send ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct SendJson {
+    status: &'static str,
+    token: String,
+    amount: String,
+    recipient: String,
+    tx: String,
+}
+
+async fn send(token: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    let w = load_wallet()?;
+    let pubkey = w.pubkey();
+
+    // Validate recipient address (base58, 32-44 chars typical for Solana)
+    if to.len() < 32 || to.len() > 44 {
+        return Err(eyre::eyre!("Invalid recipient address: {to}"));
+    }
+    if to == pubkey {
+        return Err(eyre::eyre!("Cannot send to yourself"));
+    }
+
+    let token_upper = token.to_uppercase();
+
+    match token_upper.as_str() {
+        "SOL" => send_sol(&w, amount, to, yes, json, rpc_url).await,
+        "USDC" => send_usdc(&w, amount, to, yes, json, rpc_url).await,
+        _ => send_gm_token(&w, &token_upper, amount, to, yes, json, rpc_url).await,
+    }
+}
+
+async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    let pubkey = w.pubkey();
+
+    let sol_f = resolve_percent_amount(amount, || {
+        let pk = pubkey.clone();
+        let rpc = rpc_url.map(String::from);
+        async move { solana::get_sol_balance(&pk, rpc.as_deref()).await }
+    }).await?;
+
+    if sol_f < MIN_SOL_FOR_GAS {
+        return Err(eyre::eyre!("Amount too small — need to keep ≥{MIN_SOL_FOR_GAS} SOL for gas"));
+    }
+
+    // Keep enough for gas if sending "all"
+    let send_amount = if amount == "all" || amount == "100%" {
+        let bal = solana::get_sol_balance(&pubkey, rpc_url).await?;
+        let keep = MIN_SOL_FOR_GAS;
+        if bal <= keep {
+            return Err(eyre::eyre!("Balance too low — need ≥{keep} SOL for gas"));
+        }
+        bal - keep
+    } else {
+        sol_f
+    };
+
+    if !json {
+        println!("Send {:.6} SOL → {to}", send_amount);
+    }
+    if !yes && !json && !confirm("Proceed?") {
+        return Err(eyre::eyre!("Cancelled"));
+    }
+
+    let sig = solana::transfer_sol(w, to, send_amount, rpc_url).await?;
+
+    if json {
+        return json_out(&SendJson {
+            status: "success",
+            token: "SOL".into(),
+            amount: format!("{send_amount:.6}"),
+            recipient: to.into(),
+            tx: format!("https://solscan.io/tx/{sig}"),
+        });
+    }
+    println!("✓ Sent {:.6} SOL → {to}", send_amount);
+    println!("  https://solscan.io/tx/{sig}");
+    Ok(())
+}
+
+async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    let pubkey = w.pubkey();
+
+    // Check SOL for gas
+    let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
+    if sol < MIN_SOL_FOR_GAS {
+        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{MIN_SOL_FOR_GAS})"));
+    }
+
+    let usdc_f = resolve_percent_amount(amount, || {
+        let pk = pubkey.clone();
+        let rpc = rpc_url.map(String::from);
+        async move { solana::get_usdc_balance(&pk, rpc.as_deref()).await }
+    }).await?;
+
+    if usdc_f <= 0.0 {
+        return Err(eyre::eyre!("USDC balance is 0"));
+    }
+
+    let raw = (usdc_f * 1_000_000.0) as u64;
+
+    if !json {
+        println!("Send {usdc_f:.2} USDC → {to}");
+    }
+    if !yes && !json && !confirm("Proceed?") {
+        return Err(eyre::eyre!("Cancelled"));
+    }
+
+    let sig = solana::transfer_spl(
+        w, to, solana::USDC_MINT, raw, 6, false, rpc_url
+    ).await?;
+
+    if json {
+        return json_out(&SendJson {
+            status: "success",
+            token: "USDC".into(),
+            amount: format!("{usdc_f:.2}"),
+            recipient: to.into(),
+            tx: format!("https://solscan.io/tx/{sig}"),
+        });
+    }
+    println!("✓ Sent {usdc_f:.2} USDC → {to}");
+    println!("  https://solscan.io/tx/{sig}");
+    Ok(())
+}
+
+async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    let pubkey = w.pubkey();
+    let tokens = token_list::get_token_list().await;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
+
+    // Check SOL for gas
+    let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
+    if sol < MIN_SOL_FOR_GAS {
+        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{MIN_SOL_FOR_GAS})"));
+    }
+
+    let token_f = resolve_percent_amount(amount, || {
+        let pk = pubkey.clone();
+        let mint = gm_mint.clone();
+        let rpc = rpc_url.map(String::from);
+        async move {
+            let b = solana::get_balance(&pk, &mint, rpc.as_deref()).await?;
+            Ok(b.balance)
+        }
+    }).await?;
+
+    if token_f <= 0.0 {
+        return Err(eyre::eyre!("Balance is 0 — nothing to send"));
+    }
+
+    // GM tokens use 9 decimals (Token-2022)
+    let raw = (token_f * 1_000_000_000.0) as u64;
+
+    if !json {
+        println!("Send {token_f:.6} {sym} → {to}");
+    }
+    if !yes && !json && !confirm("Proceed?") {
+        return Err(eyre::eyre!("Cancelled"));
+    }
+
+    let sig = solana::transfer_spl(
+        w, to, &gm_mint, raw, 9, true, rpc_url  // true = Token-2022
+    ).await?;
+
+    if json {
+        return json_out(&SendJson {
+            status: "success",
+            token: sym.clone(),
+            amount: format!("{token_f:.6}"),
+            recipient: to.into(),
+            tx: format!("https://solscan.io/tx/{sig}"),
+        });
+    }
+    println!("✓ Sent {token_f:.6} {sym} → {to}");
+    println!("  https://solscan.io/tx/{sig}");
     Ok(())
 }

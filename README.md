@@ -43,6 +43,7 @@ rwa gm list                     # See all 264 tokens
 rwa gm quote TSLA 100           # Quote: 100 USDC → TSLA
 rwa gm buy TSLA 100 -y          # Execute buy
 rwa gm portfolio                # View holdings + P&L
+rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 ```
 
 Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
@@ -59,6 +60,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 | `rwa gm sell <SYM> <AMT> -y` | Sell for USDC |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
+| `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
 | `rwa keys generate` | Create new wallet |
 | `rwa keys import --seed-phrase "..."` | Import from mnemonic |
 | `rwa keys show` | Show address + key file path |

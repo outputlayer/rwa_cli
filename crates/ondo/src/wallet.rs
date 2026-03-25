@@ -132,6 +132,11 @@ impl Wallet {
         self.signing_key.verifying_key()
     }
 
+    /// Access the signing key for building raw transactions.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
     /// Sign a serialized Solana transaction (legacy or versioned).
     ///
     /// Decodes base64, finds the correct signature slot by matching our pubkey
