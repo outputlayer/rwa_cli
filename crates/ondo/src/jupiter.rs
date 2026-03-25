@@ -10,7 +10,7 @@ pub const USDC_DECIMALS: u8 = 6;
 /// Ondo GM tokens on Solana use 9 decimals (Solana standard).
 pub const GM_SOL_DECIMALS: u8 = 9;
 
-// ── API types ──────────────────────────────────────────────
+// ── API types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +21,7 @@ pub struct OrderResponse {
     pub in_usd_value: Option<f64>,
     pub out_usd_value: Option<f64>,
     pub price_impact: Option<f64>,
-    pub transaction: String,
-    // Error fields
+    pub transaction: Option<String>,
     pub error: Option<String>,
     pub error_message: Option<String>,
 }
@@ -46,7 +45,7 @@ pub struct ExecuteResponse {
     pub output_amount_result: Option<String>,
 }
 
-// ── Public functions ───────────────────────────────────────
+// ── Public functions ───────────────────────────────────────────────────
 
 /// Get a swap quote from Jupiter Ultra API.
 pub async fn get_order(
@@ -57,13 +56,13 @@ pub async fn get_order(
 ) -> Result<OrderResponse> {
     let response = reqwest::Client::new()
         .get(format!("{ULTRA_API_BASE}/order"))
-        .query(&[(
+        .query(&[
             ("inputMint", input_mint),
             ("outputMint", output_mint),
             ("amount", amount),
             ("taker", taker),
-        )])
-        .header("x-client-platform", "rwa.cli")
+        ])
+        .header("User-Agent", "rwa-cli/0.1")
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await?;
@@ -83,8 +82,12 @@ pub async fn get_order(
         return Err(eyre!("Jupiter API error: {msg}"));
     }
 
-    if resp.transaction.is_empty() {
-        return Err(eyre!("Jupiter returned empty transaction — route may not exist"));
+    let tx = resp.transaction.as_deref().unwrap_or("");
+    if tx.is_empty() {
+        let detail = resp.error_message.as_deref()
+            .or(resp.error.as_deref())
+            .unwrap_or("route may not exist");
+        return Err(eyre!("Jupiter returned empty transaction — {detail}"));
     }
 
     Ok(resp)
@@ -95,7 +98,9 @@ pub async fn execute_order(
     wallet: &Wallet,
     order: &OrderResponse,
 ) -> Result<ExecuteResponse> {
-    let signed_tx = wallet.sign_transaction(&order.transaction)?;
+    let tx_b64 = order.transaction.as_deref()
+        .ok_or_else(|| eyre!("No transaction in order"))?;
+    let signed_tx = wallet.sign_transaction(tx_b64)?;
 
     let req = ExecuteRequest {
         request_id: order.request_id.clone(),
@@ -104,7 +109,7 @@ pub async fn execute_order(
 
     let response = reqwest::Client::new()
         .post(format!("{ULTRA_API_BASE}/execute"))
-        .header("x-client-platform", "rwa.cli")
+        .header("User-Agent", "rwa-cli/0.1")
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
@@ -131,10 +136,16 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
                 .or(resp.error.as_deref())
                 .unwrap_or("Unknown execution error");
             let hint = resp.code.map(|c| match c {
-                -2005 => " (Jupiter internal — retry or try a different amount)",
-                -2002 => " (route expired — try again)",
-                -2003 => " (slippage exceeded — market is volatile)",
-                -2004 => " (insufficient balance)",
+                -1 => " (missing cached order — retry)",
+                -2 => " (invalid signed transaction)",
+                -3 => " (invalid message bytes)",
+                -1000 => " (failed to land — retry)",
+                -1001 => " (unknown aggregator error)",
+                -2000 => " (RFQ failed to land — retry)",
+                -2001 => " (unknown RFQ error)",
+                -2002 => " (invalid payload)",
+                -2003 => " (quote expired — retry)",
+                -2004 => " (swap rejected)",
                 _ => "",
             }).unwrap_or("");
             let code = resp.code.map(|c| format!(" (code {c})")).unwrap_or_default();
