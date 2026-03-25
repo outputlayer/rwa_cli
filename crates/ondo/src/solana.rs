@@ -5,10 +5,13 @@ use crate::token_list::GmTokenEntry;
 use crate::wallet::Wallet;
 
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
+/// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
 const RPC_URLS: &[&str] = &[
-    "https://api.mainnet-beta.solana.com",
-    "https://rpc.ankr.com/solana",
-    "https://solana-rpc.publicnode.com",
+    "https://solana-rpc.publicnode.com",           // PublicNode — 10 nodes, stable
+    "https://solana-mainnet.rpc.extrnode.com",     // ExtrNode — used by wallets
+    "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s
+    "https://rpc.ankr.com/solana",                 // Ankr — ~30 req/min free
+    "https://solana.drpc.org",                     // dRPC — decentralized, free tier
 ];
 
 /// Return the list of RPC URLs to try: user-provided first, then public fallbacks.
