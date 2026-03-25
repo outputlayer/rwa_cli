@@ -433,12 +433,8 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) ->
         return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
 
-    let (sol, usdc) = tokio::join!(
-        solana::get_sol_balance(pubkey, rpc_url),
-        solana::get_usdc_balance(pubkey, rpc_url)
-    );
-    let sol = sol?;
-    let usdc = usdc?;
+    let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
+    let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
 
     let mut issues = Vec::new();
     if sol < MIN_SOL_FOR_GAS {
