@@ -818,6 +818,177 @@ fn is_on_curve(bytes: &[u8]) -> bool {
     ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok()
 }
 
+// ── Reclaim (close empty ATAs) ──────────────────────────────
+
+/// An empty token account eligible for rent reclaim.
+#[derive(Debug)]
+pub struct EmptyTokenAccount {
+    pub address: String,
+    pub mint: String,
+    pub lamports: u64,
+    pub is_token_2022: bool,
+}
+
+/// SPL Token program ID (base58 string, for RPC queries).
+const TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/// Find all empty token accounts (Token and Token-2022) for a wallet.
+/// Skips the USDC ATA since it's needed for trading.
+pub async fn get_empty_token_accounts(
+    wallet: &str,
+    rpc_url: Option<&str>,
+) -> Result<Vec<EmptyTokenAccount>> {
+    let urls = rpc_urls(rpc_url);
+    let client = &*HTTP;
+
+    let reqs = vec![
+        RpcRequest {
+            jsonrpc: "2.0", id: 1,
+            method: "getTokenAccountsByOwner",
+            params: serde_json::json!([
+                wallet,
+                { "programId": TOKEN_2022_PROGRAM },
+                { "encoding": "jsonParsed", "commitment": "confirmed" }
+            ]),
+        },
+        RpcRequest {
+            jsonrpc: "2.0", id: 2,
+            method: "getTokenAccountsByOwner",
+            params: serde_json::json!([
+                wallet,
+                { "programId": TOKEN_PROGRAM_STR },
+                { "encoding": "jsonParsed", "commitment": "confirmed" }
+            ]),
+        },
+    ];
+
+    let results = rpc_batch_with_retry(client, &urls, &reqs).await?;
+    let mut empty = Vec::new();
+
+    for (i, result) in results.iter().enumerate() {
+        let is_2022 = i == 0;
+        let accounts = result.get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_array());
+
+        if let Some(accounts) = accounts {
+            for acc in accounts {
+                let pubkey = acc.get("pubkey").and_then(|v| v.as_str()).unwrap_or("");
+                let lamports = acc.get("account")
+                    .and_then(|a| a.get("lamports"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0);
+                let info = acc.get("account")
+                    .and_then(|a| a.get("data"))
+                    .and_then(|d| d.get("parsed"))
+                    .and_then(|p| p.get("info"));
+                let mint = info
+                    .and_then(|i| i.get("mint"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("");
+                let amount = info
+                    .and_then(|i| i.get("tokenAmount"))
+                    .and_then(|t| t.get("amount"))
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("0");
+
+                // Skip USDC ATA — user needs it for trading
+                if mint == USDC_MINT {
+                    continue;
+                }
+
+                if amount == "0" && !pubkey.is_empty() && lamports > 0 {
+                    empty.push(EmptyTokenAccount {
+                        address: pubkey.to_string(),
+                        mint: mint.to_string(),
+                        lamports,
+                        is_token_2022: is_2022,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(empty)
+}
+
+/// Close empty token accounts and reclaim rent. Returns (signatures, total_lamports).
+pub async fn close_empty_accounts(
+    wallet: &Wallet,
+    accounts: &[EmptyTokenAccount],
+    rpc_url: Option<&str>,
+) -> Result<(Vec<String>, u64)> {
+    if accounts.is_empty() {
+        return Ok((vec![], 0));
+    }
+
+    let owner = bs58::decode(wallet.pubkey()).into_vec()
+        .map_err(|e| eyre!("Invalid wallet pubkey: {e}"))?;
+
+    let token_2022: Vec<_> = accounts.iter().filter(|a| a.is_token_2022).collect();
+    let token_prog: Vec<_> = accounts.iter().filter(|a| !a.is_token_2022).collect();
+
+    let mut signatures = Vec::new();
+    let mut total_lamports = 0u64;
+
+    for batch in token_2022.chunks(15) {
+        if !signatures.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let sig = close_account_batch(wallet, &owner, batch, &TOKEN_2022_PROGRAM_ID, rpc_url).await?;
+        total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
+        signatures.push(sig);
+    }
+
+    for batch in token_prog.chunks(15) {
+        if !signatures.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let sig = close_account_batch(wallet, &owner, batch, &TOKEN_PROGRAM, rpc_url).await?;
+        total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
+        signatures.push(sig);
+    }
+
+    Ok((signatures, total_lamports))
+}
+
+/// Close a batch of empty token accounts in a single transaction.
+async fn close_account_batch(
+    wallet: &Wallet,
+    owner: &[u8],
+    batch: &[&EmptyTokenAccount],
+    token_program: &[u8; 32],
+    rpc_url: Option<&str>,
+) -> Result<String> {
+    let mut accounts: Vec<Vec<u8>> = vec![owner.to_vec()];
+    for acc in batch {
+        let bytes = bs58::decode(&acc.address).into_vec()
+            .map_err(|e| eyre!("Bad ATA address: {e}"))?;
+        accounts.push(bytes);
+    }
+    accounts.push(token_program.to_vec());
+
+    let program_idx = accounts.len() as u8 - 1;
+
+    let mut instructions = Vec::new();
+    for (i, _) in batch.iter().enumerate() {
+        // CloseAccount: [account, destination, owner]
+        instructions.push(Instruction {
+            program_id_index: program_idx,
+            account_indices: vec![(i + 1) as u8, 0, 0],
+            data: vec![9], // CloseAccount discriminator
+        });
+    }
+
+    let header = MessageHeader {
+        num_required_sigs: 1,
+        num_readonly_signed: 0,
+        num_readonly_unsigned: 1,
+    };
+
+    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
+}
+
 /// Encode a u16 as Solana compact-u16.
 fn encode_compact_u16(val: u16, buf: &mut Vec<u8>) {
     if val < 0x80 {

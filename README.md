@@ -55,6 +55,7 @@ rwa gm close-all -y             # Sell ALL positions (sequential)
 rwa gm close-all 50% -y         # Sell 50% of every position
 rwa gm portfolio                # View holdings + P&L
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
+rwa gm reclaim                  # Close empty accounts, reclaim SOL rent
 ```
 
 Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
@@ -76,6 +77,8 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
+| `rwa gm reclaim` | Close empty token accounts, reclaim SOL rent |
+| `rwa gm reclaim --token <SYM>` | Reclaim only for a specific token |
 | `rwa keys generate` | Create new wallet |
 | `rwa keys import --seed-phrase "..."` | Import from mnemonic |
 | `rwa keys show` | Show address + key file path |
@@ -84,6 +87,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 
 - `--json` — Machine-readable JSON output on any command
 - `-y` — Skip confirmation on buy/sell
+- `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: auto (Jupiter RTSE)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL`)
 
 ### Amount Formats

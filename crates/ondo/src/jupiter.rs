@@ -62,17 +62,22 @@ pub async fn get_order(
     output_mint: &str,
     amount: &str,
     taker: &str,
+    slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let response = HTTP
+    let mut request = HTTP
         .get(format!("{ULTRA_API_BASE}/order"))
         .query(&[
             ("inputMint", input_mint),
             ("outputMint", output_mint),
             ("amount", amount),
             ("taker", taker),
-        ])
-        .send()
-        .await?;
+        ]);
+
+    if let Some(bps) = slippage_bps {
+        request = request.query(&[("slippageBps", bps.to_string())]);
+    }
+
+    let response = request.send().await?;
 
     let status = response.status();
     let body = response.text().await?;

@@ -55,12 +55,15 @@ rwa gm list                        # All 264 tokens (with tradable status)
 rwa gm list --search <keyword>     # Search tokens (includes tradable field)
 rwa gm quote <SYM> <AMT>          # Swap quote
 rwa gm buy <SYM> <AMT> -y         # Buy token
+rwa gm buy <SYM> <AMT> -y --slippage 50  # Buy with max 0.5% slippage
 rwa gm sell <SYM> <AMT> -y        # Sell token
 rwa gm close-all -y               # Sell ALL positions (sequential, skips <$1)
 rwa gm close-all 50% -y           # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]   # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y # Transfer tokens
+rwa gm reclaim                    # Close empty token accounts, reclaim SOL rent
+rwa gm reclaim --token <SYM>      # Reclaim only for a specific token
 rwa keys generate|import|show      # Wallet management
 ```
 
@@ -93,6 +96,7 @@ Not all tokens are tradable in every session. `list` and `hours --tradable` show
 - **To reduce all positions**: use `rwa --json gm close-all 50% -y` — sells given % of every position
 - **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC
 - **NEVER use `send USDC all`** when user wants to send just sell proceeds — use exact amount from sell result
+- **After selling all positions**: run `rwa --json gm reclaim` to close empty token accounts and reclaim SOL rent
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)

@@ -29,6 +29,9 @@ pub enum GmAction {
         /// Quote selling token for USDC instead of buying
         #[arg(long)]
         sell: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        #[arg(long)]
+        slippage: Option<u32>,
     },
 
     /// Buy GM token with USDC via Jupiter (Solana)
@@ -40,6 +43,9 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        #[arg(long)]
+        slippage: Option<u32>,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -51,6 +57,9 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        #[arg(long)]
+        slippage: Option<u32>,
     },
 
     /// Portfolio positions and P&L (Solana)
@@ -96,19 +105,27 @@ pub enum GmAction {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Close empty token accounts and reclaim SOL rent
+    Reclaim {
+        /// Only reclaim for a specific token (symbol or mint address)
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Quote { symbol, amount, sell } => trade::quote(&symbol, &amount, sell, json, rpc_url).await,
-        GmAction::Buy { symbol, amount, yes } => trade::buy(&symbol, &amount, yes, json, rpc_url).await,
-        GmAction::Sell { symbol, amount, yes } => trade::sell(&symbol, &amount, yes, json, rpc_url).await,
+        GmAction::Quote { symbol, amount, sell, slippage } => trade::quote(&symbol, &amount, sell, json, rpc_url, slippage).await,
+        GmAction::Buy { symbol, amount, yes, slippage } => trade::buy(&symbol, &amount, yes, json, rpc_url, slippage).await,
+        GmAction::Sell { symbol, amount, yes, slippage } => trade::sell(&symbol, &amount, yes, json, rpc_url, slippage).await,
         GmAction::Portfolio { wallet } => portfolio::portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List { search } => list::list(json, search.as_deref()).await,
         GmAction::Send { token, amount, to, yes } => send::send(&token, &amount, &to, yes, json, rpc_url).await,
         GmAction::CloseAll { amount, yes } => trade::close_all(amount.as_deref(), yes, json, rpc_url).await,
+        GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
     }
 }
 
@@ -245,6 +262,14 @@ pub(super) struct CloseItemJson {
 pub(super) struct CloseFailJson {
     pub token: String,
     pub error: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct ReclaimJson {
+    pub status: &'static str,
+    pub accounts_closed: usize,
+    pub sol_reclaimed: String,
+    pub signatures: Vec<String>,
 }
 
 // ── Shared helpers ─────────────────────────────────────────
@@ -424,8 +449,8 @@ async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option
         eprintln!("SOL too low for gas — swapping ${TOPUP_USDC:.0} USDC → SOL ...");
     }
     let raw_usdc = jupiter::usdc_to_raw(&format!("{TOPUP_USDC:.2}"))?;
-    let order = jupiter::get_order(jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey).await?;
-    execute_with_retry(w, &order, json, jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey).await?;
+    let order = jupiter::get_order(jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey, None).await?;
+    execute_with_retry(w, &order, json, jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey, None).await?;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     let new_sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     if !json {
@@ -436,6 +461,7 @@ async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option
 
 const MAX_SWAP_RETRIES: u32 = 2;
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_with_retry(
     w: &wallet::Wallet,
     order: &jupiter::OrderResponse,
@@ -444,6 +470,7 @@ async fn execute_with_retry(
     output_mint: &str,
     raw_amount: &str,
     taker: &str,
+    slippage_bps: Option<u32>,
 ) -> Result<jupiter::ExecuteResponse> {
     let mut current_order_owned: Option<jupiter::OrderResponse> = None;
     let mut last_err = None;
@@ -470,7 +497,7 @@ async fn execute_with_retry(
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 if needs_new_order {
                     current_order_owned = Some(
-                        jupiter::get_order(input_mint, output_mint, raw_amount, taker).await?
+                        jupiter::get_order(input_mint, output_mint, raw_amount, taker, slippage_bps).await?
                     );
                 }
                 last_err = Some(e);

@@ -30,11 +30,13 @@ rwa gm hours                       # Market status
 rwa gm list                        # All 264 tokens
 rwa gm quote <SYM> <AMT>           # Swap quote
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
+rwa gm buy <SYM> <AMT> -y --slippage 50  # Trade with max 0.5% slippage
 rwa gm close-all -y                # Sell ALL positions (sequential, skips failures)
 rwa gm close-all 50% -y            # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]    # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y  # Transfer tokens
+rwa gm reclaim                     # Close empty token accounts, reclaim SOL rent
 rwa keys generate|import|show      # Wallet management
 ```
 

@@ -40,6 +40,7 @@ On failure, commands exit with non-zero code. With `--json`, errors return `{"st
 - `rwa --json gm quote <SYM> <AMT>` — Swap quote (buy direction)
 - `rwa --json gm quote <SYM> <AMT> --sell` — Swap quote (sell direction)
 - `rwa --json gm buy <SYM> <AMT> -y` — Buy token with USDC
+- `rwa --json gm buy <SYM> <AMT> -y --slippage 50` — Buy with max 0.5% slippage
 - `rwa --json gm sell <SYM> <AMT> -y` — Sell token for USDC (exact number, `50%`, or `all`)
 - `rwa --json gm close-all -y` — Sell ALL positions sequentially
 - `rwa --json gm close-all <PCT>% -y` — Sell percentage of every position (e.g. `50%`)
@@ -54,6 +55,10 @@ On failure, commands exit with non-zero code. With `--json`, errors return `{"st
 - `rwa --json gm send SOL <AMT> <TO> -y` — Send SOL
 - `rwa --json gm send USDC <AMT> <TO> -y` — Send USDC
 - `rwa --json gm send <TOKEN> <AMT> <TO> -y` — Send any token
+
+### Maintenance
+- `rwa --json gm reclaim` — Close empty token accounts, reclaim SOL rent
+- `rwa --json gm reclaim --token <SYM>` — Reclaim only for a specific token
 
 ### Wallet
 - `rwa keys generate` — Create new wallet
@@ -84,6 +89,7 @@ Not all tokens are tradable in every session. Use `list` or `hours --tradable` t
 
 - `--json` — Machine-readable JSON output on any command
 - `-y` — Skip confirmation on buy/sell/send
+- `--slippage <BPS>` — Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL` env var)
 
 ## Close-all behavior
