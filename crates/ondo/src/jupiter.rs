@@ -73,6 +73,9 @@ pub async fn get_order(
     let body = response.text().await?;
 
     if !status.is_success() {
+        if status.as_u16() == 400 && body.contains("Failed to get quotes") {
+            return Err(eyre!("No swap route found. Do not run quotes in parallel — Jupiter rejects concurrent requests from the same wallet."));
+        }
         return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
     }
 

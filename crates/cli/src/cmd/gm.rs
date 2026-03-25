@@ -172,7 +172,6 @@ struct ListItemJson<'a> {
     name: &'a str,
     #[serde(rename = "type")]
     kind: &'a str,
-    mint: &'a str,
 }
 
 fn json_out(v: &impl Serialize) -> Result<()> {
@@ -879,7 +878,6 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
                 symbol: &t.symbol,
                 name: Box::leak(name.into_boxed_str()),
                 kind: token_type(&t.name),
-                mint: t.solana_address.as_deref().unwrap_or(""),
             }
         }).collect();
         return json_out(&items);
