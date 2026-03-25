@@ -103,13 +103,12 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     if !json {
         println!("Getting quote for {} USDC -> {} ...", usdc_str, sym);
     }
-    let order = jupiter::get_order(jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker, slippage).await?;
+    let (order, slippage_pct) = get_order_checked(jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker, slippage, json).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
     if !json {
         println!("You will receive ~{} {}", out_fmt, sym);
     }
-    let slippage_pct = check_slippage(&order, json)?;
 
     if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
@@ -188,13 +187,12 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     if !json {
         println!("Getting quote for {} {} -> USDC ...", sell_str, sym);
     }
-    let order = jupiter::get_order(&gm_mint, jupiter::USDC_MINT, &raw_gm, &taker, slippage).await?;
+    let (order, slippage_pct) = get_order_checked(&gm_mint, jupiter::USDC_MINT, &raw_gm, &taker, slippage, json).await?;
 
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
     if !json {
         println!("You will receive ~{} USDC", out_fmt);
     }
-    let slippage_pct = check_slippage(&order, json)?;
 
     if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
@@ -402,9 +400,8 @@ async fn sell_one_position(
     taker: &str,
     json: bool,
 ) -> Result<(String, String)> {
-    let order = jupiter::get_order(mint, jupiter::USDC_MINT, raw_amount, taker, None).await?;
-    check_slippage(&order, json)?;
-    let result = execute_with_retry(w, &order, json, mint, jupiter::USDC_MINT, raw_amount, taker, None).await?;
+    let (order, _) = get_order_checked(mint, jupiter::USDC_MINT, raw_amount, taker, Some(DEFAULT_SLIPPAGE_BPS), json).await?;
+    let result = execute_with_retry(w, &order, json, mint, jupiter::USDC_MINT, raw_amount, taker, Some(DEFAULT_SLIPPAGE_BPS)).await?;
 
     let usdc_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))

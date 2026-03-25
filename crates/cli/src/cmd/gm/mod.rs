@@ -29,7 +29,7 @@ pub enum GmAction {
         /// Quote selling token for USDC instead of buying
         #[arg(long)]
         sell: bool,
-        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
     },
@@ -43,7 +43,7 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
-        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
     },
@@ -57,7 +57,7 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
-        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
     },
@@ -117,9 +117,9 @@ pub enum GmAction {
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Quote { symbol, amount, sell, slippage } => trade::quote(&symbol, &amount, sell, json, rpc_url, slippage).await,
-        GmAction::Buy { symbol, amount, yes, slippage } => trade::buy(&symbol, &amount, yes, json, rpc_url, slippage).await,
-        GmAction::Sell { symbol, amount, yes, slippage } => trade::sell(&symbol, &amount, yes, json, rpc_url, slippage).await,
+        GmAction::Quote { symbol, amount, sell, slippage } => trade::quote(&symbol, &amount, sell, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
+        GmAction::Buy { symbol, amount, yes, slippage } => trade::buy(&symbol, &amount, yes, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
+        GmAction::Sell { symbol, amount, yes, slippage } => trade::sell(&symbol, &amount, yes, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
         GmAction::Portfolio { wallet } => portfolio::portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List { search } => list::list(json, search.as_deref()).await,
@@ -314,7 +314,13 @@ fn pct_of_u128(value: u128, pct: f64) -> u128 {
 }
 
 /// Maximum allowed slippage before blocking the trade.
-const MAX_SLIPPAGE_PCT: f64 = 10.0;
+const MAX_SLIPPAGE_PCT: f64 = 3.0;
+/// Slippage threshold that triggers a fresh quote retry.
+const SLIPPAGE_RETRY_PCT: f64 = 1.0;
+/// Maximum retries when slippage exceeds the retry threshold.
+const MAX_SLIPPAGE_RETRIES: u32 = 3;
+/// Default slippage limit in basis points (100 = 1%).
+const DEFAULT_SLIPPAGE_BPS: u32 = 100;
 /// Minimum SOL needed for transaction fees.
 const MIN_SOL_FOR_GAS: f64 = 0.01;
 /// Minimum buy/sell amount in USDC.
@@ -350,6 +356,50 @@ fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f
         }
     }
     Ok(slip)
+}
+
+/// Get an order, retrying with fresh quotes if slippage exceeds the threshold.
+async fn get_order_checked(
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+    json: bool,
+) -> Result<(jupiter::OrderResponse, Option<f64>)> {
+    let mut order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+    for attempt in 1..=MAX_SLIPPAGE_RETRIES {
+        let slip = calc_slippage(&order);
+        if let Some(s) = slip {
+            if s < -MAX_SLIPPAGE_PCT {
+                return Err(eyre::eyre!(
+                    "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
+                     Try a smaller amount or wait for better liquidity."
+                ));
+            }
+            if s < -SLIPPAGE_RETRY_PCT && attempt <= MAX_SLIPPAGE_RETRIES {
+                if !json {
+                    eprintln!(
+                        "Slippage {s:.2}% exceeds -{SLIPPAGE_RETRY_PCT:.0}% — refreshing quote ({attempt}/{MAX_SLIPPAGE_RETRIES})..."
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+                continue;
+            }
+        }
+        // Slippage acceptable or unknown — proceed
+        let slippage_pct = slip;
+        if let Some(s) = slippage_pct {
+            if s < -1.0 && !json {
+                eprintln!("Warning: slippage {s:.2}%");
+            }
+        }
+        return Ok((order, slippage_pct));
+    }
+    // Exhausted retries — use last order, apply normal check
+    let slippage_pct = check_slippage(&order, json)?;
+    Ok((order, slippage_pct))
 }
 
 fn check_trading_hours() -> Result<()> {
