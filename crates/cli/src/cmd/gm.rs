@@ -513,7 +513,7 @@ async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option
     }
     let raw_usdc = jupiter::usdc_to_raw(&format!("{TOPUP_USDC:.2}"))?;
     let order = jupiter::get_order(jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey).await?;
-    jupiter::execute_order(w, &order).await?;
+    execute_with_retry(w, &order, json, jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey).await?;
     // Wait for the SOL to arrive
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     let new_sol = solana::get_sol_balance(pubkey, rpc_url).await?;
@@ -606,31 +606,52 @@ fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-/// Execute a swap with one automatic retry for transient Jupiter errors.
+/// Execute a swap with automatic retries (max 2) for transient Jupiter errors.
+/// For expired/rejected quotes (-2003, -2004, -2005), fetches a fresh order before retrying.
+const MAX_SWAP_RETRIES: u32 = 2;
+
 async fn execute_with_retry(
     w: &wallet::Wallet,
     order: &jupiter::OrderResponse,
     json: bool,
+    input_mint: &str,
+    output_mint: &str,
+    raw_amount: &str,
+    taker: &str,
 ) -> Result<jupiter::ExecuteResponse> {
-    match jupiter::execute_order(w, order).await {
-        Ok(resp) => Ok(resp),
-        Err(first_err) => {
-            let msg = first_err.to_string();
-            let retryable = msg.contains("code -1000")
-                || msg.contains("code -2000")
-                || msg.contains("code -2003")
-                || msg.contains("code -2005")
-                || msg.contains("code -1)");
-            if !retryable {
-                return Err(first_err);
+    let mut current_order_owned: Option<jupiter::OrderResponse> = None;
+    let mut last_err = None;
+
+    for attempt in 0..=MAX_SWAP_RETRIES {
+        let ord = current_order_owned.as_ref().unwrap_or(order);
+        match jupiter::execute_order(w, ord).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                let msg = e.to_string();
+                let needs_new_order = msg.contains("code -2003")
+                    || msg.contains("code -2004")
+                    || msg.contains("code -2005");
+                let retry_same = msg.contains("code -1000")
+                    || msg.contains("code -2000")
+                    || msg.contains("code -1)");
+
+                if (!needs_new_order && !retry_same) || attempt == MAX_SWAP_RETRIES {
+                    return Err(e);
+                }
+                if !json {
+                    eprintln!("Transient error (attempt {}/{}), retrying in 3s...", attempt + 1, MAX_SWAP_RETRIES);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if needs_new_order {
+                    current_order_owned = Some(
+                        jupiter::get_order(input_mint, output_mint, raw_amount, taker).await?
+                    );
+                }
+                last_err = Some(e);
             }
-            if !json {
-                eprintln!("Transient error, retrying in 2s...");
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            jupiter::execute_order(w, order).await
         }
     }
+    Err(last_err.unwrap_or_else(|| eyre::eyre!("Swap failed after retries")))
 }
 
 pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
@@ -677,7 +698,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     if !json {
         println!("Executing swap...");
     }
-    let result = execute_with_retry(&w, &order, json).await?;
+    let result = execute_with_retry(&w, &order, json, jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, gm_dec))
@@ -771,7 +792,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     if !json {
         println!("Executing swap...");
     }
-    let result = execute_with_retry(&w, &order, json).await?;
+    let result = execute_with_retry(&w, &order, json, &gm_mint, jupiter::USDC_MINT, &raw_gm, &taker).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
