@@ -584,6 +584,7 @@ async fn execute_with_retry(
             let retryable = msg.contains("code -1000")
                 || msg.contains("code -2000")
                 || msg.contains("code -2003")
+                || msg.contains("code -2005")
                 || msg.contains("code -1)");
             if !retryable {
                 return Err(first_err);

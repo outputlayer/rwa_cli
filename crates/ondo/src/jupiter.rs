@@ -146,6 +146,7 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
                 -2002 => " (invalid payload)",
                 -2003 => " (quote expired — retry)",
                 -2004 => " (swap rejected)",
+                -2005 => " (internal error — retry)",
                 _ => "",
             }).unwrap_or("");
             let code = resp.code.map(|c| format!(" (code {c})")).unwrap_or_default();

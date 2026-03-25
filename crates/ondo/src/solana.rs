@@ -100,7 +100,7 @@ pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64>
         jsonrpc: "2.0",
         id: 1,
         method: "getBalance",
-        params: serde_json::json!([wallet]),
+        params: serde_json::json!([wallet, { "commitment": "confirmed" }]),
     };
 
     let resp: RpcResponse<GetBalanceResult> = rpc_call_with_retry(
@@ -123,7 +123,7 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
         params: serde_json::json!([
             wallet,
             { "mint": USDC_MINT },
-            { "encoding": "jsonParsed" }
+            { "encoding": "jsonParsed", "commitment": "confirmed" }
         ]),
     };
 
@@ -162,7 +162,7 @@ pub async fn get_all_balances(
         params: serde_json::json!([
             wallet,
             { "programId": TOKEN_2022_PROGRAM },
-            { "encoding": "jsonParsed" }
+            { "encoding": "jsonParsed", "commitment": "confirmed" }
         ]),
     };
 
@@ -214,7 +214,7 @@ pub async fn get_balance(
         params: serde_json::json!([
             wallet,
             { "mint": mint },
-            { "encoding": "jsonParsed" }
+            { "encoding": "jsonParsed", "commitment": "confirmed" }
         ]),
     };
 
@@ -258,7 +258,7 @@ pub async fn get_portfolio_balances(
     // 1. SOL balance
     let sol_resp: RpcResponse<GetBalanceResult> = rpc_call_with_retry(
         &client, &urls,
-        &RpcRequest { jsonrpc: "2.0", id: 1, method: "getBalance", params: serde_json::json!([wallet]) },
+        &RpcRequest { jsonrpc: "2.0", id: 1, method: "getBalance", params: serde_json::json!([wallet, { "commitment": "confirmed" }]) },
     ).await?;
     let sol = sol_resp.result
         .map(|r| r.value as f64 / 1_000_000_000.0)
@@ -269,7 +269,7 @@ pub async fn get_portfolio_balances(
         &client, &urls,
         &RpcRequest {
             jsonrpc: "2.0", id: 2, method: "getTokenAccountsByOwner",
-            params: serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed" }]),
+            params: serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         },
     ).await?;
     let usdc = usdc_resp.result
@@ -281,7 +281,7 @@ pub async fn get_portfolio_balances(
         &client, &urls,
         &RpcRequest {
             jsonrpc: "2.0", id: 3, method: "getTokenAccountsByOwner",
-            params: serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed" }]),
+            params: serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         },
     ).await?;
 
