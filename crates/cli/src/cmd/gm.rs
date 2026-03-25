@@ -257,7 +257,7 @@ pub fn hours(json: bool) -> Result<()> {
 }
 
 pub async fn portfolio(wallet: Option<&str>, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let pubkey = match wallet {
         Some(w) => {
             // Basic validation: base58, reasonable length for Solana address
@@ -570,7 +570,7 @@ async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option
 }
 
 pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     check_trading_hours()?;
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
@@ -701,7 +701,7 @@ async fn execute_with_retry(
 }
 
 pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
@@ -766,7 +766,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
 }
 
 pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
@@ -896,7 +896,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         None => 100.0,
     };
 
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -1092,7 +1092,7 @@ fn token_type_from_name(name: &str) -> &'static str {
 }
 
 async fn list(json: bool, search: Option<&str>) -> Result<()> {
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let assets = api::fetch_assets().await.unwrap_or_default();
 
     // Build symbol → OndoAsset lookup
@@ -1104,13 +1104,15 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
         Some(q) => {
             let q = q.to_lowercase();
             tokens.iter().filter(|t| {
-                let sym_match = t.symbol.to_lowercase().contains(&q)
-                    || t.name.to_lowercase().contains(&q);
+                let sym_match = t.symbol.to_lowercase().contains(&q);
+                let name_match = asset_map.get(&t.symbol.to_uppercase())
+                    .map(|a| a.asset_name.to_lowercase().contains(&q))
+                    .unwrap_or(false);
                 let sector_match = asset_map.get(&t.symbol.to_uppercase())
                     .and_then(|a| a.sector())
                     .map(|s| s.to_lowercase().contains(&q))
                     .unwrap_or(false);
-                sym_match || sector_match
+                sym_match || name_match || sector_match
             }).collect()
         }
         None => tokens.iter().collect(),
@@ -1119,13 +1121,14 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
     if json {
         let items: Vec<_> = filtered.iter().map(|t| {
             let asset = asset_map.get(&t.symbol.to_uppercase());
+            let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
             let kind = asset.and_then(|a| a.instrument_type())
-                .unwrap_or_else(|| token_type_from_name(&t.name))
+                .unwrap_or_else(|| token_type_from_name(&name))
                 .to_lowercase();
             let sector = asset.and_then(|a| a.sector()).map(String::from);
             ListItemJson {
                 symbol: t.symbol.clone(),
-                name: clean_name(&t.name),
+                name,
                 kind,
                 sector,
             }
@@ -1136,8 +1139,8 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
     println!("{} GM tokens{}\n", filtered.len(),
         search.map(|s| format!(" matching '{}'", s)).unwrap_or_default());
     for t in &filtered {
-        let name = clean_name(&t.name);
         let asset = asset_map.get(&t.symbol.to_uppercase());
+        let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
         let sector = asset.and_then(|a| a.sector()).unwrap_or("");
         if sector.is_empty() {
             println!("  {:<12} {}", t.symbol, name);
@@ -1284,7 +1287,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
 
 async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
-    let tokens = token_list::get_token_list().await;
+    let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
 
     // Check SOL for gas

@@ -20,7 +20,6 @@ pub struct OndoAsset {
     #[serde(default)]
     pub tags: Vec<OndoAssetTag>,
     pub primary_market: Option<PrimaryMarket>,
-    pub underlying_market: Option<UnderlyingMarket>,
 }
 
 impl OndoAsset {
@@ -47,26 +46,6 @@ pub struct PrimaryMarket {
     pub price_change_24h: Option<String>,
     #[serde(default)]
     pub price_change_pct_24h: Option<String>,
-    #[serde(default)]
-    pub total_holders: Option<u64>,
-    #[serde(default)]
-    pub shares_multiplier: Option<String>,
-    #[serde(default)]
-    pub tradable_sessions: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnderlyingMarket {
-    pub name: String,
-    #[serde(default)]
-    pub price_high_52w: Option<String>,
-    #[serde(default)]
-    pub price_low_52w: Option<String>,
-    #[serde(default)]
-    pub volume: Option<String>,
-    #[serde(default)]
-    pub market_cap: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

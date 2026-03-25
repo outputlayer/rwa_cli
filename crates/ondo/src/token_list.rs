@@ -1,91 +1,16 @@
-use eyre::Result;
-use serde::Deserialize;
-use std::collections::HashMap;
-
-const TOKENLIST_URL: &str = "https://raw.githubusercontent.com/ondoprotocol/ondo-global-markets-token-list/main/tokenlist.json";
-
 /// A GM token entry with Solana mint address.
 #[derive(Debug, Clone)]
 pub struct GmTokenEntry {
     pub symbol: String,
-    pub name: String,
-    pub decimals: u8,
     pub solana_address: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct TokenListJson {
-    tokens: Vec<TokenListItem>,
-}
-
-#[derive(Deserialize)]
-struct TokenListItem {
-    name: String,
-    symbol: String,
-    decimals: u8,
-}
-
-/// Fetch the GM token list from GitHub, falling back to the static list on error.
-pub async fn get_token_list() -> Vec<GmTokenEntry> {
-    match fetch_token_list().await {
-        Ok(tokens) => tokens,
-        Err(e) => {
-            eprintln!("Warning: failed to fetch token list, using static fallback: {e}");
-            static_token_list()
-        }
-    }
-}
-
-/// Fetch and parse the Ondo tokenlist from GitHub.
-pub async fn fetch_token_list() -> Result<Vec<GmTokenEntry>> {
-    let text = reqwest::Client::new()
-        .get(TOKENLIST_URL)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-
-    let list: TokenListJson = serde_json::from_str(&text)?;
-    Ok(group_tokens(list.tokens))
-}
-
-fn group_tokens(items: Vec<TokenListItem>) -> Vec<GmTokenEntry> {
-    let sol_lookup: HashMap<&str, &str> = GM_TOKENS_STATIC
-        .iter()
-        .map(|&(sym, sol)| (sym, sol))
-        .collect();
-
-    let mut map: HashMap<String, GmTokenEntry> = HashMap::new();
-
-    for item in items {
-        // One entry per symbol (any chainId gives us symbol/name/decimals)
-        let sym_upper = item.symbol.clone();
-        map.entry(sym_upper).or_insert_with(|| {
-            let solana_address = sol_lookup.get(item.symbol.as_str()).map(|s| s.to_string());
-            GmTokenEntry {
-                symbol: item.symbol,
-                name: item.name,
-                decimals: item.decimals,
-                solana_address,
-            }
-        });
-    }
-
-    let mut tokens: Vec<_> = map.into_values().collect();
-    tokens.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-    tokens
-}
-
-/// Convert the static fallback list to `GmTokenEntry` entries.
-pub fn static_token_list() -> Vec<GmTokenEntry> {
+/// Return the full list of GM tokens with Solana mint addresses.
+pub fn get_token_list() -> Vec<GmTokenEntry> {
     GM_TOKENS_STATIC
         .iter()
         .map(|&(symbol, sol)| GmTokenEntry {
             symbol: symbol.to_string(),
-            name: String::new(),
-            decimals: 18,
             solana_address: if sol.is_empty() { None } else { Some(sol.to_string()) },
         })
         .collect()
