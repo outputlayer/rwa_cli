@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 Install the rwa skill for AI agents via [Agent Skills](https://agentskills.io/):
 
 ```bash
-npx skills add outputlayer/rwa_skills --skill rwa -g
+npx skills add outputlayer/rwa_skills -g
 ```
 
 Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for manual install (Cursor, Claude Code, OpenCode, etc.).

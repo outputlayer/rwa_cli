@@ -7,7 +7,7 @@ This skill has moved to a dedicated repo following the [Agent Skills](https://ag
 ## Install
 
 ```bash
-npx skills add outputlayer/rwa_skills --skill rwa -g
+npx skills add outputlayer/rwa_skills -g
 ```
 
 See the [skills repo](https://github.com/outputlayer/rwa_skills) for manual install instructions (Claude Code, Cursor, OpenCode, etc.).
