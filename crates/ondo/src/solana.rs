@@ -1,12 +1,9 @@
 use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 
 use crate::token_list::GmTokenEntry;
 use crate::wallet::Wallet;
-
-/// Shared HTTP client — reuses connection pool and TLS sessions across all RPC calls.
-static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+use crate::HTTP;
 
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
 /// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
@@ -832,5 +829,52 @@ fn encode_compact_u16(val: u16, buf: &mut Vec<u8>) {
         buf.push((val & 0x7f) as u8 | 0x80);
         buf.push(((val >> 7) & 0x7f) as u8 | 0x80);
         buf.push((val >> 14) as u8);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_valid_address() {
+        // Real Solana address (System Program)
+        assert!(validate_address("11111111111111111111111111111111").is_ok());
+    }
+
+    #[test]
+    fn validate_real_wallet_address() {
+        assert!(validate_address("5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiYtRo7DFYiuZ47").is_ok());
+    }
+
+    #[test]
+    fn validate_usdc_mint() {
+        assert!(validate_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").is_ok());
+    }
+
+    #[test]
+    fn reject_too_short() {
+        assert!(validate_address("abc").is_err());
+    }
+
+    #[test]
+    fn reject_too_long() {
+        assert!(validate_address(&"1".repeat(50)).is_err());
+    }
+
+    #[test]
+    fn reject_whitespace() {
+        assert!(validate_address("5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiY tRo7DFYiuZ47").is_err());
+    }
+
+    #[test]
+    fn reject_invalid_base58() {
+        // 'O' and 'I' are not in base58 alphabet
+        assert!(validate_address("OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO").is_err());
+    }
+
+    #[test]
+    fn reject_empty() {
+        assert!(validate_address("").is_err());
     }
 }

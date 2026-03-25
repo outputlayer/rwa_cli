@@ -2,6 +2,7 @@ use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 
 use crate::wallet::Wallet;
+use crate::HTTP;
 
 const ULTRA_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
 pub use crate::USDC_MINT;
@@ -62,7 +63,7 @@ pub async fn get_order(
     amount: &str,
     taker: &str,
 ) -> Result<OrderResponse> {
-    let response = reqwest::Client::new()
+    let response = HTTP
         .get(format!("{ULTRA_API_BASE}/order"))
         .query(&[
             ("inputMint", input_mint),
@@ -70,8 +71,6 @@ pub async fn get_order(
             ("amount", amount),
             ("taker", taker),
         ])
-        .header("User-Agent", "rwa-cli/0.1")
-        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await?;
 
@@ -118,9 +117,8 @@ pub async fn execute_order(
         signed_transaction: signed_tx,
     };
 
-    let response = reqwest::Client::new()
+    let response = HTTP
         .post(format!("{ULTRA_API_BASE}/execute"))
-        .header("User-Agent", "rwa-cli/0.1")
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
@@ -222,5 +220,135 @@ pub fn format_amount(raw: &str, decimals: u8) -> String {
         } else {
             format!("{integer}.{frac}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── token_to_raw ──────────────────────────────────────────
+
+    #[test]
+    fn usdc_whole_number() {
+        assert_eq!(usdc_to_raw("100").unwrap(), "100000000");
+    }
+
+    #[test]
+    fn usdc_with_decimals() {
+        assert_eq!(usdc_to_raw("100.50").unwrap(), "100500000");
+    }
+
+    #[test]
+    fn usdc_small_amount() {
+        assert_eq!(usdc_to_raw("0.01").unwrap(), "10000");
+    }
+
+    #[test]
+    fn usdc_min_amount() {
+        assert_eq!(usdc_to_raw("0.000001").unwrap(), "1");
+    }
+
+    #[test]
+    fn usdc_truncates_extra_decimals() {
+        // 7 decimal places, but USDC has 6 — truncate to 6
+        assert_eq!(usdc_to_raw("1.1234567").unwrap(), "1123456");
+    }
+
+    #[test]
+    fn token_9_decimals() {
+        assert_eq!(token_to_raw("1", 9).unwrap(), "1000000000");
+    }
+
+    #[test]
+    fn token_fractional_9_dec() {
+        assert_eq!(token_to_raw("0.5", 9).unwrap(), "500000000");
+    }
+
+    #[test]
+    fn token_tiny_amount() {
+        assert_eq!(token_to_raw("0.000000001", 9).unwrap(), "1");
+    }
+
+    #[test]
+    fn token_rejects_zero() {
+        assert!(token_to_raw("0", 6).is_err());
+    }
+
+    #[test]
+    fn token_rejects_negative() {
+        assert!(token_to_raw("-5", 6).is_err());
+    }
+
+    #[test]
+    fn token_rejects_garbage() {
+        assert!(token_to_raw("abc", 6).is_err());
+    }
+
+    #[test]
+    fn token_rejects_double_dot() {
+        assert!(token_to_raw("1.2.3", 6).is_err());
+    }
+
+    // ── format_amount ─────────────────────────────────────────
+
+    #[test]
+    fn format_whole_usdc() {
+        assert_eq!(format_amount("100000000", 6), "100");
+    }
+
+    #[test]
+    fn format_fractional_usdc() {
+        assert_eq!(format_amount("100500000", 6), "100.5");
+    }
+
+    #[test]
+    fn format_tiny_usdc() {
+        assert_eq!(format_amount("1", 6), "0.000001");
+    }
+
+    #[test]
+    fn format_zero() {
+        assert_eq!(format_amount("0", 6), "0");
+    }
+
+    #[test]
+    fn format_gm_token_9dec() {
+        assert_eq!(format_amount("1000000000", 9), "1");
+    }
+
+    #[test]
+    fn format_gm_token_fractional() {
+        assert_eq!(format_amount("500000000", 9), "0.5");
+    }
+
+    #[test]
+    fn format_gm_token_tiny() {
+        assert_eq!(format_amount("1", 9), "0.000000001");
+    }
+
+    #[test]
+    fn format_large_amount() {
+        assert_eq!(format_amount("999999999999", 6), "999999.999999");
+    }
+
+    // ── round-trip: token_to_raw → format_amount ──────────────
+
+    #[test]
+    fn roundtrip_usdc() {
+        let raw = usdc_to_raw("123.45").unwrap();
+        assert_eq!(format_amount(&raw, 6), "123.45");
+    }
+
+    #[test]
+    fn roundtrip_gm_token() {
+        let raw = token_to_raw("0.123456789", 9).unwrap();
+        assert_eq!(format_amount(&raw, 9), "0.123456789");
+    }
+
+    #[test]
+    fn roundtrip_whole_number() {
+        let raw = token_to_raw("42", 9).unwrap();
+        assert_eq!(format_amount(&raw, 9), "42");
     }
 }

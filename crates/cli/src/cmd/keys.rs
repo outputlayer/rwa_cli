@@ -1,6 +1,7 @@
 use clap::Subcommand;
 use eyre::Result;
 use rwa_ondo::wallet::{self, Wallet};
+use std::io::{self, Write};
 
 #[derive(Subcommand, Debug)]
 pub enum KeysAction {
@@ -17,8 +18,8 @@ pub enum KeysAction {
         #[arg(long)]
         private_key: Option<String>,
 
-        /// BIP39 seed phrase (12 or 24 words in quotes)
-        #[arg(long)]
+        /// BIP39 seed phrase (12 or 24 words). Omit value to enter interactively (safer).
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
         seed_phrase: Option<String>,
     },
 
@@ -69,7 +70,24 @@ async fn import(
     let w = match (file, private_key, seed_phrase) {
         (Some(f), None, None) => Wallet::from_file(std::path::Path::new(&f))?,
         (None, Some(pk), None) => Wallet::from_private_key(&pk)?,
-        (None, None, Some(sp)) => Wallet::from_mnemonic(&sp)?,
+        (None, None, Some(sp)) => {
+            let phrase = if sp.is_empty() {
+                // Interactive prompt — keeps seed phrase out of shell history
+                print!("Enter seed phrase: ");
+                io::stdout().flush().ok();
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)
+                    .map_err(|e| eyre::eyre!("Failed to read seed phrase: {e}"))?;
+                let trimmed = input.trim().to_string();
+                if trimmed.is_empty() {
+                    return Err(eyre::eyre!("Seed phrase cannot be empty"));
+                }
+                trimmed
+            } else {
+                sp
+            };
+            Wallet::from_mnemonic(&phrase)?
+        }
         _ => return Err(eyre::eyre!(
             "Provide exactly one: --file, --private-key, or --seed-phrase"
         )),

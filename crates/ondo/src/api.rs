@@ -1,6 +1,8 @@
 use eyre::{Result, eyre};
 use serde::Deserialize;
 
+use crate::HTTP;
+
 const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
 
 // ─── app.ondo.finance/api/v2/assets (free, no auth) ────────────────────────
@@ -56,10 +58,7 @@ struct AssetsResponse {
 
 /// Fetch all assets from the official Ondo API (free, no auth required).
 pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let resp = client.get(ONDO_API_URL).send().await?;
+    let resp = HTTP.get(ONDO_API_URL).send().await?;
     if !resp.status().is_success() {
         return Err(eyre!("Ondo API returned status {}", resp.status()));
     }
@@ -212,10 +211,7 @@ struct SessionResponse {
 
 /// Fetch session limits from Ondo status API.
 pub async fn fetch_session_limits() -> Result<Vec<SessionLimits>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-    let resp = client.get(ONDO_SESSION_URL).send().await?;
+    let resp = HTTP.get(ONDO_SESSION_URL).send().await?;
     if !resp.status().is_success() {
         return Err(eyre!("Ondo session API returned status {}", resp.status()));
     }
@@ -262,13 +258,152 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
     };
 
     let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let resp = client.get(&url).send().await?;
+    let resp = HTTP.get(&url).send().await?;
     if !resp.status().is_success() {
         return Err(eyre!("Ondo history API returned status {}", resp.status()));
     }
     let data: HistoryResponse = resp.json().await?;
     Ok(data.primary_market_price)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_price ───────────────────────────────────────────
+
+    #[test]
+    fn parse_valid_price() {
+        assert!((parse_price("385.75") - 385.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_integer_price() {
+        assert!((parse_price("100") - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_invalid_returns_zero() {
+        assert!((parse_price("N/A") - 0.0).abs() < f64::EPSILON);
+        assert!((parse_price("") - 0.0).abs() < f64::EPSILON);
+        assert!((parse_price("$100") - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ── find_asset ────────────────────────────────────────────
+
+    #[test]
+    fn find_by_symbol_with_suffix() {
+        let assets = vec![OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: None,
+        }];
+        assert!(find_asset("TSLAon", &assets).is_some());
+    }
+
+    #[test]
+    fn find_by_symbol_without_suffix() {
+        let assets = vec![OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: None,
+        }];
+        assert!(find_asset("TSLA", &assets).is_some());
+    }
+
+    #[test]
+    fn find_case_insensitive() {
+        let assets = vec![OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: None,
+        }];
+        assert!(find_asset("tsla", &assets).is_some());
+    }
+
+    #[test]
+    fn find_missing_returns_none() {
+        let assets = vec![OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: None,
+        }];
+        assert!(find_asset("AAPL", &assets).is_none());
+    }
+
+    // ── Session ───────────────────────────────────────────────
+
+    #[test]
+    fn session_labels_non_empty() {
+        for s in [Session::PreMarket, Session::Regular, Session::PostMarket, Session::Overnight, Session::Closed] {
+            assert!(!s.label().is_empty());
+            assert!(!s.hours().is_empty());
+        }
+    }
+
+    #[test]
+    fn session_limits_tradable() {
+        let limits = SessionLimits {
+            symbol: "TSLAon".into(),
+            premarket: Some(SessionInfo { tradable: true, max_attestation_count: None, max_active_notional_value: None }),
+            regular: Some(SessionInfo { tradable: true, max_attestation_count: None, max_active_notional_value: None }),
+            postmarket: Some(SessionInfo { tradable: false, max_attestation_count: None, max_active_notional_value: None }),
+            overnight: None,
+        };
+        assert!(limits.is_tradable(Session::PreMarket));
+        assert!(limits.is_tradable(Session::Regular));
+        assert!(!limits.is_tradable(Session::PostMarket));
+        assert!(!limits.is_tradable(Session::Overnight));
+        assert!(!limits.is_tradable(Session::Closed));
+    }
+
+    #[test]
+    fn session_max_notional() {
+        let limits = SessionLimits {
+            symbol: "TSLAon".into(),
+            premarket: None,
+            regular: Some(SessionInfo {
+                tradable: true,
+                max_attestation_count: None,
+                max_active_notional_value: Some("50000".into()),
+            }),
+            postmarket: None,
+            overnight: None,
+        };
+        assert_eq!(limits.max_notional(Session::Regular), Some(50000.0));
+        assert_eq!(limits.max_notional(Session::PreMarket), None);
+    }
+
+    // ── OndoAsset helpers ─────────────────────────────────────
+
+    #[test]
+    fn sector_extraction() {
+        let asset = OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![
+                OndoAssetTag { category_slug: "sector-industry".into(), tag_label: "Technology".into() },
+                OndoAssetTag { category_slug: "instrument-type".into(), tag_label: "Stock".into() },
+            ],
+            primary_market: None,
+        };
+        assert_eq!(asset.sector(), Some("Technology"));
+        assert_eq!(asset.instrument_type(), Some("Stock"));
+    }
+
+    #[test]
+    fn missing_tags_return_none() {
+        let asset = OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: None,
+        };
+        assert_eq!(asset.sector(), None);
+        assert_eq!(asset.instrument_type(), None);
+    }
 }
