@@ -86,6 +86,7 @@ struct TokenInfo {
 #[serde(rename_all = "camelCase")]
 struct TokenAmount {
     ui_amount: Option<f64>,
+    amount: String,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +147,8 @@ pub struct SolanaTokenBalance {
     pub symbol: String,
     pub mint: String,
     pub balance: f64,
+    /// Raw on-chain amount as string (no float precision loss).
+    pub raw_amount: String,
 }
 
 /// Fetch all GM token balances for a Solana wallet.
@@ -192,6 +195,7 @@ pub async fn get_all_balances(
                 symbol: entry.symbol.clone(),
                 mint: info.mint.clone(),
                 balance: amount,
+                raw_amount: info.token_amount.amount.clone(),
             });
         }
     }
@@ -233,6 +237,7 @@ pub async fn get_balance(
         symbol: String::new(),
         mint: info.mint.clone(),
         balance: info.token_amount.ui_amount.unwrap_or(0.0),
+        raw_amount: info.token_amount.amount.clone(),
     })
 }
 
@@ -303,6 +308,7 @@ pub async fn get_portfolio_balances(
                     symbol: entry.symbol.clone(),
                     mint: info.mint.clone(),
                     balance: amount,
+                    raw_amount: info.token_amount.amount.clone(),
                 });
             }
         }

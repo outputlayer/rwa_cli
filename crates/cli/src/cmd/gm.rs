@@ -679,18 +679,36 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
-    let sell_f = resolve_percent_amount(amount, || {
-        let t = taker.clone();
-        let m = gm_mint.clone();
-        let rpc = rpc_url.map(str::to_string);
-        async move {
-            let bal = solana::get_balance(&t, &m, rpc.as_deref()).await?;
-            Ok(bal.balance)
-        }
-    }).await?;
-    let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
+    // For "all" and "%", use the raw on-chain amount to avoid float precision loss
+    let is_all = amount.trim().eq_ignore_ascii_case("all");
+    let is_pct = amount.trim().ends_with('%');
 
-    let raw_gm = jupiter::token_to_raw(&sell_str, gm_dec)?;
+    let (sell_str, raw_gm) = if is_all || is_pct {
+        let bal = solana::get_balance(&taker, &gm_mint, rpc_url).await?;
+        if bal.balance <= 0.0 {
+            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
+        }
+        if is_all {
+            let sell_display = jupiter::format_amount(&bal.raw_amount, gm_dec);
+            (sell_display, bal.raw_amount)
+        } else {
+            let pct_str = amount.trim().strip_suffix('%').unwrap();
+            let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {}", amount))?;
+            if !(0.0..=100.0).contains(&pct) {
+                return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
+            }
+            let raw: u128 = bal.raw_amount.parse().unwrap_or(0);
+            let pct_raw = (raw as f64 * pct / 100.0) as u128;
+            let pct_raw_str = pct_raw.to_string();
+            let sell_display = jupiter::format_amount(&pct_raw_str, gm_dec);
+            (sell_display, pct_raw_str)
+        }
+    } else {
+        let sell_f: f64 = amount.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
+        let sell_display = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
+        let raw = jupiter::token_to_raw(&sell_display, gm_dec)?;
+        (sell_display, raw)
+    };
 
     if !json {
         println!("Getting quote for {} {} -> USDC ...", sell_str, sym);
