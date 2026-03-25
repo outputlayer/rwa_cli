@@ -381,10 +381,12 @@ fn load_wallet() -> Result<wallet::Wallet> {
     })
 }
 
-/// Minimum SOL needed for transaction fees (~0.005 SOL).
-const MIN_SOL_FOR_GAS: f64 = 0.005;
+/// Minimum SOL needed for transaction fees (~0.01 SOL covers tx + ATA creation).
+const MIN_SOL_FOR_GAS: f64 = 0.01;
 /// Minimum buy/sell amount in USDC.
 const MIN_USDC_AMOUNT: f64 = 1.0;
+/// USDC amount to swap for SOL when gas is low (~$3 → ~0.02 SOL).
+const TOPUP_USDC: f64 = 3.0;
 
 /// Resolve percentage or "all" amounts into absolute numbers.
 ///  - "100" → 100.0 (passthrough)
@@ -446,7 +448,7 @@ fn check_trading_hours() -> Result<()> {
     Ok(())
 }
 
-async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) -> Result<()> {
+async fn preflight_buy(pubkey: &str, usdc_amount: f64, w: &wallet::Wallet, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
 
     if usdc_amount < MIN_USDC_AMOUNT {
@@ -455,6 +457,18 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) ->
 
     let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
+
+    if sol < MIN_SOL_FOR_GAS && usdc > usdc_amount + TOPUP_USDC {
+        topup_sol(w, pubkey, json, rpc_url).await?;
+        let usdc = usdc - TOPUP_USDC;
+        if usdc < usdc_amount {
+            return Err(eyre::eyre!(
+                "Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})\n  \
+                 Fund wallet: {pubkey}"
+            ));
+        }
+        return Ok(());
+    }
 
     let mut issues = Vec::new();
     if sol < MIN_SOL_FOR_GAS {
@@ -475,15 +489,37 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) ->
     Ok(())
 }
 
-async fn preflight_sell(pubkey: &str, rpc_url: Option<&str>) -> Result<()> {
+async fn preflight_sell(pubkey: &str, w: &wallet::Wallet, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
 
     let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     if sol < MIN_SOL_FOR_GAS {
+        let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
+        if usdc >= TOPUP_USDC {
+            topup_sol(w, pubkey, json, rpc_url).await?;
+            return Ok(());
+        }
         return Err(eyre::eyre!(
             "Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})\n  \
              Fund wallet: {pubkey}"
         ));
+    }
+    Ok(())
+}
+
+/// Auto-swap USDC → SOL for transaction fees.
+async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option<&str>) -> Result<()> {
+    if !json {
+        eprintln!("SOL too low for gas — swapping ${TOPUP_USDC:.0} USDC → SOL ...");
+    }
+    let raw_usdc = jupiter::usdc_to_raw(&format!("{TOPUP_USDC:.2}"))?;
+    let order = jupiter::get_order(jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey).await?;
+    jupiter::execute_order(w, &order).await?;
+    // Wait for the SOL to arrive
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let new_sol = solana::get_sol_balance(pubkey, rpc_url).await?;
+    if !json {
+        eprintln!("SOL topped up: {new_sol:.6} SOL");
     }
     Ok(())
 }
@@ -611,7 +647,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     }).await?;
     let usdc_str = format!("{usdc_f:.2}");
 
-    preflight_buy(&taker, usdc_f, rpc_url).await?;
+    preflight_buy(&taker, usdc_f, &w, json, rpc_url).await?;
 
     let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -675,7 +711,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    preflight_sell(&taker, rpc_url).await?;
+    preflight_sell(&taker, &w, json, rpc_url).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 

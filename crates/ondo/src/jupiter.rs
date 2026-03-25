@@ -6,6 +6,8 @@ use crate::wallet::Wallet;
 const ULTRA_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
 /// USDC on Solana
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// Wrapped SOL on Solana
+pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const USDC_DECIMALS: u8 = 6;
 /// Ondo GM tokens on Solana use 9 decimals (Solana standard).
 pub const GM_SOL_DECIMALS: u8 = 9;
