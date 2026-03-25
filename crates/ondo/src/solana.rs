@@ -8,7 +8,7 @@ use crate::wallet::Wallet;
 const RPC_URLS: &[&str] = &[
     "https://api.mainnet-beta.solana.com",
     "https://rpc.ankr.com/solana",
-    "https://solana-mainnet.g.alchemy.com/v2/demo",
+    "https://solana-rpc.publicnode.com",
 ];
 
 /// Return the list of RPC URLs to try: user-provided first, then public fallbacks.
@@ -92,6 +92,31 @@ struct TokenAmount {
 #[derive(Deserialize)]
 struct GetBalanceResult {
     value: u64,
+}
+
+// ── getMultipleAccounts response (flexible: wallet + token accounts) ───
+
+#[derive(Deserialize)]
+struct GetMultipleAccountsResult {
+    value: Vec<Option<MultiAccountInfo>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MultiAccountInfo {
+    lamports: u64,
+    data: serde_json::Value,
+}
+
+impl MultiAccountInfo {
+    /// Try to extract token amount from parsed SPL token data.
+    fn token_ui_amount(&self) -> Option<f64> {
+        self.data.get("parsed")
+            .and_then(|p| p.get("info"))
+            .and_then(|i| i.get("tokenAmount"))
+            .and_then(|t| t.get("uiAmount"))
+            .and_then(|v| v.as_f64())
+    }
 }
 
 /// Get SOL balance in SOL (not lamports).
@@ -257,38 +282,55 @@ pub async fn get_portfolio_balances(
     let urls = rpc_urls(rpc_url);
     let client = reqwest::Client::new();
 
-    // Sequential calls to avoid public RPC rate limiting (429 errors).
-    // Reuse the same client for HTTP connection pooling.
+    // Compute USDC ATA address deterministically (no RPC needed).
+    let wallet_bytes = bs58::decode(wallet).into_vec()
+        .map_err(|e| eyre!("Invalid wallet address: {e}"))?;
+    let usdc_mint_bytes = bs58::decode(USDC_MINT).into_vec()
+        .map_err(|e| eyre!("Invalid USDC mint: {e}"))?;
+    let usdc_ata = derive_ata(&wallet_bytes, &usdc_mint_bytes, &TOKEN_PROGRAM);
+    let usdc_ata_b58 = bs58::encode(&usdc_ata).into_string();
 
-    // 1. SOL balance
-    let sol_resp: RpcResponse<GetBalanceResult> = rpc_call_with_retry(
-        &client, &urls,
-        &RpcRequest { jsonrpc: "2.0", id: 1, method: "getBalance", params: serde_json::json!([wallet, { "commitment": "confirmed" }]) },
-    ).await?;
-    let sol = sol_resp.result
-        .map(|r| r.value as f64 / 1_000_000_000.0)
-        .unwrap_or(0.0);
-
-    // 2. USDC balance
-    let usdc_resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        &client, &urls,
-        &RpcRequest {
-            jsonrpc: "2.0", id: 2, method: "getTokenAccountsByOwner",
-            params: serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+    // Batch 2 RPC calls into 1 HTTP request:
+    //   1. getMultipleAccounts([wallet, usdc_ata]) → SOL + USDC in one call
+    //   2. getTokenAccountsByOwner(Token-2022) → all GM tokens in one call
+    let reqs = vec![
+        RpcRequest {
+            jsonrpc: "2.0", id: 1, method: "getMultipleAccounts",
+            params: serde_json::json!([
+                [wallet, usdc_ata_b58],
+                { "encoding": "jsonParsed", "commitment": "confirmed" }
+            ]),
         },
-    ).await?;
-    let usdc = usdc_resp.result
-        .and_then(|r| r.value.first().and_then(|a| a.account.data.parsed.info.token_amount.ui_amount))
-        .unwrap_or(0.0);
-
-    // 3. GM token balances (Token-2022)
-    let gm_resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        &client, &urls,
-        &RpcRequest {
-            jsonrpc: "2.0", id: 3, method: "getTokenAccountsByOwner",
+        RpcRequest {
+            jsonrpc: "2.0", id: 2, method: "getTokenAccountsByOwner",
             params: serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         },
-    ).await?;
+    ];
+
+    let results = rpc_batch_with_retry(&client, &urls, &reqs).await?;
+
+    // Parse SOL + USDC from getMultipleAccounts
+    let multi_resp: RpcResponse<GetMultipleAccountsResult> = serde_json::from_value(results[0].clone())
+        .map_err(|e| eyre!("Failed to parse accounts: {e}"))?;
+    let (sol, usdc) = if let Some(multi) = multi_resp.result {
+        // First account = wallet → lamports = SOL balance
+        let sol = multi.value.first()
+            .and_then(|v| v.as_ref())
+            .map(|a| a.lamports as f64 / 1_000_000_000.0)
+            .unwrap_or(0.0);
+        // Second account = USDC ATA → parsed token data
+        let usdc = multi.value.get(1)
+            .and_then(|v| v.as_ref())
+            .and_then(|a| a.token_ui_amount())
+            .unwrap_or(0.0);
+        (sol, usdc)
+    } else {
+        (0.0, 0.0)
+    };
+
+    // Parse GM token balances (Token-2022)
+    let gm_resp: RpcResponse<GetTokenAccountsResult> = serde_json::from_value(results[1].clone())
+        .map_err(|e| eyre!("Failed to parse GM token balances: {e}"))?;
 
     let mint_map: std::collections::HashMap<&str, &GmTokenEntry> = tokens
         .iter()
@@ -331,28 +373,28 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
     for (url_idx, url) in urls.iter().enumerate() {
         for attempt in 0..3u32 {
             if attempt > 0 || url_idx > 0 {
-                let delay = 400 * u64::from(attempt + 1);
+                let delay = 1000 * u64::from(attempt + 1);
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
             }
-            let resp = client
-                .post(*url)
-                .json(req)
-                .timeout(timeout)
-                .send().await;
-
-            let resp = match resp {
+            let resp = match client.post(*url).json(req).timeout(timeout).send().await {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = e.to_string();
-                    break; // try next URL on connection error
+                    break; // connection error → try next URL
                 }
             };
+
+            let status = resp.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                last_err = format!("HTTP {status}");
+                continue; // rate limited or 5xx → retry same URL with backoff
+            }
 
             let parsed: RpcResponse<T> = match resp.json().await {
                 Ok(r) => r,
                 Err(e) => {
-                    last_err = e.to_string();
-                    break;
+                    last_err = format!("error decoding response body: {e}");
+                    continue; // HTML / bad response → retry with backoff
                 }
             };
 
@@ -364,6 +406,59 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
                 return Err(eyre!("Solana RPC error: {}", err.message));
             }
             return Ok(parsed);
+        }
+    }
+
+    Err(eyre!(
+        "Solana RPC unavailable (all endpoints rate-limited or down).\n  \
+         Last error: {last_err}\n  \
+         Hint: set RWA_RPC_URL to a private RPC endpoint, or retry in a few seconds."
+    ))
+}
+
+/// Make a batch RPC call (multiple requests in one HTTP request) with retry.
+async fn rpc_batch_with_retry(
+    client: &reqwest::Client,
+    urls: &[&str],
+    reqs: &[RpcRequest<'_>],
+) -> Result<Vec<serde_json::Value>> {
+    let timeout = std::time::Duration::from_secs(20);
+    let mut last_err = String::new();
+
+    for (url_idx, url) in urls.iter().enumerate() {
+        for attempt in 0..3u32 {
+            if attempt > 0 || url_idx > 0 {
+                let delay = 1000 * u64::from(attempt + 1);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            let resp = match client.post(*url).json(&reqs).timeout(timeout).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = e.to_string();
+                    break; // connection error → try next URL
+                }
+            };
+
+            let status = resp.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                last_err = format!("HTTP {status}");
+                continue;
+            }
+
+            let results: Vec<serde_json::Value> = match resp.json().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = format!("error decoding response body: {e}");
+                    continue; // HTML / bad response → retry with backoff
+                }
+            };
+
+            if results.len() != reqs.len() {
+                last_err = format!("batch: got {} responses, expected {}", results.len(), reqs.len());
+                continue;
+            }
+
+            return Ok(results);
         }
     }
 
