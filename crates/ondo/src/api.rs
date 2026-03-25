@@ -7,11 +7,36 @@ const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OndoAssetTag {
+    pub category_slug: String,
+    pub tag_label: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OndoAsset {
     pub symbol: String,
     pub asset_name: String,
+    #[serde(default)]
+    pub tags: Vec<OndoAssetTag>,
     pub primary_market: Option<PrimaryMarket>,
     pub underlying_market: Option<UnderlyingMarket>,
+}
+
+impl OndoAsset {
+    /// Extract sector from tags (e.g. "Technology", "Healthcare").
+    pub fn sector(&self) -> Option<&str> {
+        self.tags.iter()
+            .find(|t| t.category_slug == "sector-industry")
+            .map(|t| t.tag_label.as_str())
+    }
+
+    /// Extract instrument type from tags ("Stock" or "ETF").
+    pub fn instrument_type(&self) -> Option<&str> {
+        self.tags.iter()
+            .find(|t| t.category_slug == "instrument-type")
+            .map(|t| t.tag_label.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

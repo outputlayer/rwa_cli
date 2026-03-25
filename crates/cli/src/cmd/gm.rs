@@ -183,7 +183,9 @@ struct ListItemJson {
     symbol: String,
     name: String,
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sector: Option<String>,
 }
 
 fn json_out(v: &impl Serialize) -> Result<()> {
@@ -1078,7 +1080,7 @@ fn clean_name(name: &str) -> String {
     name.replace(" (Ondo Tokenized)", "")
 }
 
-fn token_type(name: &str) -> &'static str {
+fn token_type_from_name(name: &str) -> &'static str {
     let n = name.to_lowercase();
     if n.contains("etf") || n.contains(" fund") || n.contains(" trust")
         || n.contains(" index") || n.contains(" shares")
@@ -1091,13 +1093,24 @@ fn token_type(name: &str) -> &'static str {
 
 async fn list(json: bool, search: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
+    let assets = api::fetch_assets().await.unwrap_or_default();
+
+    // Build symbol → OndoAsset lookup
+    let asset_map: std::collections::HashMap<String, &api::OndoAsset> = assets.iter()
+        .map(|a| (a.symbol.to_uppercase(), a))
+        .collect();
 
     let filtered: Vec<_> = match search {
         Some(q) => {
             let q = q.to_lowercase();
             tokens.iter().filter(|t| {
-                t.symbol.to_lowercase().contains(&q)
-                    || t.name.to_lowercase().contains(&q)
+                let sym_match = t.symbol.to_lowercase().contains(&q)
+                    || t.name.to_lowercase().contains(&q);
+                let sector_match = asset_map.get(&t.symbol.to_uppercase())
+                    .and_then(|a| a.sector())
+                    .map(|s| s.to_lowercase().contains(&q))
+                    .unwrap_or(false);
+                sym_match || sector_match
             }).collect()
         }
         None => tokens.iter().collect(),
@@ -1105,10 +1118,16 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
 
     if json {
         let items: Vec<_> = filtered.iter().map(|t| {
+            let asset = asset_map.get(&t.symbol.to_uppercase());
+            let kind = asset.and_then(|a| a.instrument_type())
+                .unwrap_or_else(|| token_type_from_name(&t.name))
+                .to_lowercase();
+            let sector = asset.and_then(|a| a.sector()).map(String::from);
             ListItemJson {
                 symbol: t.symbol.clone(),
                 name: clean_name(&t.name),
-                kind: token_type(&t.name),
+                kind,
+                sector,
             }
         }).collect();
         return json_out(&items);
@@ -1118,10 +1137,12 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
         search.map(|s| format!(" matching '{}'", s)).unwrap_or_default());
     for t in &filtered {
         let name = clean_name(&t.name);
-        if name.is_empty() {
-            println!("  {}", t.symbol);
-        } else {
+        let asset = asset_map.get(&t.symbol.to_uppercase());
+        let sector = asset.and_then(|a| a.sector()).unwrap_or("");
+        if sector.is_empty() {
             println!("  {:<12} {}", t.symbol, name);
+        } else {
+            println!("  {:<12} {:<30} {}", t.symbol, name, sector);
         }
     }
     Ok(())
