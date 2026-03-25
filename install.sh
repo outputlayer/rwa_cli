@@ -53,7 +53,7 @@ ensure_rust() {
 # --- Install from source ---
 install_from_source() {
     echo "Installing $BIN_NAME from source (ref: $VERSION)..."
-    cargo install --git "https://github.com/${REPO}" --rev "$VERSION" --bin "$BIN_NAME"
+    cargo install --git "https://github.com/${REPO}" --branch "$VERSION" --bin "$BIN_NAME"
 }
 
 # --- Main ---
