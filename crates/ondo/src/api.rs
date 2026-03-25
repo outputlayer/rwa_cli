@@ -83,6 +83,146 @@ pub fn parse_price(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
 
+// ─── Trading sessions ─────────────────────────────────────────────────────
+
+const ONDO_SESSION_URL: &str = "https://status.ondo.finance/api/limits/session";
+
+/// Trading session name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    PreMarket,
+    Regular,
+    PostMarket,
+    Overnight,
+    Closed,
+}
+
+impl Session {
+    pub fn label(self) -> &'static str {
+        match self {
+            Session::PreMarket => "Pre-Market",
+            Session::Regular => "Regular Market",
+            Session::PostMarket => "Post-Market",
+            Session::Overnight => "Overnight",
+            Session::Closed => "Closed",
+        }
+    }
+
+    pub fn hours(self) -> &'static str {
+        match self {
+            Session::PreMarket => "4:00 AM – 9:29 AM ET",
+            Session::Regular => "9:30 AM – 3:59 PM ET",
+            Session::PostMarket => "4:00 PM – 7:59 PM ET",
+            Session::Overnight => "8:00 PM – 3:59 AM ET",
+            Session::Closed => "Sat – Sun 8 PM ET",
+        }
+    }
+}
+
+/// Determine the current trading session based on ET time.
+///
+/// Sessions (EDT/EST):
+///   Pre-Market:  4:00 AM – 9:29:59 AM
+///   Regular:     9:30 AM – 3:59:59 PM
+///   Post-Market: 4:00 PM – 7:59:59 PM
+///   Overnight:   8:00 PM – 3:59:59 AM
+///   Closed:      Saturday all day, Sunday before 8 PM, Friday after 8 PM
+pub fn current_session() -> Session {
+    use chrono::{Datelike, Timelike};
+    use chrono_tz::US::Eastern;
+
+    let now = chrono::Utc::now().with_timezone(&Eastern);
+    let wd = now.weekday();
+    let hour = now.hour();
+
+    // Weekend: closed
+    if matches!(wd, chrono::Weekday::Sat)
+        || (wd == chrono::Weekday::Sun && hour < 20)
+        || (wd == chrono::Weekday::Fri && hour >= 20)
+    {
+        return Session::Closed;
+    }
+
+    match hour {
+        4..=8 => Session::PreMarket,
+        9 if now.minute() < 30 => Session::PreMarket,
+        9 => Session::Regular,
+        10..=15 => Session::Regular,
+        16..=19 => Session::PostMarket,
+        20..=23 => Session::Overnight,
+        0..=3 => Session::Overnight,
+        _ => Session::Closed,
+    }
+}
+
+/// Session limits for a single token from Ondo status API.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLimits {
+    pub symbol: String,
+    #[serde(default)]
+    pub premarket: Option<SessionInfo>,
+    #[serde(default)]
+    pub regular: Option<SessionInfo>,
+    #[serde(default)]
+    pub postmarket: Option<SessionInfo>,
+    #[serde(default)]
+    pub overnight: Option<SessionInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub tradable: bool,
+    pub max_attestation_count: Option<String>,
+    pub max_active_notional_value: Option<String>,
+}
+
+impl SessionLimits {
+    /// Check if this token is tradable in the given session.
+    pub fn is_tradable(&self, session: Session) -> bool {
+        let info = match session {
+            Session::PreMarket => self.premarket.as_ref(),
+            Session::Regular => self.regular.as_ref(),
+            Session::PostMarket => self.postmarket.as_ref(),
+            Session::Overnight => self.overnight.as_ref(),
+            Session::Closed => return false,
+        };
+        info.map(|i| i.tradable).unwrap_or(false)
+    }
+
+    /// Max notional value for the given session.
+    pub fn max_notional(&self, session: Session) -> Option<f64> {
+        let info = match session {
+            Session::PreMarket => self.premarket.as_ref(),
+            Session::Regular => self.regular.as_ref(),
+            Session::PostMarket => self.postmarket.as_ref(),
+            Session::Overnight => self.overnight.as_ref(),
+            Session::Closed => return None,
+        };
+        info.and_then(|i| i.max_active_notional_value.as_deref())
+            .and_then(|v| v.parse().ok())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionResponse {
+    limits: Vec<SessionLimits>,
+}
+
+/// Fetch session limits from Ondo status API.
+pub async fn fetch_session_limits() -> Result<Vec<SessionLimits>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client.get(ONDO_SESSION_URL).send().await?;
+    if !resp.status().is_success() {
+        return Err(eyre!("Ondo session API returned status {}", resp.status()));
+    }
+    let data: SessionResponse = resp.json().await?;
+    Ok(data.limits)
+}
+
 // ─── Price history ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]

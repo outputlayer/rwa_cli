@@ -9,8 +9,12 @@ use std::io::{self, Write};
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
-    /// Check if Ondo GM market is open (24/5: Sun 8pm -- Fri 8pm ET)
-    Hours,
+    /// Check market status, current session, and tradable tokens
+    Hours {
+        /// Show full list of tradable tokens (omitted by default in --json)
+        #[arg(long)]
+        tradable: bool,
+    },
 
     /// Get swap quote for a GM token via Jupiter
     Quote {
@@ -92,7 +96,7 @@ pub enum GmAction {
 
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
-        GmAction::Hours => hours(json),
+        GmAction::Hours { tradable } => hours(json, tradable).await,
         GmAction::Quote { symbol, amount, sell } => quote(&symbol, &amount, sell, json, rpc_url).await,
         GmAction::Buy { symbol, amount, yes } => buy(&symbol, &amount, yes, json, rpc_url).await,
         GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json, rpc_url).await,
@@ -109,8 +113,14 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
 #[derive(Serialize)]
 struct HoursJson {
     status: &'static str,
+    session: &'static str,
+    session_hours: &'static str,
     now: String,
     countdown: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tradable_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tradable: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -125,6 +135,12 @@ struct QuoteJson {
     output_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     slippage_pct: Option<f64>,
+    /// Price impact from Jupiter API (negative = loss).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    price_impact_pct: Option<f64>,
+    /// Jupiter fee in basis points.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fee_bps: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +202,8 @@ struct ListItemJson {
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     sector: Option<String>,
+    /// Whether this token is tradable in the current session.
+    tradable: bool,
 }
 
 fn json_out(v: &impl Serialize) -> Result<()> {
@@ -195,7 +213,7 @@ fn json_out(v: &impl Serialize) -> Result<()> {
 
 // ── Public command handlers ─────────────────────────────────
 
-pub fn hours(json: bool) -> Result<()> {
+pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     use chrono::Timelike;
     use chrono_tz::US::Eastern;
 
@@ -204,11 +222,13 @@ pub fn hours(json: bool) -> Result<()> {
     let hour = now.hour();
     let min = now.minute();
 
-    let closed = !is_market_open();
+    let session = api::current_session();
+    let closed = session == api::Session::Closed;
 
     let time_str = now.format("%A %I:%M %p ET").to_string();
 
-    let (status, countdown) = if closed {
+    // Countdown to next session boundary
+    let countdown = if closed {
         let days_until_sun: u32 = match wd {
             chrono::Weekday::Fri => 2,
             chrono::Weekday::Sat => 1,
@@ -216,43 +236,102 @@ pub fn hours(json: bool) -> Result<()> {
             _ => 0,
         };
         let mins_left = if wd == chrono::Weekday::Sun {
-            (20 - hour) * 60 - min
+            (20u32).saturating_sub(hour) * 60 - min
         } else {
             let to_midnight = (24 - hour) * 60 - min;
             let full_days = days_until_sun.saturating_sub(1);
             to_midnight + full_days * 24 * 60 + 20 * 60
         };
-        ("closed", format!("opens in {}h {}m", mins_left / 60, mins_left % 60))
+        format!("opens in {}h {}m", mins_left / 60, mins_left % 60)
     } else {
-        let days_until_fri = match wd {
-            chrono::Weekday::Sun => 5,
-            chrono::Weekday::Mon => 4,
-            chrono::Weekday::Tue => 3,
-            chrono::Weekday::Wed => 2,
-            chrono::Weekday::Thu => 1,
-            chrono::Weekday::Fri => 0,
-            chrono::Weekday::Sat => 6,
+        // Minutes until current session ends
+        let session_end_hour: u32 = match session {
+            api::Session::PreMarket => 9,    // ends at 9:30
+            api::Session::Regular => 16,     // ends at 16:00
+            api::Session::PostMarket => 20,  // ends at 20:00
+            api::Session::Overnight => 4,    // ends at 4:00
+            _ => 0,
         };
-        let mins_left = if days_until_fri == 0 {
-            (20 - hour) * 60 - min
+        let session_end_min: u32 = if session == api::Session::PreMarket { 30 } else { 0 };
+
+        let mins_left = if session == api::Session::Overnight && hour >= 20 {
+            // 20:00–23:59 → ends at 4:00 next day
+            (24 - hour + 4) * 60 - min
+        } else if session_end_hour > hour || (session_end_hour == hour && session_end_min > min) {
+            (session_end_hour - hour) * 60 + session_end_min - min
         } else {
-            let to_midnight = (24 - hour) * 60 - min;
-            to_midnight + (days_until_fri - 1) * 24 * 60 + 20 * 60
+            0
         };
-        ("open", format!("closes in {}h {}m", mins_left / 60, mins_left % 60))
+        format!("next session in {}h {}m", mins_left / 60, mins_left % 60)
     };
 
+    // Fetch tradable tokens for current session (skip API call if not needed)
+    let (tradable_count, tradable_list) = if !closed && (show_tradable || !json) {
+        match api::fetch_session_limits().await {
+            Ok(limits) => {
+                let tradable: Vec<String> = limits.iter()
+                    .filter(|l| l.is_tradable(session))
+                    .map(|l| l.symbol.clone())
+                    .collect();
+                let count = tradable.len();
+                if show_tradable {
+                    (Some(count), Some(tradable))
+                } else {
+                    (Some(count), None)
+                }
+            }
+            Err(_) => (None, None),
+        }
+    } else if !closed {
+        // JSON without --tradable: still show count, skip list
+        match api::fetch_session_limits().await {
+            Ok(limits) => {
+                let count = limits.iter()
+                    .filter(|l| l.is_tradable(session))
+                    .count();
+                (Some(count), None)
+            }
+            Err(_) => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    let status = if closed { "closed" } else { "open" };
+
     if json {
-        return json_out(&HoursJson { status, now: time_str, countdown });
+        return json_out(&HoursJson {
+            status,
+            session: session.label(),
+            session_hours: session.hours(),
+            now: time_str,
+            countdown,
+            tradable_count,
+            tradable: tradable_list,
+        });
     }
 
     let label = if closed { "CLOSED" } else { "OPEN" };
-    println!("{}", label);
-    println!("  Now:     {}", time_str);
-    println!("  Hours:   Sunday 8:00 PM -- Friday 8:00 PM ET");
-    let cap = if closed { "Opens" } else { "Closes" };
-    let cd = countdown.trim_start_matches("opens in ").trim_start_matches("closes in ");
-    println!("  {} in: {}", cap, cd);
+    println!("{} — {}", label, session.label());
+    println!("  Now:         {}", time_str);
+    println!("  Session:     {} ({})", session.label(), session.hours());
+    println!();
+    println!("  Sessions:");
+    println!("    Pre-Market:     4:00 AM – 9:29 AM ET");
+    println!("    Regular:        9:30 AM – 3:59 PM ET");
+    println!("    Post-Market:    4:00 PM – 7:59 PM ET");
+    println!("    Overnight:      8:00 PM – 3:59 AM ET");
+    println!("    Closed:         Fri 8 PM – Sun 8 PM ET");
+    println!();
+    let cd = countdown.trim_start_matches("opens in ").trim_start_matches("next session in ");
+    if closed {
+        println!("  Opens in: {}", cd);
+    } else {
+        println!("  Next session in: {}", cd);
+        if let Some(count) = tradable_count {
+            println!("  Tradable now: {} tokens", count);
+        }
+    }
     Ok(())
 }
 
@@ -260,10 +339,7 @@ pub async fn portfolio(wallet: Option<&str>, json: bool, rpc_url: Option<&str>) 
     let tokens = token_list::get_token_list();
     let pubkey = match wallet {
         Some(w) => {
-            // Basic validation: base58, reasonable length for Solana address
-            if w.len() < 32 || w.len() > 44 || w.chars().any(|c| c.is_whitespace()) {
-                return Err(eyre::eyre!("Invalid Solana address: {w}"));
-            }
+            solana::validate_address(w)?;
             w.to_string()
         }
         None => load_wallet()?.pubkey(),
@@ -376,9 +452,9 @@ pub async fn portfolio(wallet: Option<&str>, json: bool, rpc_url: Option<&str>) 
 
 fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
     let entry = gm::resolve_token(symbol, tokens)?;
-    let mint = entry.solana_address.as_deref()
+    let mint = entry.solana_address
         .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
-    Ok((entry.symbol.clone(), mint.to_string()))
+    Ok((entry.symbol.to_string(), mint.to_string()))
 }
 
 fn load_wallet() -> Result<wallet::Wallet> {
@@ -397,8 +473,13 @@ fn load_wallet() -> Result<wallet::Wallet> {
 /// Maximum allowed slippage before blocking the trade.
 const MAX_SLIPPAGE_PCT: f64 = 10.0;
 
-/// Calculate slippage from Jupiter's USD values. Returns (slippage_pct, should_warn).
+/// Get slippage: prefer Jupiter's `price_impact`, fall back to USD value diff.
 fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
+    // Jupiter Ultra API returns price_impact directly (negative = loss).
+    if let Some(pi) = order.price_impact {
+        return Some(pi);
+    }
+    // Fallback: compute from USD values
     match (order.in_usd_value, order.out_usd_value) {
         (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => {
             Some((usd_out - usd_in) / usd_in * 100.0)
@@ -426,8 +507,10 @@ fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f
 
 /// Minimum SOL needed for transaction fees (~0.01 SOL covers tx + ATA creation).
 const MIN_SOL_FOR_GAS: f64 = 0.01;
-/// Minimum buy/sell amount in USDC.
+/// Minimum buy/sell amount in USDC. Jupiter rejects orders below ~$1.
 const MIN_USDC_AMOUNT: f64 = 1.0;
+/// Minimum sell value in USD. Jupiter market makers reject tiny orders.
+const MIN_SELL_VALUE_USD: f64 = 1.0;
 /// USDC amount to swap for SOL when gas is low (~$3 → ~0.02 SOL).
 const TOPUP_USDC: f64 = 3.0;
 
@@ -464,29 +547,16 @@ where
     s.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {s}"))
 }
 
-/// Check if Ondo GM trading is currently open.
-/// Trading window: Sunday 8 PM ET → Friday 8 PM ET (24/5).
-fn is_market_open() -> bool {
-    use chrono::Timelike;
-    use chrono_tz::US::Eastern;
-
-    let now = chrono::Utc::now().with_timezone(&Eastern);
-    let wd = now.weekday();
-    let hour = now.hour();
-
-    !(matches!(wd, chrono::Weekday::Sat)
-        || (wd == chrono::Weekday::Sun && hour < 20)
-        || (wd == chrono::Weekday::Fri && hour >= 20))
-}
-
 fn check_trading_hours() -> Result<()> {
-    if !is_market_open() {
+    let session = api::current_session();
+    if session == api::Session::Closed {
         use chrono_tz::US::Eastern;
         let now = chrono::Utc::now().with_timezone(&Eastern);
         return Err(eyre::eyre!(
             "Ondo GM market is closed right now.\n  \
-             Trading hours: Sunday 8 PM — Friday 8 PM ET (24/5)\n  \
-             Current time:  {} ET",
+             Trading resumes: Sunday 8:00 PM ET (Overnight session)\n  \
+             Current time:    {} ET\n  \
+             Run `rwa gm hours` for session details",
             now.format("%A %I:%M %p")
         ));
     }
@@ -631,6 +701,8 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
             input_usd,
             output_usd,
             slippage_pct: slippage,
+            price_impact_pct: order.price_impact,
+            fee_bps: order.fee_bps,
         });
     }
 
@@ -639,6 +711,9 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
         println!("  Input value:   ${:.2}", usd_in);
         println!("  Output value:  ${:.2}", usd_out);
         println!("  Slippage:      {:.2}%", slip);
+    }
+    if let Some(pi) = order.price_impact {
+        println!("  Price impact:  {:.4}%", pi);
     }
 
     Ok(())
@@ -860,7 +935,16 @@ struct CloseAllResultJson {
     status: &'static str,
     sold: Vec<CloseItemJson>,
     failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<CloseSkipJson>,
     total_usdc: String,
+}
+
+#[derive(Serialize)]
+struct CloseSkipJson {
+    token: String,
+    estimated_usd: f64,
+    reason: &'static str,
 }
 
 #[derive(Serialize)]
@@ -900,14 +984,20 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    // Get all GM token balances
-    let balances = solana::get_all_balances(&taker, &tokens, rpc_url).await?;
+    // Get balances and prices concurrently
+    let (balances_res, assets) = tokio::join!(
+        solana::get_all_balances(&taker, &tokens, rpc_url),
+        api::fetch_assets()
+    );
+    let balances = balances_res?;
+    let assets = assets.unwrap_or_default();
     if balances.is_empty() {
         if json {
             return json_out(&CloseAllResultJson {
                 status: "success",
                 sold: vec![],
                 failed: vec![],
+                skipped: vec![],
                 total_usdc: "0".to_string(),
             });
         }
@@ -943,6 +1033,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
 
     let mut sold = Vec::new();
     let mut failed = Vec::new();
+    let mut skipped = Vec::new();
     let mut total_usdc: f64 = 0.0;
 
     for (i, tb) in balances.iter().enumerate() {
@@ -961,6 +1052,29 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         } else {
             tb.raw_amount.clone()
         };
+
+        // Skip positions below minimum sell value — Jupiter rejects tiny orders.
+        let sell_balance = if sell_pct < 100.0 {
+            tb.balance * sell_pct / 100.0
+        } else {
+            tb.balance
+        };
+        let price = api::find_asset(&tb.symbol, &assets)
+            .and_then(|a| a.primary_market.as_ref())
+            .map(|pm| api::parse_price(&pm.price))
+            .unwrap_or(0.0);
+        let est_value = sell_balance * price;
+        if est_value > 0.0 && est_value < MIN_SELL_VALUE_USD {
+            if !json {
+                eprintln!("  Skipping {} — est. ${:.2} below ${:.0} minimum", tb.symbol, est_value, MIN_SELL_VALUE_USD);
+            }
+            skipped.push(CloseSkipJson {
+                token: tb.symbol.clone(),
+                estimated_usd: est_value,
+                reason: "below $1 minimum",
+            });
+            continue;
+        }
 
         let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
         if !json {
@@ -998,14 +1112,19 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
             status: "success",
             sold,
             failed,
+            skipped,
             total_usdc: format!("{total_usdc:.2}"),
         });
     }
 
     println!("\nClose-all{} complete:", pct_label);
-    println!("  Sold:   {} positions → {:.2} USDC", sold.len(), total_usdc);
+    println!("  Sold:    {} positions → {:.2} USDC", sold.len(), total_usdc);
+    if !skipped.is_empty() {
+        let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
+        println!("  Skipped: {} (below $1: {})", skipped.len(), names.join(", "));
+    }
     if !failed.is_empty() {
-        println!("  Failed: {} positions (skipped)", failed.len());
+        println!("  Failed:  {} positions", failed.len());
     }
     Ok(())
 }
@@ -1095,6 +1214,15 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list();
     let assets = api::fetch_assets().await.unwrap_or_default();
 
+    // Fetch session limits to determine tradability
+    let session = api::current_session();
+    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits().await
+        .unwrap_or_default()
+        .iter()
+        .filter(|l| l.is_tradable(session))
+        .map(|l| l.symbol.to_uppercase())
+        .collect();
+
     // Build symbol → OndoAsset lookup
     let asset_map: std::collections::HashMap<String, &api::OndoAsset> = assets.iter()
         .map(|a| (a.symbol.to_uppercase(), a))
@@ -1126,11 +1254,13 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
                 .unwrap_or_else(|| token_type_from_name(&name))
                 .to_lowercase();
             let sector = asset.and_then(|a| a.sector()).map(String::from);
+            let tradable = tradable_set.contains(&t.symbol.to_uppercase());
             ListItemJson {
-                symbol: t.symbol.clone(),
+                symbol: t.symbol.to_string(),
                 name,
                 kind,
                 sector,
+                tradable,
             }
         }).collect();
         return json_out(&items);
@@ -1142,10 +1272,11 @@ async fn list(json: bool, search: Option<&str>) -> Result<()> {
         let asset = asset_map.get(&t.symbol.to_uppercase());
         let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
         let sector = asset.and_then(|a| a.sector()).unwrap_or("");
+        let mark = if tradable_set.contains(&t.symbol.to_uppercase()) { "✓" } else { "✗" };
         if sector.is_empty() {
-            println!("  {:<12} {}", t.symbol, name);
+            println!("  {} {:<12} {}", mark, t.symbol, name);
         } else {
-            println!("  {:<12} {:<30} {}", t.symbol, name, sector);
+            println!("  {} {:<12} {:<30} {}", mark, t.symbol, name, sector);
         }
     }
     Ok(())
@@ -1166,10 +1297,7 @@ async fn send(token: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_ur
     let w = load_wallet()?;
     let pubkey = w.pubkey();
 
-    // Validate recipient address (base58, 32-44 chars typical for Solana)
-    if to.len() < 32 || to.len() > 44 {
-        return Err(eyre::eyre!("Invalid recipient address: {to}"));
-    }
+    solana::validate_address(to)?;
     if to == pubkey {
         return Err(eyre::eyre!("Cannot send to yourself"));
     }

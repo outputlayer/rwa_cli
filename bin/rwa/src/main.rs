@@ -1,4 +1,4 @@
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     if let Err(e) = rwa_cli::run().await {
         let is_json = std::env::args().any(|a| a == "--json");

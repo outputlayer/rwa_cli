@@ -1198,6 +1198,8 @@ dependencies = [
  "base64",
  "bip39",
  "bs58",
+ "chrono",
+ "chrono-tz",
  "dirs",
  "ed25519-dalek",
  "eyre",

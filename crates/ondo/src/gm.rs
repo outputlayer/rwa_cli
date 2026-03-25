@@ -7,7 +7,7 @@ use crate::token_list::GmTokenEntry;
 pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a GmTokenEntry> {
     // Try Solana address lookup (base58, typically 32+ chars)
     if symbol.len() >= 32 {
-        if let Some(entry) = tokens.iter().find(|t| t.solana_address.as_deref() == Some(symbol)) {
+        if let Some(entry) = tokens.iter().find(|t| t.solana_address == Some(symbol)) {
             return Ok(entry);
         }
     }

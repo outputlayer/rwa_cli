@@ -42,8 +42,9 @@ Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for m
 
 ```bash
 rwa keys generate               # Create Solana wallet
-rwa gm hours                    # Check market (Sun 8pm – Fri 8pm ET)
-rwa gm list                     # See all 264 tokens
+rwa gm hours                    # Market session + tradable count
+rwa gm hours --tradable         # List all tradable tokens right now
+rwa gm list                     # See all 264 tokens (with tradable status)
 rwa gm list --search biotech    # Search tokens by keyword
 rwa gm quote TSLA 100           # Quote: 100 USDC → TSLA
 rwa gm buy TSLA 100 -y          # Execute buy
@@ -60,9 +61,10 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 
 | Command | Description |
 |---------|-------------|
-| `rwa gm hours` | Market status (OPEN/CLOSED + countdown) |
-| `rwa gm list` | All 264 available tokens |
-| `rwa gm list --search <keyword>` | Search tokens by name/symbol/sector |
+| `rwa gm hours` | Current session + tradable count |
+| `rwa gm hours --tradable` | List all tradable tokens in current session |
+| `rwa gm list` | All 264 tokens with tradable status |
+| `rwa gm list --search <keyword>` | Search tokens by name/symbol/sector (includes `tradable` field) |
 | `rwa gm quote <SYM> <AMT>` | Swap quote (buy) |
 | `rwa gm quote <SYM> <AMT> --sell` | Swap quote (sell) |
 | `rwa gm buy <SYM> <AMT> -y` | Buy with USDC |
@@ -107,9 +109,25 @@ rwa --json gm close-all 50% -y
 
 - 264 tokenized stocks & ETFs on Solana
 - **Total return trackers** — dividends reinvested, 1 token ≠ 1 share
-- Trading hours: 24/5 (Sunday 8 PM — Friday 8 PM ET)
 - Both `TSLA` and `TSLAon` symbol formats accepted
 - Swaps via [Jupiter](https://jup.ag/) on Solana
+
+### Trading Sessions (ET)
+
+| Session | Hours |
+|---------|-------|
+| Pre-Market | 4:00 AM – 9:29 AM |
+| Regular | 9:30 AM – 3:59 PM |
+| Post-Market | 4:00 PM – 7:59 PM |
+| Overnight | 8:00 PM – 3:59 AM |
+| Closed | Fri 8 PM – Sun 8 PM |
+
+Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or the `tradable` field in `--json` output to check.
+
+### Close-All Limits
+
+- Positions worth less than **$1** are automatically skipped during `close-all` (Jupiter rejects small swaps)
+- Skipped tokens are reported separately in both text and JSON output
 
 ## Architecture
 

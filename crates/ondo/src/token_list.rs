@@ -1,8 +1,8 @@
 /// A GM token entry with Solana mint address.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct GmTokenEntry {
-    pub symbol: String,
-    pub solana_address: Option<String>,
+    pub symbol: &'static str,
+    pub solana_address: Option<&'static str>,
 }
 
 /// Return the full list of GM tokens with Solana mint addresses.
@@ -10,8 +10,8 @@ pub fn get_token_list() -> Vec<GmTokenEntry> {
     GM_TOKENS_STATIC
         .iter()
         .map(|&(symbol, sol)| GmTokenEntry {
-            symbol: symbol.to_string(),
-            solana_address: if sol.is_empty() { None } else { Some(sol.to_string()) },
+            symbol,
+            solana_address: if sol.is_empty() { None } else { Some(sol) },
         })
         .collect()
 }

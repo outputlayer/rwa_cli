@@ -22,7 +22,7 @@ rwa-ondo = { path = "crates/ondo" }
 clap = { version = "4", features = ["derive", "env"] }
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Serialization
@@ -55,3 +55,4 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"

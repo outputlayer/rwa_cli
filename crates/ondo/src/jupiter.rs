@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::wallet::Wallet;
 
 const ULTRA_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
-/// USDC on Solana
-pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const USDC_DECIMALS: u8 = 6;
@@ -22,7 +21,14 @@ pub struct OrderResponse {
     pub out_amount: String,
     pub in_usd_value: Option<f64>,
     pub out_usd_value: Option<f64>,
+    /// Price impact as percentage (from Jupiter API).
     pub price_impact: Option<f64>,
+    /// Price impact as string for precise display (e.g. "-0.00012376932391608222").
+    pub price_impact_pct: Option<String>,
+    /// Slippage in basis points (set by Jupiter, typically 0 for Ultra API).
+    pub slippage_bps: Option<u32>,
+    /// Jupiter fee in basis points.
+    pub fee_bps: Option<u32>,
     pub transaction: Option<String>,
     pub error: Option<String>,
     pub error_message: Option<String>,

@@ -35,8 +35,20 @@ fn rpc_urls(custom: Option<&str>) -> Vec<&str> {
 }
 /// Ondo GM tokens use Token-2022 (Token Extensions) on Solana.
 const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-/// USDC on Solana
-pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub use crate::USDC_MINT;
+
+/// Validate a Solana base58 address (32-44 chars, valid base58, decodes to 32 bytes).
+pub fn validate_address(addr: &str) -> Result<()> {
+    if addr.len() < 32 || addr.len() > 44 || addr.chars().any(|c| c.is_whitespace()) {
+        return Err(eyre!("Invalid Solana address: {addr}"));
+    }
+    let bytes = bs58::decode(addr).into_vec()
+        .map_err(|e| eyre!("Invalid Solana address (bad base58): {e}"))?;
+    if bytes.len() != 32 {
+        return Err(eyre!("Invalid Solana address: expected 32 bytes, got {}", bytes.len()));
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct RpcRequest<'a> {
@@ -211,7 +223,7 @@ pub async fn get_all_balances(
     // Build a mint → token entry lookup
     let mint_map: std::collections::HashMap<&str, &GmTokenEntry> = tokens
         .iter()
-        .filter_map(|t| t.solana_address.as_deref().map(|sol| (sol, t)))
+        .filter_map(|t| t.solana_address.map(|sol| (sol, t)))
         .collect();
 
     let mut balances = Vec::new();
@@ -224,7 +236,7 @@ pub async fn get_all_balances(
 
         if let Some(entry) = mint_map.get(info.mint.as_str()) {
             balances.push(SolanaTokenBalance {
-                symbol: entry.symbol.clone(),
+                symbol: entry.symbol.to_string(),
                 mint: info.mint.clone(),
                 balance: amount,
                 raw_amount: info.token_amount.amount.clone(),
@@ -294,7 +306,7 @@ pub async fn get_portfolio_balances(
         .map_err(|e| eyre!("Invalid wallet address: {e}"))?;
     let usdc_mint_bytes = bs58::decode(USDC_MINT).into_vec()
         .map_err(|e| eyre!("Invalid USDC mint: {e}"))?;
-    let usdc_ata = derive_ata(&wallet_bytes, &usdc_mint_bytes, &TOKEN_PROGRAM);
+    let usdc_ata = derive_ata(&wallet_bytes, &usdc_mint_bytes, &TOKEN_PROGRAM)?;
     let usdc_ata_b58 = bs58::encode(&usdc_ata).into_string();
 
     // Batch 2 RPC calls into 1 HTTP request:
@@ -341,7 +353,7 @@ pub async fn get_portfolio_balances(
 
     let mint_map: std::collections::HashMap<&str, &GmTokenEntry> = tokens
         .iter()
-        .filter_map(|t| t.solana_address.as_deref().map(|sol| (sol, t)))
+        .filter_map(|t| t.solana_address.map(|sol| (sol, t)))
         .collect();
 
     let mut gm_tokens = Vec::new();
@@ -354,7 +366,7 @@ pub async fn get_portfolio_balances(
             }
             if let Some(entry) = mint_map.get(info.mint.as_str()) {
                 gm_tokens.push(SolanaTokenBalance {
-                    symbol: entry.symbol.clone(),
+                    symbol: entry.symbol.to_string(),
                     mint: info.mint.clone(),
                     balance: amount,
                     raw_amount: info.token_amount.amount.clone(),
@@ -508,13 +520,11 @@ pub async fn transfer_sol(
     let lamports: u64 = crate::jupiter::token_to_raw(&amount_str, 9)?
         .parse()
         .map_err(|e| eyre!("Invalid lamports value: {e}"))?;
+    validate_address(recipient)?;
     let from = bs58::decode(wallet.pubkey()).into_vec()
         .map_err(|e| eyre!("Invalid sender pubkey: {e}"))?;
     let to = bs58::decode(recipient).into_vec()
         .map_err(|e| eyre!("Invalid recipient address: {e}"))?;
-    if to.len() != 32 {
-        return Err(eyre!("Invalid recipient address length"));
-    }
 
     // System transfer instruction: program_id_index=2, data=lamports(u32_le(2) + u64_le)
     let mut ix_data = vec![2, 0, 0, 0]; // Transfer instruction index
@@ -552,20 +562,18 @@ pub async fn transfer_spl(
     is_token_2022: bool,
     rpc_url: Option<&str>,
 ) -> Result<String> {
+    validate_address(recipient)?;
     let from_pubkey = bs58::decode(wallet.pubkey()).into_vec()
         .map_err(|e| eyre!("Invalid sender pubkey: {e}"))?;
     let to_pubkey = bs58::decode(recipient).into_vec()
         .map_err(|e| eyre!("Invalid recipient address: {e}"))?;
     let mint_pubkey = bs58::decode(mint).into_vec()
         .map_err(|e| eyre!("Invalid mint address: {e}"))?;
-    if to_pubkey.len() != 32 || mint_pubkey.len() != 32 {
-        return Err(eyre!("Invalid address length"));
-    }
 
     let token_program = if is_token_2022 { TOKEN_2022_PROGRAM_ID } else { TOKEN_PROGRAM };
 
-    let from_ata = derive_ata(&from_pubkey, &mint_pubkey, &token_program);
-    let to_ata = derive_ata(&to_pubkey, &mint_pubkey, &token_program);
+    let from_ata = derive_ata(&from_pubkey, &mint_pubkey, &token_program)?;
+    let to_ata = derive_ata(&to_pubkey, &mint_pubkey, &token_program)?;
 
     // Check if recipient ATA exists
     let ata_exists = check_account_exists(&to_ata, rpc_url).await?;
@@ -779,7 +787,7 @@ async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<b
 }
 
 /// Derive Associated Token Account address.
-fn derive_ata(owner: &[u8], mint: &[u8], token_program: &[u8; 32]) -> Vec<u8> {
+fn derive_ata(owner: &[u8], mint: &[u8], token_program: &[u8; 32]) -> Result<Vec<u8>> {
     use sha2::{Sha256, Digest};
 
     // PDA seeds: [owner, token_program, mint]
@@ -798,14 +806,12 @@ fn derive_ata(owner: &[u8], mint: &[u8], token_program: &[u8; 32]) -> Vec<u8> {
         let hash = hasher.finalize();
 
         // Valid PDA must NOT be on the Ed25519 curve
-        // Simple check: try to decompress as Ed25519 point
         if !is_on_curve(&hash) {
-            return hash.to_vec();
+            return Ok(hash.to_vec());
         }
     }
 
-    // Fallback (should never happen)
-    Vec::new()
+    Err(eyre!("Failed to derive ATA — no valid PDA found"))
 }
 
 /// Check if a 32-byte key is on the Ed25519 curve.

@@ -49,18 +49,35 @@ cargo install --path bin/rwa # Install locally
 ## Commands
 
 ```
-rwa gm hours                       # Market status
-rwa gm list --search <keyword>     # Search tokens by name, symbol, or sector
+rwa gm hours                       # Current trading session + tradable count
+rwa gm hours --tradable            # List all tradable tokens in current session
+rwa gm list                        # All 264 tokens (with tradable status)
+rwa gm list --search <keyword>     # Search tokens (includes tradable field)
 rwa gm quote <SYM> <AMT>          # Swap quote
 rwa gm buy <SYM> <AMT> -y         # Buy token
 rwa gm sell <SYM> <AMT> -y        # Sell token
-rwa gm close-all -y               # Sell ALL positions (sequential, skips failures)
+rwa gm close-all -y               # Sell ALL positions (sequential, skips <$1)
 rwa gm close-all 50% -y           # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]   # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y # Transfer tokens
 rwa keys generate|import|show      # Wallet management
 ```
+
+## Trading Sessions (ET)
+
+- **Pre-Market**: 4:00 AM – 9:29 AM
+- **Regular**: 9:30 AM – 3:59 PM
+- **Post-Market**: 4:00 PM – 7:59 PM
+- **Overnight**: 8:00 PM – 3:59 AM
+- **Closed**: Fri 8 PM – Sun 8 PM
+
+Not all tokens are tradable in every session. `list` and `hours --tradable` show which tokens can be traded now.
+
+## Close-All Limits
+
+- Positions < $1 are skipped automatically (Jupiter rejects small swaps)
+- Skipped tokens are listed separately in JSON (`skipped` array with `reason`)
 
 ## Agent Usage Rules (for AI agents running `rwa` commands)
 
@@ -79,6 +96,9 @@ rwa keys generate|import|show      # Wallet management
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)
+- Each result includes `tradable: true/false` for the current session
+- To check if a specific token is tradable: look at the `tradable` field in search results
+- To get all tradable tokens: `rwa --json gm hours --tradable`
 - Sectors: Technology, Healthcare, Financials, Consumer Discretionary, Energy, Industrials, Materials, Utilities, Real Estate, Infrastructure
 
 ### Error handling
