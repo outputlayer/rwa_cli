@@ -44,3 +44,22 @@ cargo install --path bin/rwa # Install locally
 - Don't fire concurrent Solana RPC calls (use sequential + retry)
 - Don't add native C deps — keep pure Rust for cross-platform
 - Don't use `.unwrap()` — use `?` with eyre context
+
+## Agent Usage Rules (for AI agents running `rwa` commands)
+
+**CRITICAL — NEVER run rwa commands in parallel (`&`).** Jupiter API rejects concurrent requests from the same wallet (HTTP 400, "Failed to get quotes"). Always run one command at a time, sequentially.
+
+### Command execution
+- Run commands **one at a time**: `rwa gm buy TSLA 100 -y && sleep 5 && rwa gm buy AAPL 100 -y`
+- Add `sleep 3` between consecutive commands
+- Always use `--json` flag and `-y` for buy/sell
+
+### Token search
+- **Always** use `rwa --json gm list --search <keyword>` to filter tokens
+- **Never** dump the full token list (`rwa --json gm list` without `--search`) — it wastes context
+
+### Error handling
+- "Solana RPC unavailable" → wait **at least 5 seconds** before retry. After 3 failures, stop and ask user to set `RWA_RPC_URL`
+- "Swap failed (code -2004)" → swap rejected by market maker. Wait 5s, get new quote, retry once
+- "No swap route found" / "HTTP 400" → you are running commands in parallel. Stop. Run sequentially
+- "HTTP 429" → rate limited. Wait 5s, retry
