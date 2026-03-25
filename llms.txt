@@ -1,0 +1,100 @@
+# rwa CLI
+
+CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via Jupiter.
+264 tokens: TSLA, AAPL, NVDA, SPY, QQQ, and more.
+
+## Install
+
+```bash
+cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
+```
+
+Or via install script:
+```bash
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
+```
+
+## Error handling
+
+On failure, commands exit with non-zero code. With `--json`, errors return `{"status":"error","error":"<message>"}` on stdout.
+
+## Critical rules
+
+- NEVER run rwa commands in parallel — Jupiter API rejects concurrent requests from the same wallet
+- Run commands one at a time, sequentially: `rwa gm buy TSLA 100 -y && sleep 3 && rwa gm buy AAPL 100 -y`
+- Always use `--json` flag for machine-readable output
+- Always use `-y` flag for buy/sell to skip confirmation
+- CLI auto-retries swap errors (max 2 retries). Do NOT retry manually after a swap error
+- `send` transfers tokens to another wallet; `sell` swaps tokens for USDC — they are different commands
+- Quote requires amount: `rwa --json gm quote <SYMBOL> <AMOUNT>`
+
+## Commands
+
+### Market info
+- `rwa --json gm hours` — Current trading session + tradable token count
+- `rwa --json gm hours --tradable` — List all tokens tradable in current session
+- `rwa --json gm list` — All 264 tokens with tradable status
+- `rwa --json gm list --search <keyword>` — Search tokens by name/symbol/sector
+
+### Trading
+- `rwa --json gm quote <SYM> <AMT>` — Swap quote (buy direction)
+- `rwa --json gm quote <SYM> <AMT> --sell` — Swap quote (sell direction)
+- `rwa --json gm buy <SYM> <AMT> -y` — Buy token with USDC
+- `rwa --json gm sell <SYM> <AMT> -y` — Sell token for USDC (exact number, `50%`, or `all`)
+- `rwa --json gm close-all -y` — Sell ALL positions sequentially
+- `rwa --json gm close-all <PCT>% -y` — Sell percentage of every position (e.g. `50%`)
+
+### Portfolio & history
+- `rwa --json gm portfolio` — Holdings, allocation, 24h change
+- `rwa --json gm portfolio <WALLET>` — View any wallet's holdings
+- `rwa --json gm history <SYM>` — Price history (default 1D)
+- `rwa --json gm history <SYM> -r 1W` — Price history with range (1D/1W/1M/3M/1Y/ALL)
+
+### Transfers
+- `rwa --json gm send SOL <AMT> <TO> -y` — Send SOL
+- `rwa --json gm send USDC <AMT> <TO> -y` — Send USDC
+- `rwa --json gm send <TOKEN> <AMT> <TO> -y` — Send any token
+
+### Wallet
+- `rwa keys generate` — Create new wallet
+- `rwa keys import --seed-phrase "word1 word2 ..."` — Import from mnemonic
+- `rwa keys show` — Show address + key file path
+
+## Amount formats
+
+- Exact: `100` (100 USDC or 100 tokens)
+- Percentage: `50%` (half of balance)
+- All: `all` (entire balance)
+
+## Token symbols
+
+Both `TSLA` and `TSLAon` formats accepted — resolved automatically.
+
+## Trading sessions (ET)
+
+- Pre-Market: 4:00 AM – 9:29 AM
+- Regular: 9:30 AM – 3:59 PM
+- Post-Market: 4:00 PM – 7:59 PM
+- Overnight: 8:00 PM – 3:59 AM
+- Closed: Fri 8 PM – Sun 8 PM
+
+Not all tokens are tradable in every session. Use `list` or `hours --tradable` to check.
+
+## Flags
+
+- `--json` — Machine-readable JSON output on any command
+- `-y` — Skip confirmation on buy/sell/send
+- `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL` env var)
+
+## Close-all behavior
+
+- Positions < $1 are skipped automatically (Jupiter rejects small swaps)
+- Skipped tokens reported in JSON output with reason
+- Sequential execution with 3s delay between swaps
+
+## Error recovery
+
+- "Solana RPC unavailable" → wait 5 seconds, retry. After 3 failures, set `RWA_RPC_URL`
+- "No swap route found" / "HTTP 400" → likely parallel execution. Run sequentially
+- "HTTP 429" → rate limited. Wait 5s, retry
+- Swap errors are auto-retried (max 2 retries with fresh orders)

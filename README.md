@@ -1,5 +1,7 @@
 # rwa — Trade Tokenized Stocks on Solana
 
+> **⚠️ Warning:** This project is pre-v1 (early alpha) and should be considered unstable. Breaking changes may be introduced without warning. This is not financial advice — use at your own risk. Always verify transactions before confirming.
+
 CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https://ondo.finance/)) on Solana via Jupiter.
 
 264 tokens available — TSLA, AAPL, NVDA, SPY, QQQ, and more.
