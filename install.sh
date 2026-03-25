@@ -82,6 +82,7 @@ main() {
     echo "  rwa gm list           # See all 264 tokenized stocks"
     echo "  rwa gm hours          # Check if market is open"
     echo ""
+    echo "Agent skills: npx skills add outputlayer/skills --skill rwa -g"
     echo "Fund your wallet with SOL (gas) + USDC (trading) to start."
 }
 

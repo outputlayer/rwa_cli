@@ -14,18 +14,15 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 ```
 
-## Agent Install
+## Agent Skills
 
-> Copy this prompt to any AI agent (Claude, ChatGPT, Copilot, etc.):
+Install the rwa skill for AI agents via [Agent Skills](https://agentskills.io/):
 
-```
-Install rwa — CLI for trading tokenized stocks on Solana:
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
-
-Then run: rwa --json gm hours
+```bash
+npx skills add outputlayer/skills --skill rwa -g
 ```
 
-All commands support `--json` for machine-readable output and `-y` to skip confirmation on trades.
+Or see [outputlayer/skills](https://github.com/outputlayer/skills) for manual install (Cursor, Claude Code, OpenCode, etc.).
 
 ## Quick Start
 
