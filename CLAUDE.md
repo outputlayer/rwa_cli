@@ -71,6 +71,8 @@ rwa keys generate|import|show      # Wallet management
 - Always use `--json` flag and `-y` for buy/sell
 - **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
 - **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
+- **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC
+- **NEVER use `send USDC all`** when user wants to send just sell proceeds — use exact amount from sell result
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens
