@@ -503,7 +503,11 @@ pub async fn transfer_sol(
     amount_sol: f64,
     rpc_url: Option<&str>,
 ) -> Result<String> {
-    let lamports = (amount_sol * 1_000_000_000.0) as u64;
+    // String-based conversion to avoid float→integer precision loss.
+    let amount_str = format!("{amount_sol:.9}");
+    let lamports: u64 = crate::jupiter::token_to_raw(&amount_str, 9)?
+        .parse()
+        .map_err(|e| eyre!("Invalid lamports value: {e}"))?;
     let from = bs58::decode(wallet.pubkey()).into_vec()
         .map_err(|e| eyre!("Invalid sender pubkey: {e}"))?;
     let to = bs58::decode(recipient).into_vec()
