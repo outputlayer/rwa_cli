@@ -47,12 +47,14 @@ cargo install --path bin/rwa # Install locally
 
 ## Agent Usage Rules (for AI agents running `rwa` commands)
 
-**CRITICAL — NEVER run rwa commands in parallel (`&`).** Jupiter API rejects concurrent requests from the same wallet (HTTP 400, "Failed to get quotes"). Always run one command at a time, sequentially.
+**CRITICAL — NEVER run rwa commands in parallel (`&`).** Jupiter API rejects concurrent requests from the same wallet (HTTP 400, "Failed to get quotes"). Always run one command at a time, sequentially. This applies to ALL commands: quotes, trades, history, portfolio.
 
 ### Command execution
+- Do NOT prepend `export PATH=...` to every command. `rwa` is in PATH after install.
 - Run commands **one at a time**: `rwa gm buy TSLA 100 -y && sleep 5 && rwa gm buy AAPL 100 -y`
 - Add `sleep 3` between consecutive commands
 - Always use `--json` flag and `-y` for buy/sell
+- **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens
