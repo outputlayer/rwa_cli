@@ -60,7 +60,7 @@ pub enum GmAction {
         range: String,
     },
 
-    /// List all available GM tokens
+    /// List available GM tokens (use --search to filter)
     List {
         /// Filter tokens by keyword (searches symbol and name)
         #[arg(short, long)]
