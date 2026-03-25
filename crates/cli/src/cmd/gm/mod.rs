@@ -325,8 +325,8 @@ const DEFAULT_SLIPPAGE_BPS: u32 = 100;
 const MIN_SOL_FOR_GAS: f64 = 0.01;
 /// Minimum buy/sell amount in USDC.
 const MIN_USDC_AMOUNT: f64 = 1.0;
-/// Minimum sell value in USD (Jupiter rejects tiny orders).
-const MIN_SELL_VALUE_USD: f64 = 1.0;
+/// Minimum sell value in USD (Jupiter MM rejects tiny orders).
+const MIN_SELL_VALUE_USD: f64 = 1.5;
 /// USDC amount to swap for SOL when gas is low.
 const TOPUP_USDC: f64 = 3.0;
 

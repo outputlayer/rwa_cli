@@ -19,7 +19,7 @@ cargo install --path bin/rwa # Install locally
 - `crates/cli/src/cmd/gm.rs` — All GM command implementations (~1340 lines)
 - `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
 - `crates/ondo/src/solana.rs` — All Solana RPC calls (retry + URL rotation)
-- `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API
+- `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API (deprecated; migration to Swap V2 planned)
 - `crates/ondo/src/api.rs` — Ondo API (prices, sectors, history)
 
 ## Code Conventions
@@ -57,7 +57,7 @@ rwa gm quote <SYM> <AMT>          # Swap quote
 rwa gm buy <SYM> <AMT> -y         # Buy token
 rwa gm buy <SYM> <AMT> -y --slippage 50  # Buy with max 0.5% slippage
 rwa gm sell <SYM> <AMT> -y        # Sell token
-rwa gm close-all -y               # Sell ALL positions (sequential, skips <$1)
+rwa gm close-all -y               # Sell ALL positions (sequential, skips <$1.50)
 rwa gm close-all 50% -y           # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]   # Price chart data
@@ -77,9 +77,18 @@ rwa keys generate|import|show      # Wallet management
 
 Not all tokens are tradable in every session. `list` and `hours --tradable` show which tokens can be traded now.
 
+## Slippage Protection
+
+- **Default slippage**: 1% (100 bps) sent to Jupiter when `--slippage` not specified
+- **Retry on high slippage**: if quote shows >1% slippage, retries up to 3× with fresh quotes
+- **Hard block**: swaps with >3% slippage are blocked entirely (even with `--slippage` flag)
+- `--slippage <BPS>` overrides the default 100 bps (e.g. `--slippage 50` = 0.5%)
+- Jupiter Ultra uses RFQ (Request For Quote) — market makers decide whether to fill
+- Small sells (<$1.50) are often rejected by MM or have extreme slippage
+
 ## Close-All Limits
 
-- Positions < $1 are skipped automatically (Jupiter rejects small swaps)
+- Positions < $1.50 are skipped automatically (market makers reject small swaps)
 - Skipped tokens are listed separately in JSON (`skipped` array with `reason`)
 
 ## Agent Usage Rules (for AI agents running `rwa` commands)

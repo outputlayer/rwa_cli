@@ -89,12 +89,20 @@ Not all tokens are tradable in every session. Use `list` or `hours --tradable` t
 
 - `--json` — Machine-readable JSON output on any command
 - `-y` — Skip confirmation on buy/sell/send
-- `--slippage <BPS>` — Max slippage in basis points (e.g. 50 = 0.5%). Default: auto (Jupiter RTSE)
+- `--slippage <BPS>` — Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL` env var)
+
+## Slippage protection
+
+- Default slippage: 1% (100 bps) sent to Jupiter when `--slippage` not specified
+- Retry on high slippage: if quote shows >1% slippage, retries up to 3× with fresh quotes
+- Hard block: swaps with >3% slippage are blocked entirely (even with `--slippage` flag)
+- Jupiter Ultra uses RFQ (Request For Quote) — market makers decide whether to fill
+- Small sells (<$1.50) are often rejected by MM or have extreme slippage
 
 ## Close-all behavior
 
-- Positions < $1 are skipped automatically (Jupiter rejects small swaps)
+- Positions < $1.50 are skipped automatically (market makers reject small swaps)
 - Skipped tokens reported in JSON output with reason
 - Sequential execution with 3s delay between swaps
 

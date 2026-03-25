@@ -21,7 +21,14 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 - Wallet stored as JSON keypair in `~/.config/rwa/id.json`
 - All HTTP to Solana goes through `crates/ondo/src/solana.rs`
 - All HTTP to Ondo goes through `crates/ondo/src/api.rs`
-- Jupiter swap via `crates/ondo/src/jupiter.rs`
+- Jupiter swap via `crates/ondo/src/jupiter.rs` (Ultra API; migration to Swap V2 planned)
+
+## Slippage Protection
+
+- Default slippage: 100 bps (1%) sent to Jupiter when `--slippage` not specified
+- Retry: if quote shows >1% slippage, retries up to 3× with fresh quotes
+- Hard block: >3% slippage blocked entirely
+- Close-all skips positions < $1.50 (market makers reject small swaps)
 
 ## Commands
 
@@ -31,7 +38,7 @@ rwa gm list                        # All 264 tokens
 rwa gm quote <SYM> <AMT>           # Swap quote
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
 rwa gm buy <SYM> <AMT> -y --slippage 50  # Trade with max 0.5% slippage
-rwa gm close-all -y                # Sell ALL positions (sequential, skips failures)
+rwa gm close-all -y                # Sell ALL positions (sequential, skips <$1.50)
 rwa gm close-all 50% -y            # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]    # Price chart data
