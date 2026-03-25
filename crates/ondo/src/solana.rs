@@ -1,8 +1,12 @@
 use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 use crate::token_list::GmTokenEntry;
 use crate::wallet::Wallet;
+
+/// Shared HTTP client — reuses connection pool and TLS sessions across all RPC calls.
+static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
 /// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
@@ -124,7 +128,7 @@ impl MultiAccountInfo {
 
 /// Get SOL balance in SOL (not lamports).
 pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -133,7 +137,7 @@ pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64>
     };
 
     let resp: RpcResponse<GetBalanceResult> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     let result = resp.result
@@ -144,7 +148,7 @@ pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64>
 
 /// Get USDC balance for a wallet on Solana.
 pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -157,7 +161,7 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
     };
 
     let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     let accounts = resp.result
@@ -185,7 +189,7 @@ pub async fn get_all_balances(
     tokens: &[GmTokenEntry],
     rpc_url: Option<&str>,
 ) -> Result<Vec<SolanaTokenBalance>> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -198,7 +202,7 @@ pub async fn get_all_balances(
     };
 
     let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     let accounts = resp.result
@@ -238,7 +242,7 @@ pub async fn get_balance(
     mint: &str,
     rpc_url: Option<&str>,
 ) -> Result<SolanaTokenBalance> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -251,7 +255,7 @@ pub async fn get_balance(
     };
 
     let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     let accounts = resp.result
@@ -283,7 +287,7 @@ pub async fn get_portfolio_balances(
     rpc_url: Option<&str>,
 ) -> Result<PortfolioBalances> {
     let urls = rpc_urls(rpc_url);
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
 
     // Compute USDC ATA address deterministically (no RPC needed).
     let wallet_bytes = bs58::decode(wallet).into_vec()
@@ -310,7 +314,7 @@ pub async fn get_portfolio_balances(
         },
     ];
 
-    let results = rpc_batch_with_retry(&client, &urls, &reqs).await?;
+    let results = rpc_batch_with_retry(client, &urls, &reqs).await?;
 
     // Parse SOL + USDC from getMultipleAccounts
     let multi_resp: RpcResponse<GetMultipleAccountsResult> = serde_json::from_value(results[0].clone())
@@ -704,7 +708,7 @@ async fn send_legacy_transaction(
 
 /// Get a recent blockhash from Solana RPC.
 async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<[u8; 32]> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -713,7 +717,7 @@ async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<[u8; 32]> {
     };
 
     let resp: RpcResponse<serde_json::Value> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     let result = resp.result
@@ -731,7 +735,7 @@ async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<[u8; 32]> {
 
 /// Send a signed transaction to Solana RPC. Returns tx signature.
 async fn send_raw_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -743,7 +747,7 @@ async fn send_raw_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
     };
 
     let resp: RpcResponse<String> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     resp.result.ok_or_else(|| eyre!("Transaction failed — no signature returned"))
@@ -752,7 +756,7 @@ async fn send_raw_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
 /// Check if a Solana account exists (has non-zero lamports).
 async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<bool> {
     let addr_str = bs58::encode(address).into_string();
-    let client = reqwest::Client::new();
+    let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -761,7 +765,7 @@ async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<b
     };
 
     let resp: RpcResponse<serde_json::Value> = rpc_call_with_retry(
-        &client, &rpc_urls(rpc_url), &req,
+        client, &rpc_urls(rpc_url), &req,
     ).await?;
 
     Ok(resp.result
