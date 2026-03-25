@@ -393,11 +393,6 @@ const ATA_PROGRAM: [u8; 32] = [
     140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131,
     11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
 ];
-/// Solana Rent Sysvar
-const RENT_SYSVAR: [u8; 32] = [
-    6, 167, 213, 23, 25, 44, 86, 142, 224, 138, 132, 95, 115, 210, 151, 136,
-    207, 3, 92, 49, 69, 178, 26, 179, 68, 216, 6, 46, 169, 64, 0, 0,
-];
 
 /// Transfer SOL to a recipient. Returns transaction signature.
 pub async fn transfer_sol(
@@ -478,18 +473,20 @@ pub async fn transfer_spl(
     let mut instructions: Vec<Instruction> = Vec::new();
 
     if ata_exists {
-        // Simple transfer: [from, mint, to_ata, to_pubkey, system, rent, token_prog]
+        // TransferChecked: source ATA → dest ATA
+        // Solana requires: writable accounts first, then readonly last
         accounts = vec![
             from_pubkey.clone(),        // 0: sender (signer, writable)
             from_ata.clone(),           // 1: source ATA (writable)
-            mint_pubkey.clone(),        // 2: mint (readonly)
-            to_ata.clone(),             // 3: dest ATA (writable)
-            token_program.to_vec(),     // 4: token program
+            to_ata.clone(),             // 2: dest ATA (writable)
+            mint_pubkey.clone(),        // 3: mint (readonly)
+            token_program.to_vec(),     // 4: token program (readonly)
         ];
 
+        // TransferChecked: [source(1), mint(3), dest(2), authority(0)]
         instructions.push(Instruction {
             program_id_index: 4,
-            account_indices: vec![1, 2, 3, 0],
+            account_indices: vec![1, 3, 2, 0],
             data: ix_data,
         });
 
@@ -501,37 +498,37 @@ pub async fn transfer_spl(
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
     } else {
-        // Need to create ATA first, then transfer
+        // Create recipient ATA, then transfer
+        // Writable non-signers first, then readonly non-signers
         accounts = vec![
             from_pubkey.clone(),        // 0: payer/sender (signer, writable)
             to_ata.clone(),             // 1: new ATA (writable)
-            to_pubkey.clone(),          // 2: owner of new ATA
-            mint_pubkey.clone(),        // 3: mint
-            SYSTEM_PROGRAM.to_vec(),    // 4: system program
-            token_program.to_vec(),     // 5: token program
-            ATA_PROGRAM.to_vec(),       // 6: ATA program
-            from_ata.clone(),           // 7: source ATA (writable)
-            RENT_SYSVAR.to_vec(),       // 8: rent sysvar
+            from_ata.clone(),           // 2: source ATA (writable)
+            to_pubkey.clone(),          // 3: owner of new ATA (readonly)
+            mint_pubkey.clone(),        // 4: mint (readonly)
+            SYSTEM_PROGRAM.to_vec(),    // 5: system program (readonly)
+            token_program.to_vec(),     // 6: token program (readonly)
+            ATA_PROGRAM.to_vec(),       // 7: ATA program (readonly)
         ];
 
-        // Create ATA instruction (ATA program, no data)
+        // Create ATA: [payer(0), ata(1), owner(3), mint(4), system(5), token_prog(6)]
         instructions.push(Instruction {
-            program_id_index: 6,
-            account_indices: vec![0, 1, 2, 3, 4, 5],
+            program_id_index: 7,
+            account_indices: vec![0, 1, 3, 4, 5, 6],
             data: vec![],
         });
 
-        // TransferChecked: source(7), mint(3), dest(1), authority(0)
+        // TransferChecked: [source(2), mint(4), dest(1), authority(0)]
         instructions.push(Instruction {
-            program_id_index: 5,
-            account_indices: vec![7, 3, 1, 0],
+            program_id_index: 6,
+            account_indices: vec![2, 4, 1, 0],
             data: ix_data,
         });
 
         let header = MessageHeader {
             num_required_sigs: 1,
             num_readonly_signed: 0,
-            num_readonly_unsigned: 5, // to_pubkey, mint, system, token_prog, ata_prog, rent
+            num_readonly_unsigned: 5, // to_pubkey, mint, system, token_prog, ata_prog
         };
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await

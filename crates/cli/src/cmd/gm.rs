@@ -133,6 +133,8 @@ struct TradeJson {
     counter_amount: String,
     counter_token: &'static str,
     tx: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slippage_pct: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -386,6 +388,36 @@ fn load_wallet() -> Result<wallet::Wallet> {
              rwa keys import --file <PATH>              Import from key file"
         )
     })
+}
+
+/// Maximum allowed slippage before blocking the trade.
+const MAX_SLIPPAGE_PCT: f64 = 10.0;
+
+/// Calculate slippage from Jupiter's USD values. Returns (slippage_pct, should_warn).
+fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
+    match (order.in_usd_value, order.out_usd_value) {
+        (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => {
+            Some((usd_out - usd_in) / usd_in * 100.0)
+        }
+        _ => None,
+    }
+}
+
+/// Check slippage and warn/block. Returns slippage for JSON output.
+fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f64>> {
+    let slip = calc_slippage(order);
+    if let Some(s) = slip {
+        if s < -MAX_SLIPPAGE_PCT {
+            return Err(eyre::eyre!(
+                "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
+                 Try a smaller amount or wait for better liquidity."
+            ));
+        }
+        if s < -1.0 && !json {
+            eprintln!("Warning: slippage {s:.2}%");
+        }
+    }
+    Ok(slip)
 }
 
 /// Minimum SOL needed for transaction fees (~0.01 SOL covers tx + ATA creation).
@@ -689,14 +721,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     if !json {
         println!("You will receive ~{} {}", out_fmt, sym);
     }
-    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
-        if usd_in > 0.0 {
-            let slippage = (usd_out - usd_in) / usd_in * 100.0;
-            if slippage < -1.0 {
-                println!("Warning: high slippage: {:.2}%", slippage);
-            }
-        }
-    }
+    let slippage = check_slippage(&order, json)?;
 
     if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
@@ -722,6 +747,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
             counter_amount: usdc_str,
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
+            slippage_pct: slippage,
         });
     }
 
@@ -783,14 +809,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     if !json {
         println!("You will receive ~{} USDC", out_fmt);
     }
-    if let (Some(usd_in), Some(usd_out)) = (order.in_usd_value, order.out_usd_value) {
-        if usd_in > 0.0 {
-            let slippage = (usd_out - usd_in) / usd_in * 100.0;
-            if slippage < -1.0 {
-                println!("Warning: high slippage: {:.2}%", slippage);
-            }
-        }
-    }
+    let slippage = check_slippage(&order, json)?;
 
     if !yes && !json && !confirm("Proceed?") {
         println!("Cancelled.");
@@ -816,6 +835,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
             counter_amount: final_out,
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
+            slippage_pct: slippage,
         });
     }
 
@@ -955,6 +975,7 @@ async fn sell_one_position(
     json: bool,
 ) -> Result<(String, String)> {
     let order = jupiter::get_order(mint, jupiter::USDC_MINT, raw_amount, taker).await?;
+    check_slippage(&order, json)?;
     let result = execute_with_retry(w, &order, json, mint, jupiter::USDC_MINT, raw_amount, taker).await?;
 
     let usdc_out = result.output_amount_result.as_deref()
