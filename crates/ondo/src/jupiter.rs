@@ -170,12 +170,7 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
 
 /// Convert a human-readable USDC amount (e.g. "100.50") to on-chain units (6 decimals).
 pub fn usdc_to_raw(amount: &str) -> Result<String> {
-    let f: f64 = amount.parse().map_err(|_| eyre!("Invalid amount: {amount}"))?;
-    if f <= 0.0 {
-        return Err(eyre!("Amount must be positive"));
-    }
-    let raw = (f * 1_000_000.0) as u64;
-    Ok(raw.to_string())
+    token_to_raw(amount, USDC_DECIMALS)
 }
 
 /// Convert a human-readable token amount to on-chain units with specified decimals.

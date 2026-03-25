@@ -432,7 +432,9 @@ const TOPUP_USDC: f64 = 3.0;
 /// Resolve percentage or "all" amounts into absolute numbers.
 ///  - "100" → 100.0 (passthrough)
 ///  - "50%" → 50% of balance
-///  - "all" → 100% of balance////// `balance_fn` is called lazily only when needed.
+///  - "all" → 100% of balance
+///
+/// `balance_fn` is called lazily only when needed.
 async fn resolve_percent_amount<F, Fut>(raw: &str, balance_fn: F) -> Result<f64>
 where
     F: FnOnce() -> Fut,
@@ -1160,24 +1162,31 @@ async fn send(token: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_ur
 async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
 
-    let sol_f = resolve_percent_amount(amount, || {
-        let pk = pubkey.clone();
-        let rpc = rpc_url.map(String::from);
-        async move { solana::get_sol_balance(&pk, rpc.as_deref()).await }
-    }).await?;
+    let sol_bal = solana::get_sol_balance(&pubkey, rpc_url).await?;
+    let is_all = amount == "all" || amount == "100%";
+
+    let sol_f = if is_all {
+        sol_bal
+    } else if let Some(pct_str) = amount.strip_suffix('%') {
+        let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {amount}"))?;
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
+        }
+        sol_bal * pct / 100.0
+    } else {
+        amount.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?
+    };
 
     if sol_f < MIN_SOL_FOR_GAS {
         return Err(eyre::eyre!("Amount too small — need to keep ≥{MIN_SOL_FOR_GAS} SOL for gas"));
     }
 
     // Keep enough for gas if sending "all"
-    let send_amount = if amount == "all" || amount == "100%" {
-        let bal = solana::get_sol_balance(&pubkey, rpc_url).await?;
-        let keep = MIN_SOL_FOR_GAS;
-        if bal <= keep {
-            return Err(eyre::eyre!("Balance too low — need ≥{keep} SOL for gas"));
+    let send_amount = if is_all {
+        if sol_bal <= MIN_SOL_FOR_GAS {
+            return Err(eyre::eyre!("Balance too low — need ≥{MIN_SOL_FOR_GAS} SOL for gas"));
         }
-        bal - keep
+        sol_bal - MIN_SOL_FOR_GAS
     } else {
         sol_f
     };
@@ -1277,8 +1286,10 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Balance is 0 — nothing to send"));
     }
 
-    // GM tokens use 9 decimals (Token-2022)
-    let raw = (token_f * 1_000_000_000.0) as u64;
+    // GM tokens use 9 decimals (Token-2022) — use string math to avoid float precision loss
+    let token_str = format!("{:.9}", token_f);
+    let raw_str = jupiter::token_to_raw(&token_str, jupiter::GM_SOL_DECIMALS)?;
+    let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid token amount"))?;
 
     if !json {
         println!("Send {token_f:.6} {sym} → {to}");
