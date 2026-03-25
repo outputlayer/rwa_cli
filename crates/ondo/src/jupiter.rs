@@ -55,20 +55,28 @@ pub async fn get_order(
     amount: &str,
     taker: &str,
 ) -> Result<OrderResponse> {
-    let resp: OrderResponse = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .get(format!("{ULTRA_API_BASE}/order"))
-        .query(&[
+        .query(&[(
             ("inputMint", input_mint),
             ("outputMint", output_mint),
             ("amount", amount),
             ("taker", taker),
-        ])
+        )])
         .header("x-client-platform", "rwa.cli")
         .timeout(std::time::Duration::from_secs(15))
         .send()
-        .await?
-        .json()
         .await?;
+
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
+    }
+
+    let resp: OrderResponse = serde_json::from_str(&body)
+        .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
 
     if let Some(err) = &resp.error {
         let msg = resp.error_message.as_deref().unwrap_or(err);
@@ -94,24 +102,43 @@ pub async fn execute_order(
         signed_transaction: signed_tx,
     };
 
-    let resp: ExecuteResponse = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{ULTRA_API_BASE}/execute"))
         .header("x-client-platform", "rwa.cli")
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
-        .await?
-        .json()
         .await?;
 
-    // Check for failure
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        return Err(eyre!("Jupiter execute error (HTTP {status}): {body}"));
+    }
+
+    let resp: ExecuteResponse = serde_json::from_str(&body)
+        .map_err(|e| eyre!("Failed to parse Jupiter execute response: {e}\nBody: {body}"))?;
+
+    check_execute_result(&resp)?;
+    Ok(resp)
+}
+
+fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
     if let Some(status) = &resp.status {
         if status == "Failed" {
-            let msg = resp.error_message.as_deref()
+            let raw_msg = resp.error_message.as_deref()
                 .or(resp.error.as_deref())
                 .unwrap_or("Unknown execution error");
+            let hint = resp.code.map(|c| match c {
+                -2005 => " (Jupiter internal — retry or try a different amount)",
+                -2002 => " (route expired — try again)",
+                -2003 => " (slippage exceeded — market is volatile)",
+                -2004 => " (insufficient balance)",
+                _ => "",
+            }).unwrap_or("");
             let code = resp.code.map(|c| format!(" (code {c})")).unwrap_or_default();
-            return Err(eyre!("Swap failed{code}: {msg}"));
+            return Err(eyre!("Swap failed{code}: {raw_msg}{hint}"));
         }
     }
 
@@ -121,8 +148,7 @@ pub async fn execute_order(
             .unwrap_or("No signature returned — transaction may have failed");
         return Err(eyre!("Swap failed: {msg}"));
     }
-
-    Ok(resp)
+    Ok(())
 }
 
 /// Convert a human-readable USDC amount (e.g. "100.50") to on-chain units (6 decimals).

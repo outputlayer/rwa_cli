@@ -61,7 +61,11 @@ pub enum GmAction {
     },
 
     /// List all available GM tokens
-    List,
+    List {
+        /// Filter tokens by keyword (searches symbol and name)
+        #[arg(short, long)]
+        search: Option<String>,
+    },
 
     /// Send SOL, USDC, or GM tokens to another wallet
     Send {
@@ -85,7 +89,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
         GmAction::Sell { symbol, amount, yes } => sell(&symbol, &amount, yes, json, rpc_url).await,
         GmAction::Portfolio { wallet } => portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => history(&symbol, &range, json).await,
-        GmAction::List => list(json).await,
+        GmAction::List { search } => list(json, search.as_deref()).await,
         GmAction::Send { token, amount, to, yes } => send(&token, &amount, &to, yes, json, rpc_url).await,
     }
 }
@@ -166,6 +170,8 @@ struct HistoryCandleJson {
 struct ListItemJson<'a> {
     symbol: &'a str,
     name: &'a str,
+    #[serde(rename = "type")]
+    kind: &'a str,
     mint: &'a str,
 }
 
@@ -565,6 +571,29 @@ fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Execute a swap with one automatic retry for transient Jupiter errors.
+async fn execute_with_retry(
+    w: &wallet::Wallet,
+    order: &jupiter::OrderResponse,
+    json: bool,
+) -> Result<jupiter::ExecuteResponse> {
+    match jupiter::execute_order(w, order).await {
+        Ok(resp) => Ok(resp),
+        Err(first_err) => {
+            let msg = first_err.to_string();
+            let retryable = msg.contains("code -2005") || msg.contains("code -2002");
+            if !retryable {
+                return Err(first_err);
+            }
+            if !json {
+                eprintln!("Transient error, retrying in 2s...");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            jupiter::execute_order(w, order).await
+        }
+    }
+}
+
 pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
@@ -609,7 +638,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     if !json {
         println!("Executing swap...");
     }
-    let result = jupiter::execute_order(&w, &order).await?;
+    let result = execute_with_retry(&w, &order, json).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, gm_dec))
@@ -685,7 +714,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     if !json {
         println!("Executing swap...");
     }
-    let result = jupiter::execute_order(&w, &order).await?;
+    let result = execute_with_retry(&w, &order, json).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
@@ -756,24 +785,56 @@ async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn list(json: bool) -> Result<()> {
+fn clean_name(name: &str) -> String {
+    name.replace(" (Ondo Tokenized)", "")
+}
+
+fn token_type(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if n.contains("etf") || n.contains(" fund") || n.contains(" trust")
+        || n.contains(" index") || n.contains(" shares")
+    {
+        "etf"
+    } else {
+        "stock"
+    }
+}
+
+async fn list(json: bool, search: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list().await;
 
+    let filtered: Vec<_> = match search {
+        Some(q) => {
+            let q = q.to_lowercase();
+            tokens.iter().filter(|t| {
+                t.symbol.to_lowercase().contains(&q)
+                    || t.name.to_lowercase().contains(&q)
+            }).collect()
+        }
+        None => tokens.iter().collect(),
+    };
+
     if json {
-        let items: Vec<_> = tokens.iter().map(|t| ListItemJson {
-            symbol: &t.symbol,
-            name: &t.name,
-            mint: t.solana_address.as_deref().unwrap_or(""),
+        let items: Vec<_> = filtered.iter().map(|t| {
+            let name = clean_name(&t.name);
+            ListItemJson {
+                symbol: &t.symbol,
+                name: Box::leak(name.into_boxed_str()),
+                kind: token_type(&t.name),
+                mint: t.solana_address.as_deref().unwrap_or(""),
+            }
         }).collect();
         return json_out(&items);
     }
 
-    println!("{} GM tokens available\n", tokens.len());
-    for t in &tokens {
-        if t.name.is_empty() {
+    println!("{} GM tokens{}\n", filtered.len(),
+        search.map(|s| format!(" matching '{}'", s)).unwrap_or_default());
+    for t in &filtered {
+        let name = clean_name(&t.name);
+        if name.is_empty() {
             println!("  {}", t.symbol);
         } else {
-            println!("  {:<12} {}", t.symbol, t.name);
+            println!("  {:<12} {}", t.symbol, name);
         }
     }
     Ok(())
