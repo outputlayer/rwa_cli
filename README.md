@@ -132,7 +132,7 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 
 ### Close-All Limits
 
-- Positions worth less than **$1** are automatically skipped during `close-all` (Jupiter rejects small swaps)
+- Positions worth less than **$1.50** are automatically skipped during `close-all` (Jupiter market makers reject small swaps)
 - Skipped tokens are reported separately in both text and JSON output
 
 ## Architecture

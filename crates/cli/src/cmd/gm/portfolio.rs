@@ -119,8 +119,14 @@ pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
         return Err(eyre::eyre!("No price history for {} (range: {})", symbol, range));
     }
 
-    let sym = symbol.to_uppercase();
-    let sym = if sym.ends_with("ON") { sym } else { format!("{sym}ON") };
+    let upper = symbol.to_uppercase();
+    let sym = if upper.ends_with("ON") {
+        // Preserve "on" suffix casing: "TSLAon" not "TSLAON"
+        let base = &upper[..upper.len() - 2];
+        format!("{base}on")
+    } else {
+        format!("{upper}on")
+    };
 
     let first = candles.first().unwrap();
     let last = candles.last().unwrap();

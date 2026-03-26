@@ -210,6 +210,84 @@ pub fn default_key_path() -> Result<PathBuf> {
     Ok(config.join("rwa").join("key.json"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_produces_valid_pubkey() {
+        let w = Wallet::generate();
+        let pk = w.pubkey();
+        // Solana pubkeys are 32-44 base58 chars
+        assert!(pk.len() >= 32 && pk.len() <= 44);
+        // Should decode to 32 bytes
+        let bytes = bs58::decode(&pk).into_vec().unwrap();
+        assert_eq!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn generate_unique_keys() {
+        let w1 = Wallet::generate();
+        let w2 = Wallet::generate();
+        assert_ne!(w1.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_roundtrip() {
+        let w = Wallet::generate();
+        let mut key_bytes = Vec::with_capacity(64);
+        key_bytes.extend_from_slice(w.signing_key().as_bytes());
+        key_bytes.extend_from_slice(w.signing_key().verifying_key().as_bytes());
+        let key_b58 = bs58::encode(&key_bytes).into_string();
+
+        let w2 = Wallet::from_private_key(&key_b58).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_32_bytes() {
+        let w = Wallet::generate();
+        let key_b58 = bs58::encode(w.signing_key().as_bytes()).into_string();
+
+        let w2 = Wallet::from_private_key(&key_b58).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_invalid() {
+        assert!(Wallet::from_private_key("not-valid-base58!!!").is_err());
+    }
+
+    #[test]
+    fn from_mnemonic_valid() {
+        // Standard 12-word test mnemonic
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let w = Wallet::from_mnemonic(phrase).unwrap();
+        let pk = w.pubkey();
+        assert!(pk.len() >= 32 && pk.len() <= 44);
+    }
+
+    #[test]
+    fn from_mnemonic_deterministic() {
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let w1 = Wallet::from_mnemonic(phrase).unwrap();
+        let w2 = Wallet::from_mnemonic(phrase).unwrap();
+        assert_eq!(w1.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_mnemonic_invalid() {
+        assert!(Wallet::from_mnemonic("not a valid mnemonic").is_err());
+    }
+
+    #[test]
+    fn sign_transaction_rejects_empty() {
+        let w = Wallet::generate();
+        // Empty base64 should fail
+        assert!(w.sign_transaction("").is_err());
+    }
+}
+
 /// Decode a compact-u16 from the start of a byte slice.
 /// Returns (value, bytes_consumed).
 fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {

@@ -129,6 +129,29 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
     }
 }
 
+// ── Rounded float serializers for token-efficient JSON ─────
+
+/// Round to 2 decimal places (prices, USD values).
+fn ser_f64_2<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((v * 100.0).round() / 100.0)
+}
+/// Round to 4 decimal places (percentages, slippage).
+fn ser_f64_4<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((v * 10000.0).round() / 10000.0)
+}
+fn ser_opt_f64_2<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(val) => s.serialize_some(&((val * 100.0).round() / 100.0)),
+        None => s.serialize_none(),
+    }
+}
+fn ser_opt_f64_4<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(val) => s.serialize_some(&((val * 10000.0).round() / 10000.0)),
+        None => s.serialize_none(),
+    }
+}
+
 // ── JSON output types ──────────────────────────────────────
 
 #[derive(Serialize)]
@@ -150,16 +173,19 @@ pub(super) struct QuoteJson {
     pub input_token: String,
     pub output: String,
     pub output_token: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_2")]
     pub input_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_2")]
     pub output_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub slippage_pct: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub price_impact_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_bps: Option<u32>,
+    /// Whether the token is tradable in the current Ondo GM session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tradable: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -170,28 +196,38 @@ pub(super) struct TradeJson {
     pub counter_amount: String,
     pub counter_token: &'static str,
     pub tx: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub slippage_pct: Option<f64>,
 }
 
 #[derive(Serialize)]
 pub(super) struct PositionJson {
     pub token: String,
+    #[serde(serialize_with = "ser_f64_4")]
     pub balance: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub price: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub alloc_pct: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub change_pct_24h: f64,
 }
 
 #[derive(Serialize)]
 pub(super) struct PortfolioJson {
     pub wallet: String,
+    #[serde(serialize_with = "ser_f64_4")]
     pub sol: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub usdc: f64,
     pub positions: Vec<PositionJson>,
+    #[serde(serialize_with = "ser_f64_2")]
     pub total_value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub change_24h_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub change_24h_pct: f64,
 }
 
@@ -202,8 +238,11 @@ pub(super) struct HistoryJson {
     pub candles: usize,
     pub first: HistoryCandleJson,
     pub last: HistoryCandleJson,
+    #[serde(serialize_with = "ser_f64_2")]
     pub high: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub low: f64,
+    #[serde(serialize_with = "ser_f64_2")]
     pub change_pct: f64,
 }
 
@@ -246,6 +285,7 @@ pub(super) struct CloseAllResultJson {
 #[derive(Serialize)]
 pub(super) struct CloseSkipJson {
     pub token: String,
+    #[serde(serialize_with = "ser_f64_2")]
     pub estimated_usd: f64,
     pub reason: &'static str,
 }

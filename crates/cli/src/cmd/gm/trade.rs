@@ -56,6 +56,19 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
         _ => (None, None, None),
     };
 
+    // Check tradable status in current Ondo session
+    let tradable = {
+        let session = api::current_session();
+        if session == api::Session::Closed {
+            Some(false)
+        } else {
+            api::fetch_session_limits().await.ok().map(|limits| {
+                let sym_upper = sym.to_uppercase();
+                limits.iter().any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session))
+            })
+        }
+    };
+
     if json {
         return json_out(&QuoteJson {
             input: in_fmt,
@@ -67,6 +80,7 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
             slippage_pct: slippage,
             price_impact_pct: order.price_impact,
             fee_bps: order.fee_bps,
+            tradable,
         });
     }
 
@@ -78,6 +92,9 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
     }
     if let Some(pi) = order.price_impact {
         println!("  Price impact:  {:.4}%", pi);
+    }
+    if let Some(t) = tradable {
+        println!("  Tradable:      {}", if t { "yes" } else { "no (check `rwa gm hours`)" });
     }
     Ok(())
 }
@@ -308,7 +325,8 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         }
 
         let sell_raw = if sell_pct < 100.0 {
-            let raw: u128 = tb.raw_amount.parse().unwrap_or(0);
+            let raw: u128 = tb.raw_amount.parse()
+                .map_err(|_| eyre::eyre!("Invalid on-chain amount for {}: {}", tb.symbol, tb.raw_amount))?;
             let partial = pct_of_u128(raw, sell_pct);
             if partial == 0 {
                 continue;
@@ -330,12 +348,12 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         let est_value = sell_balance * price;
         if est_value > 0.0 && est_value < MIN_SELL_VALUE_USD {
             if !json {
-                eprintln!("  Skipping {} — est. ${:.2} below ${:.0} minimum", tb.symbol, est_value, MIN_SELL_VALUE_USD);
+                eprintln!("  Skipping {} — est. ${:.2} below ${:.2} minimum", tb.symbol, est_value, MIN_SELL_VALUE_USD);
             }
             skipped.push(CloseSkipJson {
                 token: tb.symbol.clone(),
                 estimated_usd: est_value,
-                reason: "below $1 minimum",
+                reason: "below $1.50 minimum",
             });
             continue;
         }
@@ -385,7 +403,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
     println!("  Sold:    {} positions → {:.2} USDC", sold.len(), total_usdc);
     if !skipped.is_empty() {
         let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
-        println!("  Skipped: {} (below $1: {})", skipped.len(), names.join(", "));
+        println!("  Skipped: {} (below ${:.2}: {})", skipped.len(), MIN_SELL_VALUE_USD, names.join(", "));
     }
     if !failed.is_empty() {
         println!("  Failed:  {} positions", failed.len());

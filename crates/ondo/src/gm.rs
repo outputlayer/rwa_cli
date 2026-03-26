@@ -24,3 +24,58 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
         .find(|t| t.symbol.to_uppercase() == lookup)
         .ok_or_else(|| eyre!("Unknown GM token: {symbol}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_tokens() -> Vec<GmTokenEntry> {
+        vec![
+            GmTokenEntry { symbol: "TSLAon", solana_address: Some("FakeAddr123456789012345678901234567890abc") },
+            GmTokenEntry { symbol: "AAPLon", solana_address: Some("FakeAddr223456789012345678901234567890abc") },
+            GmTokenEntry { symbol: "SPYon", solana_address: None },
+        ]
+    }
+
+    #[test]
+    fn resolve_with_on_suffix() {
+        let tokens = test_tokens();
+        let entry = resolve_token("TSLAon", &tokens).unwrap();
+        assert_eq!(entry.symbol, "TSLAon");
+    }
+
+    #[test]
+    fn resolve_without_suffix() {
+        let tokens = test_tokens();
+        let entry = resolve_token("TSLA", &tokens).unwrap();
+        assert_eq!(entry.symbol, "TSLAon");
+    }
+
+    #[test]
+    fn resolve_case_insensitive() {
+        let tokens = test_tokens();
+        let entry = resolve_token("tsla", &tokens).unwrap();
+        assert_eq!(entry.symbol, "TSLAon");
+    }
+
+    #[test]
+    fn resolve_by_mint_address() {
+        let tokens = test_tokens();
+        let entry = resolve_token("FakeAddr123456789012345678901234567890abc", &tokens).unwrap();
+        assert_eq!(entry.symbol, "TSLAon");
+    }
+
+    #[test]
+    fn resolve_unknown_fails() {
+        let tokens = test_tokens();
+        assert!(resolve_token("NOPE", &tokens).is_err());
+    }
+
+    #[test]
+    fn resolve_no_solana_address() {
+        let tokens = test_tokens();
+        let entry = resolve_token("SPY", &tokens).unwrap();
+        assert_eq!(entry.symbol, "SPYon");
+        assert!(entry.solana_address.is_none());
+    }
+}

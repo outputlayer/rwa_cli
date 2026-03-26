@@ -1048,4 +1048,54 @@ mod tests {
     fn reject_empty() {
         assert!(validate_address("").is_err());
     }
+
+    // ── encode_compact_u16 ───────────────────────────────────
+
+    #[test]
+    fn compact_u16_single_byte() {
+        let mut buf = Vec::new();
+        encode_compact_u16(0, &mut buf);
+        assert_eq!(buf, vec![0]);
+
+        buf.clear();
+        encode_compact_u16(127, &mut buf);
+        assert_eq!(buf, vec![127]);
+    }
+
+    #[test]
+    fn compact_u16_two_bytes() {
+        let mut buf = Vec::new();
+        encode_compact_u16(128, &mut buf);
+        assert_eq!(buf.len(), 2);
+
+        buf.clear();
+        encode_compact_u16(255, &mut buf);
+        assert_eq!(buf.len(), 2);
+        // Decode back: (buf[0] & 0x7f) | (buf[1] << 7)
+        let val = (buf[0] as u16 & 0x7f) | ((buf[1] as u16) << 7);
+        assert_eq!(val, 255);
+    }
+
+    #[test]
+    fn compact_u16_three_bytes() {
+        let mut buf = Vec::new();
+        encode_compact_u16(0x4000, &mut buf);
+        assert_eq!(buf.len(), 3);
+
+        buf.clear();
+        encode_compact_u16(u16::MAX, &mut buf);
+        assert_eq!(buf.len(), 3);
+        let val = (buf[0] as u16 & 0x7f) | (((buf[1] as u16) & 0x7f) << 7) | ((buf[2] as u16) << 14);
+        assert_eq!(val, u16::MAX);
+    }
+
+    #[test]
+    fn compact_u16_roundtrip() {
+        for val in [0, 1, 127, 128, 255, 256, 1000, 16383, 16384, 65535u16] {
+            let mut buf = Vec::new();
+            encode_compact_u16(val, &mut buf);
+            // Verify it encodes to 1-3 bytes
+            assert!(buf.len() >= 1 && buf.len() <= 3, "val={val} encoded to {} bytes", buf.len());
+        }
+    }
 }

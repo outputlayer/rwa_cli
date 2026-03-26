@@ -356,4 +356,37 @@ mod tests {
         let raw = token_to_raw("42", 9).unwrap();
         assert_eq!(format_amount(&raw, 9), "42");
     }
+
+    // ── edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn token_large_whole_number() {
+        assert_eq!(token_to_raw("999999", 6).unwrap(), "999999000000");
+    }
+
+    #[test]
+    fn token_exact_decimals() {
+        // Exactly 6 decimal digits for USDC
+        assert_eq!(usdc_to_raw("1.123456").unwrap(), "1123456");
+    }
+
+    #[test]
+    fn format_amount_with_leading_zeros_in_frac() {
+        // 100001 with 6 decimals = "0.100001"
+        assert_eq!(format_amount("100001", 6), "0.100001");
+    }
+
+    #[test]
+    fn format_amount_single_digit_raw() {
+        assert_eq!(format_amount("5", 6), "0.000005");
+    }
+
+    #[test]
+    fn roundtrip_many_values() {
+        for (input, dec) in [("100", 6), ("0.5", 6), ("1.23", 9), ("999.999999", 6)] {
+            let raw = token_to_raw(input, dec).unwrap();
+            let formatted = format_amount(&raw, dec);
+            assert_eq!(formatted, input, "roundtrip failed for {input} with {dec} decimals");
+        }
+    }
 }
