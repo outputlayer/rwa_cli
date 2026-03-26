@@ -113,6 +113,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     let usdc_str = format!("{usdc_f:.2}");
 
     preflight_buy(&taker, usdc_f, &w, json, rpc_url).await?;
+    check_tradable(&sym).await?;
 
     let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -168,6 +169,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     let taker = w.pubkey();
 
     preflight_sell(&taker, &w, json, rpc_url).await?;
+    check_tradable(&sym).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
     let is_all = amount.trim().eq_ignore_ascii_case("all");
@@ -269,9 +271,10 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    let (balances_res, assets) = tokio::join!(
+    let (balances_res, assets, tradable_set) = tokio::join!(
         solana::get_all_balances(&taker, &tokens, rpc_url),
-        api::fetch_assets()
+        api::fetch_assets(),
+        fetch_tradable_set()
     );
     let balances = balances_res?;
     let assets = assets.unwrap_or_default();
@@ -354,6 +357,19 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
                 token: tb.symbol.clone(),
                 estimated_usd: est_value,
                 reason: "below $1.50 minimum",
+            });
+            continue;
+        }
+
+        // Skip tokens not tradable in current session
+        if !tradable_set.is_empty() && !tradable_set.contains(&tb.symbol.to_uppercase()) {
+            if !json {
+                eprintln!("  Skipping {} — not tradable in current session", tb.symbol);
+            }
+            skipped.push(CloseSkipJson {
+                token: tb.symbol.clone(),
+                estimated_usd: est_value,
+                reason: "not tradable in current session",
             });
             continue;
         }

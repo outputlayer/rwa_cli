@@ -37,10 +37,44 @@ impl Wallet {
         Ok(Self { signing_key })
     }
 
-    /// Import from a base58-encoded private key (64-byte keypair or 32-byte secret).
+    /// Import from a private key string.
+    /// Auto-detects format: JSON byte array, hex, base64, or base58.
+    /// Accepts 32-byte (secret only) or 64-byte (keypair) inputs.
     pub fn from_private_key(key_str: &str) -> Result<Self> {
-        let bytes = bs58::decode(key_str).into_vec()
-            .map_err(|e| eyre!("Invalid base58 private key: {e}"))?;
+        let trimmed = key_str.trim();
+        let bytes = if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            // JSON byte array: [1,2,3,...,64]
+            serde_json::from_str::<Vec<u8>>(trimmed)
+                .map_err(|e| eyre!("Invalid JSON byte array: {e}"))?
+        } else if trimmed.len() == 128 || trimmed.len() == 64 {
+            // Try hex first (64 or 128 hex chars → 32 or 64 bytes)
+            if trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                hex::decode(trimmed)
+                    .map_err(|e| eyre!("Invalid hex key: {e}"))?
+            } else {
+                // Fall through to base58
+                bs58::decode(trimmed).into_vec()
+                    .map_err(|e| eyre!("Invalid private key: {e}"))?
+            }
+        } else {
+            // Try base64 (44 or 88 chars for 32/64 bytes)
+            use base64::Engine;
+            let engine = base64::engine::general_purpose::STANDARD;
+            if let Ok(decoded) = engine.decode(trimmed) {
+                if decoded.len() == 32 || decoded.len() == 64 {
+                    decoded
+                } else {
+                    // Not a valid key length for base64, try base58
+                    bs58::decode(trimmed).into_vec()
+                        .map_err(|e| eyre!("Invalid private key: {e}"))?
+                }
+            } else {
+                // Base58 fallback
+                bs58::decode(trimmed).into_vec()
+                    .map_err(|e| eyre!("Invalid base58 private key: {e}"))?
+            }
+        };
+
         let secret: [u8; 32] = match bytes.len() {
             64 => bytes[..32].try_into()
                 .map_err(|_| eyre!("Failed to extract secret key"))?,
@@ -256,6 +290,59 @@ mod tests {
     #[test]
     fn from_private_key_invalid() {
         assert!(Wallet::from_private_key("not-valid-base58!!!").is_err());
+    }
+
+    #[test]
+    fn from_private_key_hex_64() {
+        let w = Wallet::generate();
+        let hex_str = hex::encode(w.signing_key().as_bytes());
+        assert_eq!(hex_str.len(), 64);
+        let w2 = Wallet::from_private_key(&hex_str).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_hex_128() {
+        let w = Wallet::generate();
+        let mut key_bytes = Vec::with_capacity(64);
+        key_bytes.extend_from_slice(w.signing_key().as_bytes());
+        key_bytes.extend_from_slice(w.signing_key().verifying_key().as_bytes());
+        let hex_str = hex::encode(&key_bytes);
+        assert_eq!(hex_str.len(), 128);
+        let w2 = Wallet::from_private_key(&hex_str).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_base64() {
+        use base64::Engine;
+        let w = Wallet::generate();
+        let mut key_bytes = Vec::with_capacity(64);
+        key_bytes.extend_from_slice(w.signing_key().as_bytes());
+        key_bytes.extend_from_slice(w.signing_key().verifying_key().as_bytes());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&key_bytes);
+        let w2 = Wallet::from_private_key(&b64).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_json_array() {
+        let w = Wallet::generate();
+        let mut key_bytes = Vec::with_capacity(64);
+        key_bytes.extend_from_slice(w.signing_key().as_bytes());
+        key_bytes.extend_from_slice(w.signing_key().verifying_key().as_bytes());
+        let json = serde_json::to_string(&key_bytes).unwrap();
+        let w2 = Wallet::from_private_key(&json).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
+    }
+
+    #[test]
+    fn from_private_key_json_array_32() {
+        let w = Wallet::generate();
+        let secret: Vec<u8> = w.signing_key().as_bytes().to_vec();
+        let json = serde_json::to_string(&secret).unwrap();
+        let w2 = Wallet::from_private_key(&json).unwrap();
+        assert_eq!(w.pubkey(), w2.pubkey());
     }
 
     #[test]

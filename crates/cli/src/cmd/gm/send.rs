@@ -39,16 +39,22 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
         amount.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?
     };
 
-    if sol_f < MIN_SOL_FOR_GAS {
-        return Err(eyre::eyre!("Amount too small — need to keep ≥{MIN_SOL_FOR_GAS} SOL for gas"));
-    }
+    // Get estimated tx fee from RPC (base + priority + 30% buffer).
+    let tx_fee = solana::estimate_tx_fee(rpc_url).await;
 
+    // For "all", reserve only the estimated tx fee, not the full MIN_SOL_FOR_GAS.
     let send_amount = if is_all {
-        if sol_bal <= MIN_SOL_FOR_GAS {
-            return Err(eyre::eyre!("Balance too low — need ≥{MIN_SOL_FOR_GAS} SOL for gas"));
+        let max_send = sol_bal - tx_fee;
+        if max_send <= 0.0 {
+            return Err(eyre::eyre!("Balance too low to cover tx fee ({sol_bal:.6} SOL, fee ~{tx_fee:.6})"));
         }
-        sol_bal - MIN_SOL_FOR_GAS
+        max_send
     } else {
+        if sol_f > sol_bal - tx_fee {
+            return Err(eyre::eyre!(
+                "Insufficient SOL: have {sol_bal:.6}, sending {sol_f:.6} + fee ~{tx_fee:.6}"
+            ));
+        }
         sol_f
     };
 
@@ -83,21 +89,32 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
         return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{MIN_SOL_FOR_GAS})"));
     }
 
-    let usdc_f = resolve_percent_amount(amount, || {
-        let pk = pubkey.clone();
-        let rpc = rpc_url.map(String::from);
-        async move { solana::get_usdc_balance(&pk, rpc.as_deref()).await }
-    }).await?;
+    let is_all = amount.trim().eq_ignore_ascii_case("all") || amount.trim() == "100%";
 
-    if usdc_f <= 0.0 {
-        return Err(eyre::eyre!("USDC balance is 0"));
-    }
-
-    let raw_str = jupiter::usdc_to_raw(&format!("{usdc_f:.2}"))?;
-    let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
+    // For "all", use raw on-chain balance to avoid float precision loss.
+    let (display_f, raw) = if is_all {
+        let (ui, raw_str) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
+        if ui <= 0.0 {
+            return Err(eyre::eyre!("USDC balance is 0"));
+        }
+        let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid on-chain USDC amount"))?;
+        (ui, raw)
+    } else {
+        let usdc_f = resolve_percent_amount(amount, || {
+            let pk = pubkey.clone();
+            let rpc = rpc_url.map(String::from);
+            async move { solana::get_usdc_balance(&pk, rpc.as_deref()).await }
+        }).await?;
+        if usdc_f <= 0.0 {
+            return Err(eyre::eyre!("USDC balance is 0"));
+        }
+        let raw_str = jupiter::usdc_to_raw(&format!("{usdc_f:.2}"))?;
+        let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
+        (usdc_f, raw)
+    };
 
     if !json {
-        println!("Send {usdc_f:.2} USDC → {to}");
+        println!("Send {display_f:.2} USDC → {to}");
     }
     if !yes && !json && !confirm("Proceed?") {
         return Err(eyre::eyre!("Cancelled"));
@@ -109,12 +126,12 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
         return json_out(&SendJson {
             status: "success",
             token: "USDC".into(),
-            amount: format!("{usdc_f:.2}"),
+            amount: format!("{display_f:.2}"),
             recipient: to.into(),
             tx: format!("https://solscan.io/tx/{sig}"),
         });
     }
-    println!("✓ Sent {usdc_f:.2} USDC → {to}");
+    println!("✓ Sent {display_f:.2} USDC → {to}");
     println!("  https://solscan.io/tx/{sig}");
     Ok(())
 }

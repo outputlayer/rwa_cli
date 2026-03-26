@@ -458,6 +458,48 @@ fn check_trading_hours() -> Result<()> {
     Ok(())
 }
 
+/// Check if a specific token is tradable in the current Ondo session.
+/// Returns Ok(()) if tradable, or an error with a clear message if not.
+/// Silently passes if the session API is unreachable (fail-open).
+async fn check_tradable(symbol: &str) -> Result<()> {
+    let session = api::current_session();
+    if session == api::Session::Closed {
+        return Ok(()); // check_trading_hours() handles this
+    }
+    let limits = match api::fetch_session_limits().await {
+        Ok(l) => l,
+        Err(_) => return Ok(()), // fail-open: don't block trade if API is down
+    };
+    let sym_upper = symbol.to_uppercase();
+    let is_tradable = limits.iter().any(|l| {
+        l.symbol.to_uppercase() == sym_upper && l.is_tradable(session)
+    });
+    if !is_tradable {
+        return Err(eyre::eyre!(
+            "{symbol} is not tradable in current session ({}).\n  \
+             Run `rwa gm hours --tradable` to see which tokens are available.\n  \
+             Run `rwa gm list --search {symbol}` to check tradable status.",
+            session.label()
+        ));
+    }
+    Ok(())
+}
+
+/// Fetch the set of tradable token symbols for the current session.
+/// Returns an empty set if the API is unreachable (fail-open).
+async fn fetch_tradable_set() -> std::collections::HashSet<String> {
+    let session = api::current_session();
+    if session == api::Session::Closed {
+        return std::collections::HashSet::new();
+    }
+    api::fetch_session_limits().await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| l.is_tradable(session))
+        .map(|l| l.symbol.to_uppercase())
+        .collect()
+}
+
 /// Resolve percentage or "all" amounts into absolute numbers.
 async fn resolve_percent_amount<F, Fut>(raw: &str, balance_fn: F) -> Result<f64>
 where
@@ -676,5 +718,111 @@ mod tests {
     fn detect_stock() {
         assert_eq!(token_type_from_name("Tesla"), "stock");
         assert_eq!(token_type_from_name("Apple Inc"), "stock");
+    }
+
+    // ── calc_slippage ─────────────────────────────────────────
+
+    #[test]
+    fn slippage_from_price_impact() {
+        let order = jupiter::OrderResponse {
+            request_id: String::new(),
+            in_amount: "100".into(),
+            out_amount: "99".into(),
+            in_usd_value: Some(100.0),
+            out_usd_value: Some(99.0),
+            price_impact: Some(-0.5),
+            price_impact_pct: None,
+            slippage_bps: None,
+            fee_bps: None,
+            transaction: None,
+            error: None,
+            error_message: None,
+        };
+        let slip = calc_slippage(&order);
+        assert!((slip.unwrap() - (-0.5)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn slippage_from_usd_values() {
+        let order = jupiter::OrderResponse {
+            request_id: String::new(),
+            in_amount: "100".into(),
+            out_amount: "97".into(),
+            in_usd_value: Some(100.0),
+            out_usd_value: Some(97.0),
+            price_impact: None,
+            price_impact_pct: None,
+            slippage_bps: None,
+            fee_bps: None,
+            transaction: None,
+            error: None,
+            error_message: None,
+        };
+        let slip = calc_slippage(&order);
+        assert!((slip.unwrap() - (-3.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn slippage_none_when_no_data() {
+        let order = jupiter::OrderResponse {
+            request_id: String::new(),
+            in_amount: "100".into(),
+            out_amount: "97".into(),
+            in_usd_value: None,
+            out_usd_value: None,
+            price_impact: None,
+            price_impact_pct: None,
+            slippage_bps: None,
+            fee_bps: None,
+            transaction: None,
+            error: None,
+            error_message: None,
+        };
+        assert!(calc_slippage(&order).is_none());
+    }
+
+    // ── check_slippage ────────────────────────────────────────
+
+    #[test]
+    fn check_slippage_blocks_above_max() {
+        let order = jupiter::OrderResponse {
+            request_id: String::new(),
+            in_amount: "100".into(),
+            out_amount: "96".into(),
+            in_usd_value: Some(100.0),
+            out_usd_value: Some(96.0),
+            price_impact: None,
+            price_impact_pct: None,
+            slippage_bps: None,
+            fee_bps: None,
+            transaction: None,
+            error: None,
+            error_message: None,
+        };
+        // -4% slippage should be blocked (max is -3%)
+        let result = check_slippage(&order, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Slippage too high"));
+    }
+
+    #[test]
+    fn check_slippage_allows_within_limit() {
+        let order = jupiter::OrderResponse {
+            request_id: String::new(),
+            in_amount: "100".into(),
+            out_amount: "99".into(),
+            in_usd_value: Some(100.0),
+            out_usd_value: Some(99.0),
+            price_impact: None,
+            price_impact_pct: None,
+            slippage_bps: None,
+            fee_bps: None,
+            transaction: None,
+            error: None,
+            error_message: None,
+        };
+        // -1% slippage is fine
+        let result = check_slippage(&order, true);
+        assert!(result.is_ok());
     }
 }

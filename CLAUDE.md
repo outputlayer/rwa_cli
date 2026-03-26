@@ -89,7 +89,15 @@ Not all tokens are tradable in every session. `list` and `hours --tradable` show
 ## Close-All Limits
 
 - Positions < $1.50 are skipped automatically (market makers reject small swaps)
+- Tokens not tradable in current session are skipped automatically
 - Skipped tokens are listed separately in JSON (`skipped` array with `reason`)
+
+## Tradable Check
+
+- `buy` and `sell` check if the token is tradable in the current Ondo session BEFORE calling Jupiter
+- If not tradable, returns a clear error: `"TSLAon is not tradable in current session (Pre-Market)"`
+- `close-all` skips non-tradable tokens and puts them in the `skipped` array
+- Fails open: if the Ondo session API is unreachable, the check is skipped (doesn't block trades)
 
 ## Agent Usage Rules (for AI agents running `rwa` commands)
 
@@ -99,13 +107,15 @@ Not all tokens are tradable in every session. `list` and `hours --tradable` show
 - Do NOT prepend `export PATH=...` to every command. `rwa` is in PATH after install.
 - Run commands **one at a time**: `rwa gm buy TSLA 100 -y && sleep 5 && rwa gm buy AAPL 100 -y`
 - Add `sleep 3` between consecutive commands
-- Always use `--json` flag and `-y` for buy/sell
+- Always use `--json` flag and `-y` for buy/sell/send
 - **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
 - **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
 - **To reduce all positions**: use `rwa --json gm close-all 50% -y` — sells given % of every position
 - **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC
-- **NEVER use `send USDC all`** when user wants to send just sell proceeds — use exact amount from sell result
+- **After selling**: use exact amount from sell result: `rwa --json gm send USDC 83.30 <ADDR> -y`
+- **send USDC all / send SOL all**: safe to use for draining wallet — handles precision and fees correctly
 - **After selling all positions**: run `rwa --json gm reclaim` to close empty token accounts and reclaim SOL rent
+- **Check market hours**: `rwa --json gm hours` — NOT `market-hours`
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)
@@ -117,6 +127,8 @@ Not all tokens are tradable in every session. `list` and `hours --tradable` show
 ### Error handling
 - With `--json`, errors return `{"status":"error","error":"..."}` on stdout (exit code 1)
 - CLI auto-retries swap errors (max 2 retries with fresh orders). Do NOT retry manually after a swap error.
+- "not tradable in current session" → token can't be traded now. Check `rwa gm hours --tradable`
 - "Solana RPC unavailable" → wait **at least 5 seconds** before retry. After 3 failures, stop and ask user to set `RWA_RPC_URL`
 - "No swap route found" / "HTTP 400" → you are running commands in parallel. Stop. Run sequentially
+- "Quote not available from market maker" → no liquidity for this token. Skip it.
 - "HTTP 429" → rate limited. Wait 5s, retry

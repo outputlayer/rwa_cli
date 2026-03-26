@@ -49,6 +49,7 @@ chrono-tz = "0.10"
 
 # Misc
 dirs = "6"
+hex = "0.4"
 
 [profile.release]
 opt-level = 3

@@ -155,6 +155,40 @@ pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64>
     Ok(result.value as f64 / 1_000_000_000.0)
 }
 
+/// Base fee per signature (5000 lamports, protocol constant).
+const BASE_FEE_LAMPORTS: u64 = 5_000;
+
+/// Fetch median recent priority fee from RPC.
+async fn fetch_priority_fee(rpc_url: Option<&str>) -> Result<u64> {
+    let client = &*HTTP;
+    let req = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getRecentPrioritizationFees",
+        params: serde_json::json!([]),
+    };
+
+    let resp: RpcResponse<Vec<PriorityFeeEntry>> = rpc_call_with_retry(
+        client, &rpc_urls(rpc_url), &req,
+    ).await?;
+
+    let entries = resp.result.unwrap_or_default();
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    let mut fees: Vec<u64> = entries.iter().map(|e| e.prioritization_fee).collect();
+    fees.sort_unstable();
+    Ok(fees[fees.len() / 2]) // median
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PriorityFeeEntry {
+    prioritization_fee: u64,
+    #[allow(dead_code)]
+    slot: Option<u64>,
+}
+
 /// Get USDC balance for a wallet on Solana.
 pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
     let client = &*HTTP;
@@ -179,6 +213,37 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
     match accounts.value.first() {
         Some(acc) => Ok(acc.account.data.parsed.info.token_amount.ui_amount.unwrap_or(0.0)),
         None => Ok(0.0),
+    }
+}
+
+/// Get raw USDC balance as (ui_amount, raw_amount_string).
+/// The raw amount avoids float precision loss for exact transfers.
+pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result<(f64, String)> {
+    let client = &*HTTP;
+    let req = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTokenAccountsByOwner",
+        params: serde_json::json!([
+            wallet,
+            { "mint": USDC_MINT },
+            { "encoding": "jsonParsed", "commitment": "confirmed" }
+        ]),
+    };
+
+    let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
+        client, &rpc_urls(rpc_url), &req,
+    ).await?;
+
+    let accounts = resp.result
+        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
+
+    match accounts.value.first() {
+        Some(acc) => {
+            let ta = &acc.account.data.parsed.info.token_amount;
+            Ok((ta.ui_amount.unwrap_or(0.0), ta.amount.clone()))
+        }
+        None => Ok((0.0, "0".to_string())),
     }
 }
 
@@ -389,8 +454,8 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
     for (url_idx, url) in urls.iter().enumerate() {
         for attempt in 0..3u32 {
             if attempt > 0 || url_idx > 0 {
-                let delay = 1000 * u64::from(attempt + 1);
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                let delay = backoff_with_jitter(attempt + 1);
+                tokio::time::sleep(delay).await;
             }
             let resp = match client.post(*url).json(req).timeout(timeout).send().await {
                 Ok(r) => r,
@@ -444,8 +509,8 @@ async fn rpc_batch_with_retry(
     for (url_idx, url) in urls.iter().enumerate() {
         for attempt in 0..3u32 {
             if attempt > 0 || url_idx > 0 {
-                let delay = 1000 * u64::from(attempt + 1);
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                let delay = backoff_with_jitter(attempt + 1);
+                tokio::time::sleep(delay).await;
             }
             let resp = match client.post(*url).json(&reqs).timeout(timeout).send().await {
                 Ok(r) => r,
@@ -485,6 +550,123 @@ async fn rpc_batch_with_retry(
     ))
 }
 
+/// Backoff with jitter to avoid thundering herd on rate-limited endpoints.
+/// Returns base delay (attempt × 1s) plus random jitter (0–500ms).
+fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
+    let base_ms = 1000u64 * attempt as u64;
+    let jitter_ms = rand::random::<u64>() % 500;
+    std::time::Duration::from_millis(base_ms + jitter_ms)
+}
+
+// ── Fee cache ─────────────────────────────────────────────
+
+use std::sync::Mutex;
+
+/// Cached priority fee: (fee_lamports, timestamp).
+static FEE_CACHE: std::sync::LazyLock<Mutex<(u64, std::time::Instant)>> =
+    std::sync::LazyLock::new(|| Mutex::new((BASE_FEE_LAMPORTS, std::time::Instant::now())));
+
+/// Fee cache TTL — reuse cached fee for this duration.
+const FEE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Estimate the transaction fee in SOL for a simple transfer (1 signature).
+/// Fetches recent priority fees from RPC with caching (10s TTL), adds 30% buffer.
+pub async fn estimate_tx_fee(rpc_url: Option<&str>) -> f64 {
+    let priority = get_priority_fee_cached(rpc_url).await;
+    let total = BASE_FEE_LAMPORTS + priority;
+    let with_buffer = (total as f64 * 1.3) as u64;
+    with_buffer as f64 / 1_000_000_000.0
+}
+
+/// Get cached priority fee, refreshing from RPC if stale.
+async fn get_priority_fee_cached(rpc_url: Option<&str>) -> u64 {
+    if let Ok(cache) = FEE_CACHE.lock() {
+        if cache.1.elapsed() < FEE_CACHE_TTL {
+            return cache.0;
+        }
+    }
+    let fee = fetch_priority_fee(rpc_url).await.unwrap_or(0);
+    if let Ok(mut cache) = FEE_CACHE.lock() {
+        *cache = (fee, std::time::Instant::now());
+    }
+    fee
+}
+
+// ── Transaction confirmation ──────────────────────────────
+
+/// Poll for transaction confirmation. Returns Ok(()) when confirmed,
+/// or Err after timeout (30s). Uses `confirmed` commitment.
+pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Result<()> {
+    let client = &*HTTP;
+    let timeout = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed() > timeout {
+            return Err(eyre!("Transaction confirmation timeout (30s) — tx may still land: {signature}"));
+        }
+
+        let req = RpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getSignatureStatuses",
+            params: serde_json::json!([[signature]]),
+        };
+
+        if let Ok(resp) = rpc_call_with_retry::<serde_json::Value>(
+            client, &rpc_urls(rpc_url), &req,
+        ).await {
+            if let Some(result) = resp.result {
+                if let Some(status) = result.get("value")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                {
+                    if !status.is_null() {
+                        if let Some(err) = status.get("err") {
+                            if !err.is_null() {
+                                return Err(eyre!("Transaction failed on-chain: {err}"));
+                            }
+                        }
+                        return Ok(()); // confirmed, no error
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+// ── Compute Budget ────────────────────────────────────────
+
+/// Compute Budget Program ID (ComputeBudget111111111111111111111111111111)
+const COMPUTE_BUDGET_PROGRAM: [u8; 32] = [
+    3, 6, 70, 111, 229, 33, 23, 50, 255, 236, 173, 186, 114, 195, 155, 231,
+    188, 140, 229, 187, 197, 247, 18, 107, 44, 67, 155, 58, 64, 0, 0, 0,
+];
+
+/// Build a SetComputeUnitLimit instruction (index 2).
+fn compute_unit_limit_ix(units: u32) -> Instruction {
+    let mut data = vec![2]; // SetComputeUnitLimit
+    data.extend_from_slice(&units.to_le_bytes());
+    Instruction {
+        program_id_index: 0, // placeholder, set by caller
+        account_indices: vec![],
+        data,
+    }
+}
+
+/// Build a SetComputeUnitPrice instruction (index 3).
+fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
+    let mut data = vec![3]; // SetComputeUnitPrice
+    data.extend_from_slice(&micro_lamports.to_le_bytes());
+    Instruction {
+        program_id_index: 0, // placeholder, set by caller
+        account_indices: vec![],
+        data,
+    }
+}
+
 // ── Transfer functions ─────────────────────────────────────
 
 /// System Program ID (for SOL transfers)
@@ -506,6 +688,7 @@ const ATA_PROGRAM: [u8; 32] = [
 ];
 
 /// Transfer SOL to a recipient. Returns transaction signature.
+/// Includes priority fee via Compute Budget instructions for reliable landing.
 pub async fn transfer_sol(
     wallet: &Wallet,
     recipient: &str,
@@ -523,33 +706,52 @@ pub async fn transfer_sol(
     let to = bs58::decode(recipient).into_vec()
         .map_err(|e| eyre!("Invalid recipient address: {e}"))?;
 
-    // System transfer instruction: program_id_index=2, data=lamports(u32_le(2) + u64_le)
+    // Fetch priority fee for compute budget
+    let priority_fee = get_priority_fee_cached(rpc_url).await;
+
+    // System transfer instruction: program_id_index=3, data=lamports(u32_le(2) + u64_le)
     let mut ix_data = vec![2, 0, 0, 0]; // Transfer instruction index
     ix_data.extend_from_slice(&lamports.to_le_bytes());
 
     let accounts = vec![
-        from.clone(),      // 0: sender (signer, writable)
-        to.clone(),        // 1: recipient (writable)
-        SYSTEM_PROGRAM.to_vec(), // 2: system program
+        from.clone(),                   // 0: sender (signer, writable)
+        to.clone(),                     // 1: recipient (writable)
+        COMPUTE_BUDGET_PROGRAM.to_vec(), // 2: compute budget program
+        SYSTEM_PROGRAM.to_vec(),        // 3: system program
     ];
 
-    let ix = Instruction {
-        program_id_index: 2,
+    let mut instructions = Vec::new();
+
+    // Compute budget: limit + price (program_id_index = 2)
+    let mut cu_limit = compute_unit_limit_ix(200_000);
+    cu_limit.program_id_index = 2;
+    instructions.push(cu_limit);
+
+    if priority_fee > 0 {
+        let mut cu_price = compute_unit_price_ix(priority_fee);
+        cu_price.program_id_index = 2;
+        instructions.push(cu_price);
+    }
+
+    // SOL transfer (program_id_index = 3)
+    instructions.push(Instruction {
+        program_id_index: 3,
         account_indices: vec![0, 1],
         data: ix_data,
-    };
+    });
 
     let header = MessageHeader {
         num_required_sigs: 1,
         num_readonly_signed: 0,
-        num_readonly_unsigned: 1,
+        num_readonly_unsigned: 2, // compute budget + system program
     };
 
-    send_legacy_transaction(wallet, &accounts, &[ix], &header, rpc_url).await
+    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
 }
 
 /// Transfer SPL token (USDC or GM token) to a recipient. Returns tx signature.
 /// Automatically creates recipient's ATA if it doesn't exist.
+/// Includes priority fee via Compute Budget instructions for reliable landing.
 pub async fn transfer_spl(
     wallet: &Wallet,
     recipient: &str,
@@ -572,8 +774,12 @@ pub async fn transfer_spl(
     let from_ata = derive_ata(&from_pubkey, &mint_pubkey, &token_program)?;
     let to_ata = derive_ata(&to_pubkey, &mint_pubkey, &token_program)?;
 
-    // Check if recipient ATA exists
-    let ata_exists = check_account_exists(&to_ata, rpc_url).await?;
+    // Check if recipient ATA exists + fetch priority fee in parallel
+    let (ata_exists, priority_fee) = tokio::join!(
+        check_account_exists(&to_ata, rpc_url),
+        get_priority_fee_cached(rpc_url),
+    );
+    let ata_exists = ata_exists?;
 
     // Build transfer instruction (TransferChecked = index 12)
     let mut ix_data = vec![12]; // TransferChecked
@@ -584,62 +790,82 @@ pub async fn transfer_spl(
     let mut instructions: Vec<Instruction> = Vec::new();
 
     if ata_exists {
-        // TransferChecked: source ATA → dest ATA
-        // Solana requires: writable accounts first, then readonly last
+        // Accounts: sender, source ATA, dest ATA, compute_budget, mint, token_program
         accounts = vec![
-            from_pubkey.clone(),        // 0: sender (signer, writable)
-            from_ata.clone(),           // 1: source ATA (writable)
-            to_ata.clone(),             // 2: dest ATA (writable)
-            mint_pubkey.clone(),        // 3: mint (readonly)
-            token_program.to_vec(),     // 4: token program (readonly)
+            from_pubkey.clone(),                // 0: sender (signer, writable)
+            from_ata.clone(),                   // 1: source ATA (writable)
+            to_ata.clone(),                     // 2: dest ATA (writable)
+            COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
+            mint_pubkey.clone(),                // 4: mint (readonly)
+            token_program.to_vec(),             // 5: token program (readonly)
         ];
 
-        // TransferChecked: [source(1), mint(3), dest(2), authority(0)]
+        // Compute budget instructions (program_id_index = 3)
+        let mut cu_limit = compute_unit_limit_ix(200_000);
+        cu_limit.program_id_index = 3;
+        instructions.push(cu_limit);
+        if priority_fee > 0 {
+            let mut cu_price = compute_unit_price_ix(priority_fee);
+            cu_price.program_id_index = 3;
+            instructions.push(cu_price);
+        }
+
+        // TransferChecked: [source(1), mint(4), dest(2), authority(0)]
         instructions.push(Instruction {
-            program_id_index: 4,
-            account_indices: vec![1, 3, 2, 0],
+            program_id_index: 5,
+            account_indices: vec![1, 4, 2, 0],
             data: ix_data,
         });
 
         let header = MessageHeader {
             num_required_sigs: 1,
             num_readonly_signed: 0,
-            num_readonly_unsigned: 2, // mint, token_program
+            num_readonly_unsigned: 3, // compute_budget, mint, token_program
         };
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
     } else {
         // Create recipient ATA, then transfer
-        // Writable non-signers first, then readonly non-signers
         accounts = vec![
-            from_pubkey.clone(),        // 0: payer/sender (signer, writable)
-            to_ata.clone(),             // 1: new ATA (writable)
-            from_ata.clone(),           // 2: source ATA (writable)
-            to_pubkey.clone(),          // 3: owner of new ATA (readonly)
-            mint_pubkey.clone(),        // 4: mint (readonly)
-            SYSTEM_PROGRAM.to_vec(),    // 5: system program (readonly)
-            token_program.to_vec(),     // 6: token program (readonly)
-            ATA_PROGRAM.to_vec(),       // 7: ATA program (readonly)
+            from_pubkey.clone(),                // 0: payer/sender (signer, writable)
+            to_ata.clone(),                     // 1: new ATA (writable)
+            from_ata.clone(),                   // 2: source ATA (writable)
+            COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
+            to_pubkey.clone(),                  // 4: owner of new ATA (readonly)
+            mint_pubkey.clone(),                // 5: mint (readonly)
+            SYSTEM_PROGRAM.to_vec(),            // 6: system program (readonly)
+            token_program.to_vec(),             // 7: token program (readonly)
+            ATA_PROGRAM.to_vec(),               // 8: ATA program (readonly)
         ];
 
-        // Create ATA: [payer(0), ata(1), owner(3), mint(4), system(5), token_prog(6)]
+        // Compute budget instructions (program_id_index = 3)
+        let mut cu_limit = compute_unit_limit_ix(400_000); // higher limit for create ATA + transfer
+        cu_limit.program_id_index = 3;
+        instructions.push(cu_limit);
+        if priority_fee > 0 {
+            let mut cu_price = compute_unit_price_ix(priority_fee);
+            cu_price.program_id_index = 3;
+            instructions.push(cu_price);
+        }
+
+        // Create ATA: [payer(0), ata(1), owner(4), mint(5), system(6), token_prog(7)]
         instructions.push(Instruction {
-            program_id_index: 7,
-            account_indices: vec![0, 1, 3, 4, 5, 6],
+            program_id_index: 8,
+            account_indices: vec![0, 1, 4, 5, 6, 7],
             data: vec![],
         });
 
-        // TransferChecked: [source(2), mint(4), dest(1), authority(0)]
+        // TransferChecked: [source(2), mint(5), dest(1), authority(0)]
         instructions.push(Instruction {
-            program_id_index: 6,
-            account_indices: vec![2, 4, 1, 0],
+            program_id_index: 7,
+            account_indices: vec![2, 5, 1, 0],
             data: ix_data,
         });
 
         let header = MessageHeader {
             num_required_sigs: 1,
             num_readonly_signed: 0,
-            num_readonly_unsigned: 5, // to_pubkey, mint, system, token_prog, ata_prog
+            num_readonly_unsigned: 6, // compute_budget, to_pubkey, mint, system, token_prog, ata_prog
         };
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
@@ -712,7 +938,14 @@ async fn send_legacy_transaction(
         base64::engine::general_purpose::STANDARD.encode(&tx)
     };
 
-    send_raw_transaction(&tx_base64, rpc_url).await
+    let sig = send_raw_transaction(&tx_base64, rpc_url).await?;
+
+    // 6. Confirm — poll until confirmed (best-effort, don't fail the whole transfer)
+    if let Err(e) = confirm_transaction(&sig, rpc_url).await {
+        eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
+    }
+
+    Ok(sig)
 }
 
 /// Get a recent blockhash from Solana RPC.
@@ -1097,5 +1330,86 @@ mod tests {
             // Verify it encodes to 1-3 bytes
             assert!(buf.len() >= 1 && buf.len() <= 3, "val={val} encoded to {} bytes", buf.len());
         }
+    }
+
+    // ── fee estimation ────────────────────────────────────────
+
+    #[test]
+    fn base_fee_constant() {
+        assert_eq!(BASE_FEE_LAMPORTS, 5_000);
+    }
+
+    #[test]
+    fn priority_fee_entry_deserialize() {
+        let json = r#"{"slot":123,"prioritizationFee":1000}"#;
+        let entry: PriorityFeeEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.prioritization_fee, 1000);
+    }
+
+    // ── compute budget instructions ──────────────────────────
+
+    #[test]
+    fn compute_unit_limit_ix_encodes_correctly() {
+        let ix = compute_unit_limit_ix(200_000);
+        assert_eq!(ix.data[0], 2); // SetComputeUnitLimit discriminator
+        let units = u32::from_le_bytes(ix.data[1..5].try_into().unwrap());
+        assert_eq!(units, 200_000);
+        assert!(ix.account_indices.is_empty());
+    }
+
+    #[test]
+    fn compute_unit_price_ix_encodes_correctly() {
+        let ix = compute_unit_price_ix(50_000);
+        assert_eq!(ix.data[0], 3); // SetComputeUnitPrice discriminator
+        let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+        assert_eq!(price, 50_000);
+        assert!(ix.account_indices.is_empty());
+    }
+
+    #[test]
+    fn compute_budget_program_id_matches() {
+        // Compute Budget Program: ComputeBudget111111111111111111111111111111
+        let expected = bs58::decode("ComputeBudget111111111111111111111111111111")
+            .into_vec()
+            .unwrap();
+        assert_eq!(COMPUTE_BUDGET_PROGRAM.as_slice(), expected.as_slice());
+    }
+
+    // ── backoff ──────────────────────────────────────────────
+
+    #[test]
+    fn backoff_with_jitter_increases_with_attempt() {
+        // Attempt 1: base 1000ms + jitter 0-500ms → 1000-1500ms
+        // Attempt 3: base 3000ms + jitter 0-500ms → 3000-3500ms
+        let d1 = backoff_with_jitter(1);
+        let d3 = backoff_with_jitter(3);
+        assert!(d1.as_millis() >= 1000 && d1.as_millis() < 1500);
+        assert!(d3.as_millis() >= 3000 && d3.as_millis() < 3500);
+    }
+
+    // ── fee cache ────────────────────────────────────────────
+
+    #[test]
+    fn fee_cache_ttl_is_10s() {
+        assert_eq!(FEE_CACHE_TTL, std::time::Duration::from_secs(10));
+    }
+
+    // ── derive_ata ───────────────────────────────────────────
+
+    #[test]
+    fn derive_ata_produces_32_bytes() {
+        let owner = bs58::decode("11111111111111111111111111111111").into_vec().unwrap();
+        let mint = bs58::decode("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").into_vec().unwrap();
+        let ata = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
+        assert_eq!(ata.len(), 32);
+    }
+
+    #[test]
+    fn derive_ata_deterministic() {
+        let owner = bs58::decode("5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiYtRo7DFYiuZ47").into_vec().unwrap();
+        let mint = bs58::decode("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").into_vec().unwrap();
+        let ata1 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
+        let ata2 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
+        assert_eq!(ata1, ata2);
     }
 }
