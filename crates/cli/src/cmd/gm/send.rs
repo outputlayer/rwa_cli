@@ -42,7 +42,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
     // Get estimated tx fee from RPC (base + priority + 30% buffer).
     let tx_fee = solana::estimate_tx_fee(rpc_url).await;
 
-    // For "all", reserve only the estimated tx fee, not the full MIN_SOL_FOR_GAS.
+    // For "all", reserve only the estimated tx fee.
     let send_amount = if is_all {
         let max_send = sol_bal - tx_fee;
         if max_send <= 0.0 {
@@ -65,11 +65,12 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
         return Err(eyre::eyre!("Cancelled"));
     }
 
-    let sig = solana::transfer_sol(w, to, send_amount, rpc_url).await?;
+    let result = solana::transfer_sol(w, to, send_amount, rpc_url).await?;
+    let sig = &result.signature;
 
     if json {
         return json_out(&SendJson {
-            status: "success",
+            status: if result.confirmed { "success" } else { "sent" },
             token: "SOL".into(),
             amount: format!("{send_amount:.6}"),
             recipient: to.into(),
@@ -78,6 +79,9 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
     }
     println!("✓ Sent {:.6} SOL → {to}", send_amount);
     println!("  https://solscan.io/tx/{sig}");
+    if !result.confirmed {
+        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
+    }
     Ok(())
 }
 
@@ -85,8 +89,10 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
     let pubkey = w.pubkey();
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
-    if sol < MIN_SOL_FOR_GAS {
-        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{MIN_SOL_FOR_GAS})"));
+    // USDC uses standard SPL Token — recipient may need ATA creation
+    let min_sol = solana::estimate_gas_needed(true, false, rpc_url).await;
+    if sol < min_sol {
+        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
     }
 
     let is_all = amount.trim().eq_ignore_ascii_case("all") || amount.trim() == "100%";
@@ -120,11 +126,12 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
         return Err(eyre::eyre!("Cancelled"));
     }
 
-    let sig = solana::transfer_spl(w, to, solana::USDC_MINT, raw, 6, false, rpc_url).await?;
+    let result = solana::transfer_spl(w, to, solana::USDC_MINT, raw, 6, false, rpc_url).await?;
+    let sig = &result.signature;
 
     if json {
         return json_out(&SendJson {
-            status: "success",
+            status: if result.confirmed { "success" } else { "sent" },
             token: "USDC".into(),
             amount: format!("{display_f:.2}"),
             recipient: to.into(),
@@ -133,6 +140,9 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
     }
     println!("✓ Sent {display_f:.2} USDC → {to}");
     println!("  https://solscan.io/tx/{sig}");
+    if !result.confirmed {
+        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
+    }
     Ok(())
 }
 
@@ -142,8 +152,10 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
-    if sol < MIN_SOL_FOR_GAS {
-        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{MIN_SOL_FOR_GAS})"));
+    // GM tokens use Token-2022 — recipient may need ATA creation
+    let min_sol = solana::estimate_gas_needed(true, true, rpc_url).await;
+    if sol < min_sol {
+        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
     }
 
     let token_f = resolve_percent_amount(amount, || {
@@ -171,11 +183,12 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Cancelled"));
     }
 
-    let sig = solana::transfer_spl(w, to, &gm_mint, raw, 9, true, rpc_url).await?;
+    let result = solana::transfer_spl(w, to, &gm_mint, raw, 9, true, rpc_url).await?;
+    let sig = &result.signature;
 
     if json {
         return json_out(&SendJson {
-            status: "success",
+            status: if result.confirmed { "success" } else { "sent" },
             token: sym.clone(),
             amount: format!("{token_f:.6}"),
             recipient: to.into(),
@@ -184,5 +197,8 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     }
     println!("✓ Sent {token_f:.6} {sym} → {to}");
     println!("  https://solscan.io/tx/{sig}");
+    if !result.confirmed {
+        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
+    }
     Ok(())
 }

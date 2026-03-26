@@ -175,11 +175,13 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     let is_all = amount.trim().eq_ignore_ascii_case("all");
     let is_pct = amount.trim().ends_with('%');
 
+    // Fetch token balance once — needed for all/pct to compute amount, and for exact to validate.
+    let bal = solana::get_balance(&taker, &gm_mint, rpc_url).await?;
+    if bal.balance <= 0.0 {
+        return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
+    }
+
     let (sell_str, raw_gm) = if is_all || is_pct {
-        let bal = solana::get_balance(&taker, &gm_mint, rpc_url).await?;
-        if bal.balance <= 0.0 {
-            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
-        }
         if is_all {
             let sell_display = jupiter::format_amount(&bal.raw_amount, gm_dec);
             (sell_display, bal.raw_amount)
@@ -198,6 +200,12 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
         }
     } else {
         let sell_f: f64 = amount.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
+        if sell_f > bal.balance {
+            return Err(eyre::eyre!(
+                "Insufficient {sym} balance: have {:.6}, trying to sell {sell_f:.6}",
+                bal.balance
+            ));
+        }
         let sell_display = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
         let raw = jupiter::token_to_raw(&sell_display, gm_dec)?;
         (sell_display, raw)

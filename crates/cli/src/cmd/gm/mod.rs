@@ -361,8 +361,6 @@ const SLIPPAGE_RETRY_PCT: f64 = 1.0;
 const MAX_SLIPPAGE_RETRIES: u32 = 3;
 /// Default slippage limit in basis points (100 = 1%).
 const DEFAULT_SLIPPAGE_BPS: u32 = 100;
-/// Minimum SOL needed for transaction fees.
-const MIN_SOL_FOR_GAS: f64 = 0.01;
 /// Minimum buy/sell amount in USDC.
 const MIN_USDC_AMOUNT: f64 = 1.0;
 /// Minimum sell value in USD (Jupiter MM rejects tiny orders).
@@ -533,9 +531,11 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, w: &wallet::Wallet, json:
     if usdc_amount < MIN_USDC_AMOUNT {
         return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
+    // Jupiter swaps handle ATA creation internally — only need tx fee
+    let min_sol = solana::estimate_gas_needed(false, false, rpc_url).await;
     let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
-    if sol < MIN_SOL_FOR_GAS && usdc > usdc_amount + TOPUP_USDC {
+    if sol < min_sol && usdc > usdc_amount + TOPUP_USDC {
         topup_sol(w, pubkey, json, rpc_url).await?;
         let usdc = usdc - TOPUP_USDC;
         if usdc < usdc_amount {
@@ -546,8 +546,8 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, w: &wallet::Wallet, json:
         return Ok(());
     }
     let mut issues = Vec::new();
-    if sol < MIN_SOL_FOR_GAS {
-        issues.push(format!("Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})"));
+    if sol < min_sol {
+        issues.push(format!("Insufficient SOL for gas: {sol:.6} SOL (need ≥{min_sol:.6})"));
     }
     if usdc < usdc_amount {
         issues.push(format!("Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})"));
@@ -562,15 +562,17 @@ async fn preflight_buy(pubkey: &str, usdc_amount: f64, w: &wallet::Wallet, json:
 
 async fn preflight_sell(pubkey: &str, w: &wallet::Wallet, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
+    // Jupiter swaps handle ATA creation internally — only need tx fee
+    let min_sol = solana::estimate_gas_needed(false, false, rpc_url).await;
     let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
-    if sol < MIN_SOL_FOR_GAS {
+    if sol < min_sol {
         let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
         if usdc >= TOPUP_USDC {
             topup_sol(w, pubkey, json, rpc_url).await?;
             return Ok(());
         }
         return Err(eyre::eyre!(
-            "Insufficient SOL for gas: {sol:.6} SOL (need ≥{MIN_SOL_FOR_GAS})\n  Fund wallet: {pubkey}"
+            "Insufficient SOL for gas: {sol:.6} SOL (need ≥{min_sol:.6})\n  Fund wallet: {pubkey}"
         ));
     }
     Ok(())

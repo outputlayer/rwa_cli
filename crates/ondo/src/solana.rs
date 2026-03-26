@@ -5,6 +5,15 @@ use crate::token_list::GmTokenEntry;
 use crate::wallet::Wallet;
 use crate::HTTP;
 
+/// Result of sending a transaction — includes whether it was confirmed on-chain.
+pub struct TransactionResult {
+    /// Base58-encoded transaction signature.
+    pub signature: String,
+    /// Whether the transaction was confirmed within the polling timeout.
+    /// `false` means the tx was sent but confirmation timed out — it may still land.
+    pub confirmed: bool,
+}
+
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
 /// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
 const RPC_URLS: &[&str] = &[
@@ -578,6 +587,81 @@ pub async fn estimate_tx_fee(rpc_url: Option<&str>) -> f64 {
     with_buffer as f64 / 1_000_000_000.0
 }
 
+/// Rent-exempt cache: (lamports_per_byte, timestamp).
+/// Cached because rent rate changes only via Solana governance vote (extremely rare).
+static RENT_CACHE: std::sync::LazyLock<Mutex<(Option<u64>, std::time::Instant)>> =
+    std::sync::LazyLock::new(|| Mutex::new((None, std::time::Instant::now())));
+
+/// Cache TTL for rent-exempt values — 5 minutes (changes only via governance).
+const RENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// SPL Token account data size (bytes).
+const SPL_TOKEN_ACCOUNT_SIZE: u64 = 165;
+/// Token-2022 account data size (bytes) — base size without extensions.
+const TOKEN_2022_ACCOUNT_SIZE: u64 = 182;
+
+/// Fallback rent values if RPC is unreachable.
+const ATA_RENT_LAMPORTS_FALLBACK: u64 = 2_039_280;
+const ATA_RENT_LAMPORTS_2022_FALLBACK: u64 = 2_165_280;
+
+/// Fetch rent-exempt minimum from Solana RPC via `getMinimumBalanceForRentExemption`.
+/// Caches the result for 5 minutes. Falls back to known values if RPC fails.
+async fn get_rent_exempt_cached(data_size: u64, rpc_url: Option<&str>) -> u64 {
+    // Check cache first
+    if let Ok(cache) = RENT_CACHE.lock() {
+        if let (Some(lamports), ts) = &*cache {
+            if ts.elapsed() < RENT_CACHE_TTL && data_size == SPL_TOKEN_ACCOUNT_SIZE {
+                return *lamports;
+            }
+        }
+    }
+
+    // Fetch from RPC
+    let client = &*HTTP;
+    let req = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getMinimumBalanceForRentExemption",
+        params: serde_json::json!([data_size]),
+    };
+
+    if let Ok(resp) = rpc_call_with_retry::<u64>(client, &rpc_urls(rpc_url), &req).await {
+        if let Some(lamports) = resp.result {
+            // Cache the 165-byte result for future use
+            if data_size == SPL_TOKEN_ACCOUNT_SIZE {
+                if let Ok(mut cache) = RENT_CACHE.lock() {
+                    *cache = (Some(lamports), std::time::Instant::now());
+                }
+            }
+            return lamports;
+        }
+    }
+
+    // Fallback to known values
+    match data_size {
+        TOKEN_2022_ACCOUNT_SIZE => ATA_RENT_LAMPORTS_2022_FALLBACK,
+        _ => ATA_RENT_LAMPORTS_FALLBACK,
+    }
+}
+
+/// Estimate SOL needed for gas, optionally including ATA creation rent.
+/// Uses `getMinimumBalanceForRentExemption` RPC call (cached 5 min) as Solana recommends.
+///
+/// - `needs_ata`: if true, includes rent-exempt minimum for an SPL token ATA.
+/// - `is_token_2022`: if true, uses Token-2022 ATA size (182 bytes) for rent.
+/// - Returns SOL amount with 30% safety buffer.
+pub async fn estimate_gas_needed(needs_ata: bool, is_token_2022: bool, rpc_url: Option<&str>) -> f64 {
+    let priority = get_priority_fee_cached(rpc_url).await;
+    let mut total_lamports = BASE_FEE_LAMPORTS + priority;
+    if needs_ata {
+        let size = if is_token_2022 { TOKEN_2022_ACCOUNT_SIZE } else { SPL_TOKEN_ACCOUNT_SIZE };
+        total_lamports += get_rent_exempt_cached(size, rpc_url).await;
+    }
+    // 30% buffer on total
+    let with_buffer = (total_lamports as f64 * 1.3) as u64;
+    with_buffer as f64 / 1_000_000_000.0
+}
+
 /// Get cached priority fee, refreshing from RPC if stale.
 async fn get_priority_fee_cached(rpc_url: Option<&str>) -> u64 {
     if let Ok(cache) = FEE_CACHE.lock() {
@@ -687,14 +771,14 @@ const ATA_PROGRAM: [u8; 32] = [
     11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
 ];
 
-/// Transfer SOL to a recipient. Returns transaction signature.
+/// Transfer SOL to a recipient. Returns transaction result with signature and confirmation status.
 /// Includes priority fee via Compute Budget instructions for reliable landing.
 pub async fn transfer_sol(
     wallet: &Wallet,
     recipient: &str,
     amount_sol: f64,
     rpc_url: Option<&str>,
-) -> Result<String> {
+) -> Result<TransactionResult> {
     // String-based conversion to avoid float→integer precision loss.
     let amount_str = format!("{amount_sol:.9}");
     let lamports: u64 = crate::jupiter::token_to_raw(&amount_str, 9)?
@@ -749,7 +833,7 @@ pub async fn transfer_sol(
     send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
 }
 
-/// Transfer SPL token (USDC or GM token) to a recipient. Returns tx signature.
+/// Transfer SPL token (USDC or GM token) to a recipient. Returns transaction result.
 /// Automatically creates recipient's ATA if it doesn't exist.
 /// Includes priority fee via Compute Budget instructions for reliable landing.
 pub async fn transfer_spl(
@@ -760,7 +844,7 @@ pub async fn transfer_spl(
     decimals: u8,
     is_token_2022: bool,
     rpc_url: Option<&str>,
-) -> Result<String> {
+) -> Result<TransactionResult> {
     validate_address(recipient)?;
     let from_pubkey = bs58::decode(wallet.pubkey()).into_vec()
         .map_err(|e| eyre!("Invalid sender pubkey: {e}"))?;
@@ -893,7 +977,7 @@ async fn send_legacy_transaction(
     instructions: &[Instruction],
     header: &MessageHeader,
     rpc_url: Option<&str>,
-) -> Result<String> {
+) -> Result<TransactionResult> {
     // 1. Get recent blockhash
     let blockhash = get_recent_blockhash(rpc_url).await?;
 
@@ -940,12 +1024,16 @@ async fn send_legacy_transaction(
 
     let sig = send_raw_transaction(&tx_base64, rpc_url).await?;
 
-    // 6. Confirm — poll until confirmed (best-effort, don't fail the whole transfer)
-    if let Err(e) = confirm_transaction(&sig, rpc_url).await {
-        eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
-    }
+    // 6. Confirm — poll until confirmed
+    let confirmed = match confirm_transaction(&sig, rpc_url).await {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
+            false
+        }
+    };
 
-    Ok(sig)
+    Ok(TransactionResult { signature: sig, confirmed })
 }
 
 /// Get a recent blockhash from Solana RPC.
@@ -1168,18 +1256,18 @@ pub async fn close_empty_accounts(
         if !signatures.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        let sig = close_account_batch(wallet, &owner, batch, &TOKEN_2022_PROGRAM_ID, rpc_url).await?;
+        let result = close_account_batch(wallet, &owner, batch, &TOKEN_2022_PROGRAM_ID, rpc_url).await?;
         total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
-        signatures.push(sig);
+        signatures.push(result.signature);
     }
 
     for batch in token_prog.chunks(15) {
         if !signatures.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        let sig = close_account_batch(wallet, &owner, batch, &TOKEN_PROGRAM, rpc_url).await?;
+        let result = close_account_batch(wallet, &owner, batch, &TOKEN_PROGRAM, rpc_url).await?;
         total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
-        signatures.push(sig);
+        signatures.push(result.signature);
     }
 
     Ok((signatures, total_lamports))
@@ -1192,7 +1280,7 @@ async fn close_account_batch(
     batch: &[&EmptyTokenAccount],
     token_program: &[u8; 32],
     rpc_url: Option<&str>,
-) -> Result<String> {
+) -> Result<TransactionResult> {
     let mut accounts: Vec<Vec<u8>> = vec![owner.to_vec()];
     for acc in batch {
         let bytes = bs58::decode(&acc.address).into_vec()
@@ -1411,5 +1499,107 @@ mod tests {
         let ata1 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
         let ata2 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
         assert_eq!(ata1, ata2);
+    }
+
+    // ── TransactionResult ────────────────────────────────────
+
+    #[test]
+    fn tx_result_confirmed() {
+        let r = TransactionResult {
+            signature: "abc123".to_string(),
+            confirmed: true,
+        };
+        assert_eq!(r.signature, "abc123");
+        assert!(r.confirmed);
+    }
+
+    #[test]
+    fn tx_result_unconfirmed() {
+        let r = TransactionResult {
+            signature: "xyz789".to_string(),
+            confirmed: false,
+        };
+        assert!(!r.confirmed);
+    }
+
+    // ── HTTP client ──────────────────────────────────────────
+
+    #[test]
+    fn http_client_is_initialized() {
+        // Accessing the LazyLock should not panic
+        let _ = &*HTTP;
+    }
+
+    // ── RPC URL rotation ─────────────────────────────────────
+
+    #[test]
+    fn rpc_urls_default_returns_all() {
+        let urls = rpc_urls(None);
+        assert_eq!(urls.len(), RPC_URLS.len());
+        assert_eq!(urls[0], RPC_URLS[0]);
+    }
+
+    #[test]
+    fn rpc_urls_custom_prepends() {
+        let custom = "https://my-rpc.example.com";
+        let urls = rpc_urls(Some(custom));
+        assert_eq!(urls[0], custom);
+        assert_eq!(urls.len(), RPC_URLS.len() + 1);
+    }
+
+    #[test]
+    fn rpc_urls_custom_deduplicates() {
+        let urls = rpc_urls(Some(RPC_URLS[0]));
+        // Custom URL is same as first default — should not duplicate
+        assert_eq!(urls.len(), RPC_URLS.len());
+        assert_eq!(urls[0], RPC_URLS[0]);
+    }
+
+    // ── rent constants & fallback ────────────────────────────
+
+    #[test]
+    fn spl_token_account_size_is_165() {
+        assert_eq!(SPL_TOKEN_ACCOUNT_SIZE, 165);
+    }
+
+    #[test]
+    fn token_2022_account_size_is_182() {
+        assert_eq!(TOKEN_2022_ACCOUNT_SIZE, 182);
+    }
+
+    #[test]
+    fn rent_fallback_spl_is_known_value() {
+        // 2_039_280 lamports = rent-exempt min for 165-byte SPL Token account (epoch 0 rate)
+        assert_eq!(ATA_RENT_LAMPORTS_FALLBACK, 2_039_280);
+    }
+
+    #[test]
+    fn rent_fallback_2022_is_known_value() {
+        assert_eq!(ATA_RENT_LAMPORTS_2022_FALLBACK, 2_165_280);
+    }
+
+    #[test]
+    fn rent_cache_ttl_is_5_minutes() {
+        assert_eq!(RENT_CACHE_TTL, std::time::Duration::from_secs(300));
+    }
+
+    #[tokio::test]
+    async fn estimate_gas_no_ata_returns_small_value() {
+        // Without ATA creation, should only be base fee + priority + buffer
+        let est = estimate_gas_needed(false, false, None).await;
+        // Must be less than 0.001 SOL (just fees, no rent)
+        assert!(est > 0.0 && est < 0.001, "estimate without ATA: {est}");
+    }
+
+    #[tokio::test]
+    async fn estimate_gas_with_ata_includes_rent() {
+        let without = estimate_gas_needed(false, false, None).await;
+        let with_spl = estimate_gas_needed(true, false, None).await;
+        let with_2022 = estimate_gas_needed(true, true, None).await;
+        // With ATA must be significantly more than without
+        assert!(with_spl > without + 0.001, "SPL ATA estimate should include rent");
+        assert!(with_2022 > without + 0.001, "Token-2022 ATA estimate should include rent");
+        // Token-2022 should be >= SPL (more bytes)
+        assert!(with_2022 >= with_spl, "Token-2022 rent >= SPL rent");
     }
 }
