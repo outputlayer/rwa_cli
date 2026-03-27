@@ -198,7 +198,8 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
             let sell_display = jupiter::format_amount(&bal.raw_amount, gm_dec);
             (sell_display, bal.raw_amount)
         } else {
-            let pct_str = amount.trim().strip_suffix('%').unwrap();
+            let pct_str = amount.trim().strip_suffix('%')
+                .ok_or_else(|| eyre::eyre!("expected percentage suffix"))?;
             let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {}", amount))?;
             if !(0.0..=100.0).contains(&pct) {
                 return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));

@@ -128,8 +128,8 @@ pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
         format!("{upper}on")
     };
 
-    let first = candles.first().unwrap();
-    let last = candles.last().unwrap();
+    let first = candles.first().ok_or_else(|| eyre::eyre!("Empty candle data"))?;
+    let last = candles.last().ok_or_else(|| eyre::eyre!("Empty candle data"))?;
     let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
     let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
     let change_pct = if first.open > 0.0 {

@@ -1,14 +1,19 @@
 use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::HTTP;
+
+/// Index of the last RPC URL that responded successfully.
+/// Subsequent calls start from this index, skipping known-dead endpoints.
+static LAST_GOOD_IDX: AtomicUsize = AtomicUsize::new(0);
 
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
 /// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
 const RPC_URLS: &[&str] = &[
+    "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s, most reliable
     "https://solana-rpc.publicnode.com",           // PublicNode — 10 nodes, stable
     "https://solana-mainnet.rpc.extrnode.com",     // ExtrNode — used by wallets
-    "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s
     "https://rpc.ankr.com/solana",                 // Ankr — ~30 req/min free
     "https://solana.drpc.org",                     // dRPC — decentralized, free tier
 ];
@@ -65,6 +70,12 @@ pub(crate) async fn rpc_call_simple<T: serde::de::DeserializeOwned>(
     resp.result.ok_or_else(|| eyre!("Empty response from Solana RPC ({method})"))
 }
 
+/// Iterate URL indices starting from the last known good endpoint, wrapping around.
+fn ordered_indices(len: usize) -> impl Iterator<Item = usize> {
+    let start = LAST_GOOD_IDX.load(Ordering::Relaxed) % len;
+    (0..len).map(move |i| (start + i) % len)
+}
+
 /// Make a single JSON-RPC call with retry across multiple RPC URLs.
 async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
@@ -74,13 +85,17 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
     let timeout = std::time::Duration::from_secs(15);
     let mut last_err = String::new();
 
-    for (url_idx, url) in urls.iter().enumerate() {
+    for (try_num, idx) in ordered_indices(urls.len()).enumerate() {
+        let url = urls[idx];
         for attempt in 0..3u32 {
-            if attempt > 0 || url_idx > 0 {
-                let delay = backoff_with_jitter(attempt + 1);
+            if attempt > 0 {
+                let delay = backoff_with_jitter(attempt);
                 tokio::time::sleep(delay).await;
+            } else if try_num > 0 {
+                // Short delay when switching to a new URL (not a full backoff)
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            let resp = match client.post(*url).json(req).timeout(timeout).send().await {
+            let resp = match client.post(url).json(req).timeout(timeout).send().await {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = e.to_string();
@@ -92,6 +107,10 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 last_err = format!("HTTP {status}");
                 continue; // rate limited or 5xx → retry same URL with backoff
+            }
+            if status.is_client_error() {
+                last_err = format!("HTTP {status}");
+                break; // 401/403 etc → not retryable, try next URL
             }
 
             let parsed: RpcResponse<T> = match resp.json().await {
@@ -114,6 +133,7 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
                 last_err = "RPC returned null result".to_string();
                 continue; // retry — likely transient issue
             }
+            LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
             return Ok(parsed);
         }
     }
@@ -134,13 +154,16 @@ pub(super) async fn rpc_batch_with_retry(
     let timeout = std::time::Duration::from_secs(20);
     let mut last_err = String::new();
 
-    for (url_idx, url) in urls.iter().enumerate() {
+    for (try_num, idx) in ordered_indices(urls.len()).enumerate() {
+        let url = urls[idx];
         for attempt in 0..3u32 {
-            if attempt > 0 || url_idx > 0 {
-                let delay = backoff_with_jitter(attempt + 1);
+            if attempt > 0 {
+                let delay = backoff_with_jitter(attempt);
                 tokio::time::sleep(delay).await;
+            } else if try_num > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            let resp = match client.post(*url).json(&reqs).timeout(timeout).send().await {
+            let resp = match client.post(url).json(&reqs).timeout(timeout).send().await {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = e.to_string();
@@ -151,7 +174,11 @@ pub(super) async fn rpc_batch_with_retry(
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 last_err = format!("HTTP {status}");
-                continue;
+                continue; // rate limited or 5xx → retry same URL with backoff
+            }
+            if status.is_client_error() {
+                last_err = format!("HTTP {status}");
+                break; // 401/403 etc → not retryable, try next URL
             }
 
             let results: Vec<serde_json::Value> = match resp.json().await {
@@ -167,6 +194,7 @@ pub(super) async fn rpc_batch_with_retry(
                 continue;
             }
 
+            LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
             return Ok(results);
         }
     }
@@ -218,6 +246,24 @@ mod tests {
         let d3 = backoff_with_jitter(3);
         assert!(d1.as_millis() >= 1000 && d1.as_millis() < 1500);
         assert!(d3.as_millis() >= 3000 && d3.as_millis() < 3500);
+    }
+
+    #[test]
+    fn ordered_indices_respects_last_good() {
+        // Test starting from middle
+        LAST_GOOD_IDX.store(2, Ordering::Relaxed);
+        let indices: Vec<usize> = ordered_indices(5).collect();
+        assert_eq!(indices, vec![2, 3, 4, 0, 1]);
+
+        // Test wrapping from end
+        LAST_GOOD_IDX.store(4, Ordering::Relaxed);
+        let indices: Vec<usize> = ordered_indices(5).collect();
+        assert_eq!(indices, vec![4, 0, 1, 2, 3]);
+
+        // Test starting from 0 (default)
+        LAST_GOOD_IDX.store(0, Ordering::Relaxed);
+        let indices: Vec<usize> = ordered_indices(5).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
