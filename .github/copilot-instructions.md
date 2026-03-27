@@ -21,7 +21,7 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 - Wallet stored as JSON keypair in `~/.config/rwa/id.json`
 - All HTTP to Solana goes through `crates/ondo/src/solana.rs`
 - All HTTP to Ondo goes through `crates/ondo/src/api.rs`
-- Jupiter swap via `crates/ondo/src/jupiter.rs` (Ultra API; migration to Swap V2 planned)
+- Jupiter swap via `crates/ondo/src/jupiter.rs` (Swap V2 on lite-api.jup.ag, no API key)
 
 ## Slippage Protection
 

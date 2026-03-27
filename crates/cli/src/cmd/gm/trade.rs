@@ -81,6 +81,8 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
             price_impact_pct: order.price_impact,
             fee_bps: order.fee_bps,
             tradable,
+            gasless: order.gasless,
+            router: order.router,
         });
     }
 
@@ -157,6 +159,8 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
             slippage_pct,
+            gasless: order.gasless,
+            router: order.router.clone(),
         });
     }
 
@@ -253,6 +257,8 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
             slippage_pct,
+            gasless: order.gasless,
+            router: order.router.clone(),
         });
     }
 

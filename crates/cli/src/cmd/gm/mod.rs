@@ -186,6 +186,12 @@ pub(super) struct QuoteJson {
     /// Whether the token is tradable in the current Ondo GM session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tradable: Option<bool>,
+    /// Whether this swap is gasless (Jupiter/MM pays gas).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gasless: Option<bool>,
+    /// Which router won: jupiterz, iris, dflow, okx.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -198,6 +204,12 @@ pub(super) struct TradeJson {
     pub tx: String,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub slippage_pct: Option<f64>,
+    /// Whether this swap was gasless.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gasless: Option<bool>,
+    /// Which router was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -684,18 +696,12 @@ mod tests {
     #[test]
     fn slippage_from_price_impact() {
         let order = jupiter::OrderResponse {
-            request_id: String::new(),
             in_amount: "100".into(),
             out_amount: "99".into(),
             in_usd_value: Some(100.0),
             out_usd_value: Some(99.0),
             price_impact: Some(-0.5),
-            price_impact_pct: None,
-            slippage_bps: None,
-            fee_bps: None,
-            transaction: None,
-            error: None,
-            error_message: None,
+            ..Default::default()
         };
         let slip = calc_slippage(&order);
         assert!((slip.unwrap() - (-0.5)).abs() < f64::EPSILON);
@@ -704,18 +710,11 @@ mod tests {
     #[test]
     fn slippage_from_usd_values() {
         let order = jupiter::OrderResponse {
-            request_id: String::new(),
             in_amount: "100".into(),
             out_amount: "97".into(),
             in_usd_value: Some(100.0),
             out_usd_value: Some(97.0),
-            price_impact: None,
-            price_impact_pct: None,
-            slippage_bps: None,
-            fee_bps: None,
-            transaction: None,
-            error: None,
-            error_message: None,
+            ..Default::default()
         };
         let slip = calc_slippage(&order);
         assert!((slip.unwrap() - (-3.0)).abs() < 0.01);
@@ -724,18 +723,9 @@ mod tests {
     #[test]
     fn slippage_none_when_no_data() {
         let order = jupiter::OrderResponse {
-            request_id: String::new(),
             in_amount: "100".into(),
             out_amount: "97".into(),
-            in_usd_value: None,
-            out_usd_value: None,
-            price_impact: None,
-            price_impact_pct: None,
-            slippage_bps: None,
-            fee_bps: None,
-            transaction: None,
-            error: None,
-            error_message: None,
+            ..Default::default()
         };
         assert!(calc_slippage(&order).is_none());
     }
@@ -745,18 +735,11 @@ mod tests {
     #[test]
     fn check_slippage_blocks_above_max() {
         let order = jupiter::OrderResponse {
-            request_id: String::new(),
             in_amount: "100".into(),
             out_amount: "96".into(),
             in_usd_value: Some(100.0),
             out_usd_value: Some(96.0),
-            price_impact: None,
-            price_impact_pct: None,
-            slippage_bps: None,
-            fee_bps: None,
-            transaction: None,
-            error: None,
-            error_message: None,
+            ..Default::default()
         };
         // -4% slippage should be blocked (max is -3%)
         let result = check_slippage(&order, true);
@@ -767,18 +750,11 @@ mod tests {
     #[test]
     fn check_slippage_allows_within_limit() {
         let order = jupiter::OrderResponse {
-            request_id: String::new(),
             in_amount: "100".into(),
             out_amount: "99".into(),
             in_usd_value: Some(100.0),
             out_usd_value: Some(99.0),
-            price_impact: None,
-            price_impact_pct: None,
-            slippage_bps: None,
-            fee_bps: None,
-            transaction: None,
-            error: None,
-            error_message: None,
+            ..Default::default()
         };
         // -1% slippage is fine
         let result = check_slippage(&order, true);

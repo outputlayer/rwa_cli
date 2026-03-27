@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::wallet::Wallet;
 use crate::HTTP;
 
-const ULTRA_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
+const SWAP_API_BASE: &str = "https://lite-api.jup.ag/swap/v2";
 pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -14,7 +14,7 @@ pub const GM_SOL_DECIMALS: u8 = 9;
 
 // ── API types ──────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderResponse {
     pub request_id: String,
@@ -22,17 +22,38 @@ pub struct OrderResponse {
     pub out_amount: String,
     pub in_usd_value: Option<f64>,
     pub out_usd_value: Option<f64>,
-    /// Price impact as percentage (from Jupiter API).
+    /// Price impact as decimal (e.g. -0.001 = -0.1%).
     pub price_impact: Option<f64>,
-    /// Price impact as string for precise display (e.g. "-0.00012376932391608222").
+    /// Price impact as string for precise display (deprecated in V2, use price_impact).
     pub price_impact_pct: Option<String>,
-    /// Slippage in basis points (set by Jupiter, typically 0 for Ultra API).
+    /// Slippage in basis points.
     pub slippage_bps: Option<u32>,
     /// Jupiter fee in basis points.
     pub fee_bps: Option<u32>,
     pub transaction: Option<String>,
     pub error: Option<String>,
     pub error_message: Option<String>,
+    // ── Swap V2 fields ─────────────────────────────────────────
+    /// Whether this swap is gasless (Jupiter/MM pays gas).
+    pub gasless: Option<bool>,
+    /// Which router won the quote: iris, jupiterz, dflow, okx.
+    pub router: Option<String>,
+    /// Rent fee in lamports for ATA creation (if needed).
+    pub rent_fee_lamports: Option<u64>,
+    /// Who pays the rent: "jupiter", "user", or null.
+    pub rent_fee_payer: Option<String>,
+    /// Signature fee in lamports.
+    pub signature_fee_lamports: Option<u64>,
+    /// Who pays signature fee.
+    pub signature_fee_payer: Option<String>,
+    /// Priority fee in lamports (includes Jito tips).
+    pub prioritization_fee_lamports: Option<u64>,
+    /// Who pays priority fee.
+    pub prioritization_fee_payer: Option<String>,
+    /// "ultra" or "manual".
+    pub mode: Option<String>,
+    /// Last valid block height for the transaction.
+    pub last_valid_block_height: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,7 +77,9 @@ pub struct ExecuteResponse {
 
 // ── Public functions ───────────────────────────────────────────────────
 
-/// Get a swap quote from Jupiter Ultra API.
+/// Get a swap quote from Jupiter Swap V2 API.
+/// Uses lite-api.jup.ag/swap/v2 — no API key required.
+/// Flow: /order → wallet.sign → /execute
 pub async fn get_order(
     input_mint: &str,
     output_mint: &str,
@@ -65,7 +88,7 @@ pub async fn get_order(
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
     let mut request = HTTP
-        .get(format!("{ULTRA_API_BASE}/order"))
+        .get(format!("{SWAP_API_BASE}/order"))
         .query(&[
             ("inputMint", input_mint),
             ("outputMint", output_mint),
@@ -108,7 +131,7 @@ pub async fn get_order(
     Ok(resp)
 }
 
-/// Sign and execute a swap via Jupiter Ultra API.
+/// Sign and execute a swap via Jupiter Swap V2 API.
 pub async fn execute_order(
     wallet: &Wallet,
     order: &OrderResponse,
@@ -123,7 +146,7 @@ pub async fn execute_order(
     };
 
     let response = HTTP
-        .post(format!("{ULTRA_API_BASE}/execute"))
+        .post(format!("{SWAP_API_BASE}/execute"))
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()

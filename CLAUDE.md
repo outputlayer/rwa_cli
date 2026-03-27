@@ -19,7 +19,7 @@ cargo install --path bin/rwa # Install locally
 - `crates/cli/src/cmd/gm/` — GM commands: `trade.rs`, `portfolio.rs`, `list.rs`, `send.rs`, `mod.rs` (preflight, tradable checks)
 - `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
 - `crates/ondo/src/solana/` — Solana operations: `rpc.rs` (retry + URL rotation), `mod.rs` (balances, transfers, token accounts)
-- `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API
+- `crates/ondo/src/jupiter.rs` — Jupiter Swap V2 API (lite-api, no API key)
 - `crates/ondo/src/api.rs` — Ondo API (prices, sectors, history)
 
 ## Code Conventions
