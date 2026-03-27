@@ -144,23 +144,33 @@ impl MultiAccountInfo {
     }
 }
 
-/// Get SOL balance in SOL (not lamports).
-pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
+// ── RPC helper ────────────────────────────────────────────
+
+/// Simple RPC call: builds request, retries with URL rotation, extracts result.
+/// Eliminates the `let client = &*HTTP; let req = RpcRequest { ... }` boilerplate.
+async fn rpc_call_simple<T: serde::de::DeserializeOwned>(
+    method: &str,
+    params: serde_json::Value,
+    rpc_url: Option<&str>,
+) -> Result<T> {
     let client = &*HTTP;
     let req = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
-        method: "getBalance",
-        params: serde_json::json!([wallet, { "commitment": "confirmed" }]),
+        method,
+        params,
     };
+    let resp: RpcResponse<T> = rpc_call_with_retry(client, &rpc_urls(rpc_url), &req).await?;
+    resp.result.ok_or_else(|| eyre!("Empty response from Solana RPC ({method})"))
+}
 
-    let resp: RpcResponse<GetBalanceResult> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+/// Get SOL balance in SOL (not lamports).
+pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
+    let result: GetBalanceResult = rpc_call_simple(
+        "getBalance",
+        serde_json::json!([wallet, { "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
-
-    let result = resp.result
-        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
-
     Ok(result.value as f64 / 1_000_000_000.0)
 }
 
@@ -168,20 +178,18 @@ pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64>
 const BASE_FEE_LAMPORTS: u64 = 5_000;
 
 /// Fetch median recent priority fee from RPC.
-async fn fetch_priority_fee(rpc_url: Option<&str>) -> Result<u64> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getRecentPrioritizationFees",
-        params: serde_json::json!([]),
+/// Passes writable account addresses for more accurate fee estimates (per Solana docs).
+async fn fetch_priority_fee(writable_accounts: &[&str], rpc_url: Option<&str>) -> Result<u64> {
+    let params = if writable_accounts.is_empty() {
+        serde_json::json!([])
+    } else {
+        serde_json::json!([writable_accounts])
     };
-
-    let resp: RpcResponse<Vec<PriorityFeeEntry>> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
-    ).await?;
-
-    let entries = resp.result.unwrap_or_default();
+    let entries: Vec<PriorityFeeEntry> = rpc_call_simple(
+        "getRecentPrioritizationFees",
+        params,
+        rpc_url,
+    ).await.unwrap_or_default();
     if entries.is_empty() {
         return Ok(0);
     }
@@ -200,25 +208,11 @@ struct PriorityFeeEntry {
 
 /// Get USDC balance for a wallet on Solana.
 pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTokenAccountsByOwner",
-        params: serde_json::json!([
-            wallet,
-            { "mint": USDC_MINT },
-            { "encoding": "jsonParsed", "commitment": "confirmed" }
-        ]),
-    };
-
-    let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+    let accounts: GetTokenAccountsResult = rpc_call_simple(
+        "getTokenAccountsByOwner",
+        serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
-
-    let accounts = resp.result
-        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
-
     match accounts.value.first() {
         Some(acc) => Ok(acc.account.data.parsed.info.token_amount.ui_amount.unwrap_or(0.0)),
         None => Ok(0.0),
@@ -228,25 +222,11 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
 /// Get raw USDC balance as (ui_amount, raw_amount_string).
 /// The raw amount avoids float precision loss for exact transfers.
 pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result<(f64, String)> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTokenAccountsByOwner",
-        params: serde_json::json!([
-            wallet,
-            { "mint": USDC_MINT },
-            { "encoding": "jsonParsed", "commitment": "confirmed" }
-        ]),
-    };
-
-    let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+    let accounts: GetTokenAccountsResult = rpc_call_simple(
+        "getTokenAccountsByOwner",
+        serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
-
-    let accounts = resp.result
-        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
-
     match accounts.value.first() {
         Some(acc) => {
             let ta = &acc.account.data.parsed.info.token_amount;
@@ -272,24 +252,11 @@ pub async fn get_all_balances(
     tokens: &[GmTokenEntry],
     rpc_url: Option<&str>,
 ) -> Result<Vec<SolanaTokenBalance>> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTokenAccountsByOwner",
-        params: serde_json::json!([
-            wallet,
-            { "programId": TOKEN_2022_PROGRAM },
-            { "encoding": "jsonParsed", "commitment": "confirmed" }
-        ]),
-    };
-
-    let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+    let accounts: GetTokenAccountsResult = rpc_call_simple(
+        "getTokenAccountsByOwner",
+        serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
-
-    let accounts = resp.result
-        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
 
     // Build a mint → token entry lookup
     let mint_map: std::collections::HashMap<&str, &GmTokenEntry> = tokens
@@ -325,24 +292,11 @@ pub async fn get_balance(
     mint: &str,
     rpc_url: Option<&str>,
 ) -> Result<SolanaTokenBalance> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTokenAccountsByOwner",
-        params: serde_json::json!([
-            wallet,
-            { "mint": mint },
-            { "encoding": "jsonParsed", "commitment": "confirmed" }
-        ]),
-    };
-
-    let resp: RpcResponse<GetTokenAccountsResult> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+    let accounts: GetTokenAccountsResult = rpc_call_simple(
+        "getTokenAccountsByOwner",
+        serde_json::json!([wallet, { "mint": mint }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
-
-    let accounts = resp.result
-        .ok_or_else(|| eyre!("Empty response from Solana RPC"))?;
 
     let acc = accounts.value.first()
         .ok_or_else(|| eyre!("No token account found for mint {mint}"))?;
@@ -617,24 +571,17 @@ async fn get_rent_exempt_cached(data_size: u64, rpc_url: Option<&str>) -> u64 {
     }
 
     // Fetch from RPC
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getMinimumBalanceForRentExemption",
-        params: serde_json::json!([data_size]),
-    };
-
-    if let Ok(resp) = rpc_call_with_retry::<u64>(client, &rpc_urls(rpc_url), &req).await {
-        if let Some(lamports) = resp.result {
-            // Cache the 165-byte result for future use
-            if data_size == SPL_TOKEN_ACCOUNT_SIZE {
-                if let Ok(mut cache) = RENT_CACHE.lock() {
-                    *cache = (Some(lamports), std::time::Instant::now());
-                }
+    if let Ok(lamports) = rpc_call_simple::<u64>(
+        "getMinimumBalanceForRentExemption",
+        serde_json::json!([data_size]),
+        rpc_url,
+    ).await {
+        if data_size == SPL_TOKEN_ACCOUNT_SIZE {
+            if let Ok(mut cache) = RENT_CACHE.lock() {
+                *cache = (Some(lamports), std::time::Instant::now());
             }
-            return lamports;
         }
+        return lamports;
     }
 
     // Fallback to known values
@@ -663,25 +610,30 @@ pub async fn estimate_gas_needed(needs_ata: bool, is_token_2022: bool, rpc_url: 
 }
 
 /// Get cached priority fee, refreshing from RPC if stale.
+/// Pass writable account addresses for account-specific fee estimates.
 async fn get_priority_fee_cached(rpc_url: Option<&str>) -> u64 {
     if let Ok(cache) = FEE_CACHE.lock() {
         if cache.1.elapsed() < FEE_CACHE_TTL {
             return cache.0;
         }
     }
-    let fee = fetch_priority_fee(rpc_url).await.unwrap_or(0);
+    let fee = fetch_priority_fee(&[], rpc_url).await.unwrap_or(0);
     if let Ok(mut cache) = FEE_CACHE.lock() {
         *cache = (fee, std::time::Instant::now());
     }
     fee
 }
 
+/// Get priority fee with specific writable accounts (bypasses cache for accuracy).
+async fn get_priority_fee_for_accounts(accounts: &[&str], rpc_url: Option<&str>) -> u64 {
+    fetch_priority_fee(accounts, rpc_url).await.unwrap_or(0)
+}
+
 // ── Transaction confirmation ──────────────────────────────
 
-/// Poll for transaction confirmation. Returns Ok(()) when confirmed,
-/// or Err after timeout (30s). Uses `confirmed` commitment.
+/// Poll for transaction confirmation with `confirmed` commitment.
+/// Returns Ok(()) when confirmed, or Err after timeout (30s).
 pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Result<()> {
-    let client = &*HTTP;
     let timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
 
@@ -690,29 +642,32 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
             return Err(eyre!("Transaction confirmation timeout (30s) — tx may still land: {signature}"));
         }
 
-        let req = RpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getSignatureStatuses",
-            params: serde_json::json!([[signature]]),
-        };
-
-        if let Ok(resp) = rpc_call_with_retry::<serde_json::Value>(
-            client, &rpc_urls(rpc_url), &req,
+        if let Ok(result) = rpc_call_simple::<serde_json::Value>(
+            "getSignatureStatuses",
+            serde_json::json!([[signature], { "searchTransactionHistory": false }]),
+            rpc_url,
         ).await {
-            if let Some(result) = resp.result {
-                if let Some(status) = result.get("value")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                {
-                    if !status.is_null() {
-                        if let Some(err) = status.get("err") {
-                            if !err.is_null() {
-                                return Err(eyre!("Transaction failed on-chain: {err}"));
-                            }
-                        }
-                        return Ok(()); // confirmed, no error
+            if let Some(status) = result.get("value")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+            {
+                if !status.is_null() {
+                    // Check confirmationStatus is at least "confirmed"
+                    let is_confirmed = status.get("confirmationStatus")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s == "confirmed" || s == "finalized")
+                        .unwrap_or(true); // if no status field, assume confirmed
+                    if !is_confirmed {
+                        // Still "processed" — wait for confirmed
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
                     }
+                    if let Some(err) = status.get("err") {
+                        if !err.is_null() {
+                            return Err(eyre!("Transaction failed on-chain: {err}"));
+                        }
+                    }
+                    return Ok(()); // confirmed, no error
                 }
             }
         }
@@ -790,8 +745,9 @@ pub async fn transfer_sol(
     let to = bs58::decode(recipient).into_vec()
         .map_err(|e| eyre!("Invalid recipient address: {e}"))?;
 
-    // Fetch priority fee for compute budget
-    let priority_fee = get_priority_fee_cached(rpc_url).await;
+    // Fetch priority fee with writable accounts for accuracy
+    let sender_addr = wallet.pubkey();
+    let priority_fee = get_priority_fee_for_accounts(&[&sender_addr, recipient], rpc_url).await;
 
     // System transfer instruction: program_id_index=3, data=lamports(u32_le(2) + u64_le)
     let mut ix_data = vec![2, 0, 0, 0]; // Transfer instruction index
@@ -807,7 +763,7 @@ pub async fn transfer_sol(
     let mut instructions = Vec::new();
 
     // Compute budget: limit + price (program_id_index = 2)
-    let mut cu_limit = compute_unit_limit_ix(200_000);
+    let mut cu_limit = compute_unit_limit_ix(200_000); // will be tightened by simulation
     cu_limit.program_id_index = 2;
     instructions.push(cu_limit);
 
@@ -858,10 +814,13 @@ pub async fn transfer_spl(
     let from_ata = derive_ata(&from_pubkey, &mint_pubkey, &token_program)?;
     let to_ata = derive_ata(&to_pubkey, &mint_pubkey, &token_program)?;
 
-    // Check if recipient ATA exists + fetch priority fee in parallel
+    // Check if recipient ATA exists + fetch priority fee with writable accounts
+    let from_ata_str = bs58::encode(&from_ata).into_string();
+    let to_ata_str = bs58::encode(&to_ata).into_string();
+    let fee_accounts: Vec<&str> = vec![&from_ata_str, &to_ata_str];
     let (ata_exists, priority_fee) = tokio::join!(
         check_account_exists(&to_ata, rpc_url),
-        get_priority_fee_cached(rpc_url),
+        get_priority_fee_for_accounts(&fee_accounts, rpc_url),
     );
     let ata_exists = ata_exists?;
 
@@ -970,33 +929,22 @@ struct Instruction {
     data: Vec<u8>,
 }
 
-/// Build, sign, and send a legacy Solana transaction.
-async fn send_legacy_transaction(
-    wallet: &Wallet,
-    accounts: &[Vec<u8>],
-    instructions: &[Instruction],
+/// Serialize a legacy message from components.
+fn build_legacy_message(
     header: &MessageHeader,
-    rpc_url: Option<&str>,
-) -> Result<TransactionResult> {
-    // 1. Get recent blockhash
-    let blockhash = get_recent_blockhash(rpc_url).await?;
-
-    // 2. Build message
+    accounts: &[Vec<u8>],
+    blockhash: &[u8; 32],
+    instructions: &[Instruction],
+) -> Vec<u8> {
     let mut message = Vec::new();
     message.push(header.num_required_sigs);
     message.push(header.num_readonly_signed);
     message.push(header.num_readonly_unsigned);
-
-    // Account keys
     encode_compact_u16(accounts.len() as u16, &mut message);
     for acc in accounts {
         message.extend_from_slice(acc);
     }
-
-    // Recent blockhash
-    message.extend_from_slice(&blockhash);
-
-    // Instructions
+    message.extend_from_slice(blockhash);
     encode_compact_u16(instructions.len() as u16, &mut message);
     for ix in instructions {
         message.push(ix.program_id_index);
@@ -1005,26 +953,76 @@ async fn send_legacy_transaction(
         encode_compact_u16(ix.data.len() as u16, &mut message);
         message.extend_from_slice(&ix.data);
     }
+    message
+}
 
-    // 3. Sign
+/// Sign a message and assemble into a base64-encoded legacy transaction.
+fn sign_and_encode(wallet: &Wallet, message: &[u8]) -> String {
     use ed25519_dalek::Signer;
-    let signature = wallet.signing_key().sign(&message);
-
-    // 4. Build transaction: [sig_count] [signatures] [message]
+    let signature = wallet.signing_key().sign(message);
     let mut tx = Vec::new();
     encode_compact_u16(1, &mut tx); // 1 signature
     tx.extend_from_slice(&signature.to_bytes());
-    tx.extend_from_slice(&message);
+    tx.extend_from_slice(message);
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(&tx)
+}
 
-    // 5. Send
-    let tx_base64 = {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(&tx)
+/// Build, simulate, adjust CU, sign, and send a legacy Solana transaction.
+/// Flow per Solana best practices:
+///   1. Build tx with high CU limit → simulate → get unitsConsumed
+///   2. Rebuild tx with tight CU limit (consumed × 1.1)
+///   3. Send with skipPreflight=true (already validated)
+///   4. Poll for confirmation
+async fn send_legacy_transaction(
+    wallet: &Wallet,
+    accounts: &[Vec<u8>],
+    instructions: &[Instruction],
+    header: &MessageHeader,
+    rpc_url: Option<&str>,
+) -> Result<TransactionResult> {
+    // 1. Get recent blockhash (confirmed commitment for more validity)
+    let bh = get_recent_blockhash(rpc_url).await?;
+
+    // 2. Build tx with original CU limit → simulate
+    let message = build_legacy_message(header, accounts, &bh.hash, instructions);
+    let sim_tx = sign_and_encode(wallet, &message);
+
+    let tight_cu = match simulate_transaction(&sim_tx, rpc_url).await {
+        Ok(units_consumed) => {
+            // Add 10% buffer per Solana recommendation
+            let tight = ((units_consumed as f64) * 1.1) as u32;
+            tight.max(1_000) // minimum 1K CU
+        }
+        Err(_) => {
+            // Simulation failed — send with original CU limit
+            let sig = send_raw_transaction(&sim_tx, false, rpc_url).await?;
+            let confirmed = confirm_transaction(&sig, rpc_url).await.is_ok();
+            return Ok(TransactionResult { signature: sig, confirmed });
+        }
     };
 
-    let sig = send_raw_transaction(&tx_base64, rpc_url).await?;
+    // 3. Rebuild instructions with tight CU limit
+    let mut tight_instructions = Vec::new();
+    for ix in instructions {
+        if ix.data.first() == Some(&2) && ix.data.len() == 5 {
+            // Replace SetComputeUnitLimit with tight value
+            tight_instructions.push(compute_unit_limit_ix_with_index(tight_cu, ix.program_id_index));
+        } else {
+            tight_instructions.push(Instruction {
+                program_id_index: ix.program_id_index,
+                account_indices: ix.account_indices.clone(),
+                data: ix.data.clone(),
+            });
+        }
+    }
 
-    // 6. Confirm — poll until confirmed
+    // 4. Sign and send with skipPreflight=true (already simulated)
+    let final_message = build_legacy_message(header, accounts, &bh.hash, &tight_instructions);
+    let final_tx = sign_and_encode(wallet, &final_message);
+    let sig = send_raw_transaction(&final_tx, true, rpc_url).await?;
+
+    // 5. Confirm — poll until confirmed
     let confirmed = match confirm_transaction(&sig, rpc_url).await {
         Ok(()) => true,
         Err(e) => {
@@ -1036,70 +1034,105 @@ async fn send_legacy_transaction(
     Ok(TransactionResult { signature: sig, confirmed })
 }
 
-/// Get a recent blockhash from Solana RPC.
-async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<[u8; 32]> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getLatestBlockhash",
-        params: serde_json::json!([{ "commitment": "finalized" }]),
-    };
+/// Build a SetComputeUnitLimit instruction with a specific program_id_index.
+fn compute_unit_limit_ix_with_index(units: u32, program_id_index: u8) -> Instruction {
+    let mut ix = compute_unit_limit_ix(units);
+    ix.program_id_index = program_id_index;
+    ix
+}
 
-    let resp: RpcResponse<serde_json::Value> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+/// Blockhash with expiration info for retry logic.
+struct BlockhashInfo {
+    hash: [u8; 32],
+    /// Stored for future retry/expiration detection (Solana best practice).
+    #[allow(dead_code)]
+    last_valid_block_height: u64,
+}
+
+/// Get a recent blockhash from Solana RPC.
+/// Uses `confirmed` commitment for ~13s more validity vs `finalized` (per Solana docs).
+/// Returns blockhash + lastValidBlockHeight for expiration tracking.
+async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<BlockhashInfo> {
+    let result: serde_json::Value = rpc_call_simple(
+        "getLatestBlockhash",
+        serde_json::json!([{ "commitment": "confirmed" }]),
+        rpc_url,
     ).await?;
 
-    let result = resp.result
-        .ok_or_else(|| eyre!("Failed to get blockhash"))?;
     let hash_str = result["value"]["blockhash"]
         .as_str()
         .ok_or_else(|| eyre!("Missing blockhash in response"))?;
+    let last_valid = result["value"]["lastValidBlockHeight"]
+        .as_u64()
+        .unwrap_or(0);
 
     let hash_bytes = bs58::decode(hash_str).into_vec()
         .map_err(|e| eyre!("Invalid blockhash: {e}"))?;
     let hash: [u8; 32] = hash_bytes.try_into()
         .map_err(|_| eyre!("Blockhash wrong length"))?;
-    Ok(hash)
+    Ok(BlockhashInfo { hash, last_valid_block_height: last_valid })
 }
 
 /// Send a signed transaction to Solana RPC. Returns tx signature.
-async fn send_raw_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<String> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "sendTransaction",
-        params: serde_json::json!([
+/// `skip_preflight`: set true if already simulated (avoids double-check, faster).
+async fn send_raw_transaction(tx_base64: &str, skip_preflight: bool, rpc_url: Option<&str>) -> Result<String> {
+    rpc_call_simple(
+        "sendTransaction",
+        serde_json::json!([
             tx_base64,
-            { "encoding": "base64", "skipPreflight": false, "preflightCommitment": "confirmed" }
+            { "encoding": "base64", "skipPreflight": skip_preflight, "preflightCommitment": "confirmed" }
         ]),
-    };
+        rpc_url,
+    ).await
+}
 
-    let resp: RpcResponse<String> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+/// Simulate a transaction to get compute units consumed.
+/// Returns (units_consumed, error_if_any). Uses `replaceRecentBlockhash` for convenience.
+async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<u64> {
+    let result: serde_json::Value = rpc_call_simple(
+        "simulateTransaction",
+        serde_json::json!([
+            tx_base64,
+            { "encoding": "base64", "commitment": "confirmed", "replaceRecentBlockhash": true }
+        ]),
+        rpc_url,
     ).await?;
 
-    resp.result.ok_or_else(|| eyre!("Transaction failed — no signature returned"))
+    // Check for simulation error
+    if let Some(err) = result.get("value").and_then(|v| v.get("err")) {
+        if !err.is_null() {
+            let logs = result.get("value")
+                .and_then(|v| v.get("logs"))
+                .and_then(|l| l.as_array())
+                .map(|logs| {
+                    logs.iter()
+                        .filter_map(|l| l.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                })
+                .unwrap_or_default();
+            return Err(eyre!("Transaction simulation failed: {err}\n  {logs}"));
+        }
+    }
+
+    let units = result.get("value")
+        .and_then(|v| v.get("unitsConsumed"))
+        .and_then(|u| u.as_u64())
+        .unwrap_or(200_000); // safe fallback
+
+    Ok(units)
 }
 
 /// Check if a Solana account exists (has non-zero lamports).
 async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<bool> {
     let addr_str = bs58::encode(address).into_string();
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getAccountInfo",
-        params: serde_json::json!([addr_str, { "encoding": "base64" }]),
-    };
-
-    let resp: RpcResponse<serde_json::Value> = rpc_call_with_retry(
-        client, &rpc_urls(rpc_url), &req,
+    let result: serde_json::Value = rpc_call_simple(
+        "getAccountInfo",
+        serde_json::json!([addr_str, { "encoding": "base64" }]),
+        rpc_url,
     ).await?;
 
-    Ok(resp.result
-        .and_then(|r| r.get("value").cloned())
+    Ok(result.get("value")
         .map(|v| !v.is_null())
         .unwrap_or(false))
 }
