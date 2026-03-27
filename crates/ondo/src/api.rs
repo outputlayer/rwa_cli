@@ -1,5 +1,7 @@
 use eyre::{Result, eyre};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::HTTP;
 
@@ -7,14 +9,14 @@ const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
 
 // ─── app.ondo.finance/api/v2/assets (free, no auth) ────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OndoAssetTag {
     pub category_slug: String,
     pub tag_label: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OndoAsset {
     pub symbol: String,
@@ -40,7 +42,7 @@ impl OndoAsset {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrimaryMarket {
     pub price: String,
@@ -57,13 +59,60 @@ struct AssetsResponse {
 }
 
 /// Fetch all assets from the official Ondo API (free, no auth required).
+/// Caches result to `~/.config/rwa/.cache/assets.json` (5-min TTL).
+/// On network failure, falls back to cached data if available.
 pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
+    let cache = assets_cache_path();
+
+    // Try live fetch first
+    match fetch_assets_live().await {
+        Ok(assets) => {
+            // Update cache in background (best-effort)
+            if let Some(ref path) = cache {
+                let _ = write_cache(path, &assets);
+            }
+            Ok(assets)
+        }
+        Err(live_err) => {
+            // Live fetch failed — try disk cache
+            if let Some(assets) = cache.as_ref().and_then(read_cache) {
+                Ok(assets)
+            } else {
+                Err(live_err)
+            }
+        }
+    }
+}
+
+async fn fetch_assets_live() -> Result<Vec<OndoAsset>> {
     let resp = HTTP.get(ONDO_API_URL).send().await?;
     if !resp.status().is_success() {
         return Err(eyre!("Ondo API returned status {}", resp.status()));
     }
     let wrapper: AssetsResponse = resp.json().await?;
     Ok(wrapper.assets)
+}
+
+fn assets_cache_path() -> Option<PathBuf> {
+    let dir = dirs::config_dir()?.join("rwa").join(".cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("assets.json"))
+}
+
+fn write_cache(path: &PathBuf, assets: &[OndoAsset]) -> Option<()> {
+    let data = serde_json::to_string(assets).ok()?;
+    std::fs::write(path, data).ok()
+}
+
+fn read_cache(path: &PathBuf) -> Option<Vec<OndoAsset>> {
+    let meta = std::fs::metadata(path).ok()?;
+    let age = meta.modified().ok()?.elapsed().ok()?;
+    // Accept cache up to 1 hour as fallback (fresh TTL is 5 min)
+    if age > Duration::from_secs(3600) {
+        return None;
+    }
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
 }
 
 /// Find an asset by symbol (case-insensitive, accepts "TSLA" or "TSLAon").

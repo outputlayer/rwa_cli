@@ -80,6 +80,9 @@ pub struct ExecuteResponse {
 /// Get a swap quote from Jupiter Swap V2 API.
 /// Uses lite-api.jup.ag/swap/v2 — no API key required.
 /// Flow: /order → wallet.sign → /execute
+/// Maximum retries for transient network errors on /order.
+const ORDER_MAX_RETRIES: u32 = 2;
+
 pub async fn get_order(
     input_mint: &str,
     output_mint: &str,
@@ -87,48 +90,79 @@ pub async fn get_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let mut request = HTTP
-        .get(format!("{SWAP_API_BASE}/order"))
-        .query(&[
-            ("inputMint", input_mint),
-            ("outputMint", output_mint),
-            ("amount", amount),
-            ("taker", taker),
-        ]);
+    let mut last_err = eyre!("Jupiter /order failed");
 
-    if let Some(bps) = slippage_bps {
-        request = request.query(&[("slippageBps", bps.to_string())]);
-    }
-
-    let response = request.send().await?;
-
-    let status = response.status();
-    let body = response.text().await?;
-
-    if !status.is_success() {
-        if status.as_u16() == 400 && body.contains("Failed to get quotes") {
-            return Err(eyre!("No swap route found. Do not run quotes in parallel — Jupiter rejects concurrent requests from the same wallet."));
+    for attempt in 0..=ORDER_MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
+
+        let mut request = HTTP
+            .get(format!("{SWAP_API_BASE}/order"))
+            .query(&[
+                ("inputMint", input_mint),
+                ("outputMint", output_mint),
+                ("amount", amount),
+                ("taker", taker),
+            ]);
+
+        if let Some(bps) = slippage_bps {
+            request = request.query(&[("slippageBps", bps.to_string())]);
+        }
+
+        let response = match request.send().await {
+            Ok(r) => r,
+            Err(e) if is_transient(&e) && attempt < ORDER_MAX_RETRIES => {
+                last_err = eyre!("Jupiter /order network error: {e}");
+                continue;
+            }
+            Err(e) => return Err(eyre!("Jupiter /order network error: {e}")),
+        };
+
+        let status = response.status();
+
+        // 429 / 5xx → retry
+        if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+            && attempt < ORDER_MAX_RETRIES
+        {
+            last_err = eyre!("Jupiter /order HTTP {status}");
+            continue;
+        }
+
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            if status.as_u16() == 400 && body.contains("Failed to get quotes") {
+                return Err(eyre!("No swap route found. Do not run quotes in parallel — Jupiter rejects concurrent requests from the same wallet."));
+            }
+            return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
+        }
+
+        let resp: OrderResponse = serde_json::from_str(&body)
+            .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
+
+        if let Some(err) = &resp.error {
+            let msg = resp.error_message.as_deref().unwrap_or(err);
+            return Err(eyre!("Jupiter API error: {msg}"));
+        }
+
+        let tx = resp.transaction.as_deref().unwrap_or("");
+        if tx.is_empty() {
+            let detail = resp.error_message.as_deref()
+                .or(resp.error.as_deref())
+                .unwrap_or("route may not exist");
+            return Err(eyre!("Jupiter returned empty transaction — {detail}"));
+        }
+
+        return Ok(resp);
     }
 
-    let resp: OrderResponse = serde_json::from_str(&body)
-        .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
+    Err(last_err)
+}
 
-    if let Some(err) = &resp.error {
-        let msg = resp.error_message.as_deref().unwrap_or(err);
-        return Err(eyre!("Jupiter API error: {msg}"));
-    }
-
-    let tx = resp.transaction.as_deref().unwrap_or("");
-    if tx.is_empty() {
-        let detail = resp.error_message.as_deref()
-            .or(resp.error.as_deref())
-            .unwrap_or("route may not exist");
-        return Err(eyre!("Jupiter returned empty transaction — {detail}"));
-    }
-
-    Ok(resp)
+/// Check if a reqwest error is transient (timeout, connection, DNS).
+fn is_transient(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request()
 }
 
 /// Sign and execute a swap via Jupiter Swap V2 API.

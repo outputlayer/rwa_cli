@@ -16,3 +16,5 @@ serde_json.workspace = true
 serde.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+fs2.workspace = true
+dirs.workspace = true
