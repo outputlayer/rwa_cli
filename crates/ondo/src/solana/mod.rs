@@ -1,9 +1,12 @@
+mod rpc;
+
 use eyre::{Result, eyre};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::token_list::GmTokenEntry;
 use crate::wallet::Wallet;
 use crate::HTTP;
+use rpc::{rpc_call_simple, rpc_batch_with_retry, rpc_urls, RpcRequest, RpcResponse};
 
 /// Result of sending a transaction — includes whether it was confirmed on-chain.
 pub struct TransactionResult {
@@ -14,31 +17,6 @@ pub struct TransactionResult {
     pub confirmed: bool,
 }
 
-/// Public Solana RPC endpoints — rotated on rate-limit errors.
-/// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
-const RPC_URLS: &[&str] = &[
-    "https://solana-rpc.publicnode.com",           // PublicNode — 10 nodes, stable
-    "https://solana-mainnet.rpc.extrnode.com",     // ExtrNode — used by wallets
-    "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s
-    "https://rpc.ankr.com/solana",                 // Ankr — ~30 req/min free
-    "https://solana.drpc.org",                     // dRPC — decentralized, free tier
-];
-
-/// Return the list of RPC URLs to try: user-provided first, then public fallbacks.
-fn rpc_urls(custom: Option<&str>) -> Vec<&str> {
-    match custom {
-        Some(url) => {
-            let mut urls = vec![url];
-            for u in RPC_URLS {
-                if *u != url {
-                    urls.push(u);
-                }
-            }
-            urls
-        }
-        None => RPC_URLS.to_vec(),
-    }
-}
 /// Ondo GM tokens use Token-2022 (Token Extensions) on Solana.
 const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub use crate::USDC_MINT;
@@ -56,25 +34,6 @@ pub fn validate_address(addr: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct RpcRequest<'a> {
-    jsonrpc: &'a str,
-    id: u64,
-    method: &'a str,
-    params: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct RpcResponse<T> {
-    result: Option<T>,
-    error: Option<RpcError>,
-}
-
-#[derive(Deserialize)]
-struct RpcError {
-    message: String,
-}
-
 #[derive(Deserialize)]
 struct GetTokenAccountsResult {
     value: Vec<TokenAccountInfo>,
@@ -82,11 +41,13 @@ struct GetTokenAccountsResult {
 
 #[derive(Deserialize)]
 struct TokenAccountInfo {
+    pubkey: Option<String>,
     account: AccountData,
 }
 
 #[derive(Deserialize)]
 struct AccountData {
+    lamports: Option<u64>,
     data: ParsedData,
 }
 
@@ -142,26 +103,6 @@ impl MultiAccountInfo {
             .and_then(|t| t.get("uiAmount"))
             .and_then(|v| v.as_f64())
     }
-}
-
-// ── RPC helper ────────────────────────────────────────────
-
-/// Simple RPC call: builds request, retries with URL rotation, extracts result.
-/// Eliminates the `let client = &*HTTP; let req = RpcRequest { ... }` boilerplate.
-async fn rpc_call_simple<T: serde::de::DeserializeOwned>(
-    method: &str,
-    params: serde_json::Value,
-    rpc_url: Option<&str>,
-) -> Result<T> {
-    let client = &*HTTP;
-    let req = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method,
-        params,
-    };
-    let resp: RpcResponse<T> = rpc_call_with_retry(client, &rpc_urls(rpc_url), &req).await?;
-    resp.result.ok_or_else(|| eyre!("Empty response from Solana RPC ({method})"))
 }
 
 /// Get SOL balance in SOL (not lamports).
@@ -402,128 +343,6 @@ pub async fn get_portfolio_balances(
 
     gm_tokens.sort_by(|a, b| a.symbol.cmp(&b.symbol));
     Ok(PortfolioBalances { sol, usdc, gm_tokens })
-}
-
-/// Make an RPC call with retry and RPC URL rotation on rate-limit errors.
-/// Tries each URL with backoff before rotating to the next one.
-async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
-    urls: &[&str],
-    req: &RpcRequest<'_>,
-) -> Result<RpcResponse<T>> {
-    let timeout = std::time::Duration::from_secs(15);
-    let mut last_err = String::new();
-
-    for (url_idx, url) in urls.iter().enumerate() {
-        for attempt in 0..3u32 {
-            if attempt > 0 || url_idx > 0 {
-                let delay = backoff_with_jitter(attempt + 1);
-                tokio::time::sleep(delay).await;
-            }
-            let resp = match client.post(*url).json(req).timeout(timeout).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = e.to_string();
-                    break; // connection error → try next URL
-                }
-            };
-
-            let status = resp.status();
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                last_err = format!("HTTP {status}");
-                continue; // rate limited or 5xx → retry same URL with backoff
-            }
-
-            let parsed: RpcResponse<T> = match resp.json().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = format!("error decoding response body: {e}");
-                    continue; // HTML / bad response → retry with backoff
-                }
-            };
-
-            if let Some(ref err) = parsed.error {
-                if err.message.contains("Too many requests") {
-                    last_err = err.message.clone();
-                    continue; // retry same URL with backoff
-                }
-                return Err(eyre!("Solana RPC error: {}", err.message));
-            }
-            // Malformed response: no result AND no error (per JSON-RPC 2.0, result is required on success)
-            if parsed.result.is_none() {
-                last_err = "RPC returned null result".to_string();
-                continue; // retry — likely transient issue
-            }
-            return Ok(parsed);
-        }
-    }
-
-    Err(eyre!(
-        "Solana RPC unavailable (all endpoints rate-limited or down).\n  \
-         Last error: {last_err}\n  \
-         Hint: set RWA_RPC_URL to a private RPC endpoint, or retry in a few seconds."
-    ))
-}
-
-/// Make a batch RPC call (multiple requests in one HTTP request) with retry.
-async fn rpc_batch_with_retry(
-    client: &reqwest::Client,
-    urls: &[&str],
-    reqs: &[RpcRequest<'_>],
-) -> Result<Vec<serde_json::Value>> {
-    let timeout = std::time::Duration::from_secs(20);
-    let mut last_err = String::new();
-
-    for (url_idx, url) in urls.iter().enumerate() {
-        for attempt in 0..3u32 {
-            if attempt > 0 || url_idx > 0 {
-                let delay = backoff_with_jitter(attempt + 1);
-                tokio::time::sleep(delay).await;
-            }
-            let resp = match client.post(*url).json(&reqs).timeout(timeout).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = e.to_string();
-                    break; // connection error → try next URL
-                }
-            };
-
-            let status = resp.status();
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                last_err = format!("HTTP {status}");
-                continue;
-            }
-
-            let results: Vec<serde_json::Value> = match resp.json().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = format!("error decoding response body: {e}");
-                    continue; // HTML / bad response → retry with backoff
-                }
-            };
-
-            if results.len() != reqs.len() {
-                last_err = format!("batch: got {} responses, expected {}", results.len(), reqs.len());
-                continue;
-            }
-
-            return Ok(results);
-        }
-    }
-
-    Err(eyre!(
-        "Solana RPC unavailable (all endpoints rate-limited or down).\n  \
-         Last error: {last_err}\n  \
-         Hint: set RWA_RPC_URL to a private RPC endpoint, or retry in a few seconds."
-    ))
-}
-
-/// Backoff with jitter to avoid thundering herd on rate-limited endpoints.
-/// Returns base delay (attempt × 1s) plus random jitter (0–500ms).
-fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
-    let base_ms = 1000u64 * attempt as u64;
-    let jitter_ms = rand::random::<u64>() % 500;
-    std::time::Duration::from_millis(base_ms + jitter_ms)
 }
 
 // ── Fee cache ─────────────────────────────────────────────
@@ -1000,8 +819,8 @@ async fn send_legacy_transaction(
             tight.max(1_000) // minimum 1K CU
         }
         Err(_) => {
-            // Simulation failed — send with original CU limit
-            let sig = send_raw_transaction(&sim_tx, false, rpc_url).await?;
+            // Simulation failed — send with skipPreflight (some RPCs don't simulate well)
+            let sig = send_raw_transaction(&sim_tx, true, rpc_url).await?;
             let confirmed = confirm_transaction(&sig, rpc_url).await.is_ok();
             return Ok(TransactionResult { signature: sig, confirmed });
         }
@@ -1197,69 +1016,34 @@ pub async fn get_empty_token_accounts(
     wallet: &str,
     rpc_url: Option<&str>,
 ) -> Result<Vec<EmptyTokenAccount>> {
-    let urls = rpc_urls(rpc_url);
-    let client = &*HTTP;
+    // Parallel: fetch Token-2022 + Token Program accounts simultaneously
+    let (t2022_res, tprog_res) = tokio::join!(
+        rpc_call_simple::<GetTokenAccountsResult>(
+            "getTokenAccountsByOwner",
+            serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+            rpc_url,
+        ),
+        rpc_call_simple::<GetTokenAccountsResult>(
+            "getTokenAccountsByOwner",
+            serde_json::json!([wallet, { "programId": TOKEN_PROGRAM_STR }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+            rpc_url,
+        ),
+    );
 
-    let reqs = vec![
-        RpcRequest {
-            jsonrpc: "2.0", id: 1,
-            method: "getTokenAccountsByOwner",
-            params: serde_json::json!([
-                wallet,
-                { "programId": TOKEN_2022_PROGRAM },
-                { "encoding": "jsonParsed", "commitment": "confirmed" }
-            ]),
-        },
-        RpcRequest {
-            jsonrpc: "2.0", id: 2,
-            method: "getTokenAccountsByOwner",
-            params: serde_json::json!([
-                wallet,
-                { "programId": TOKEN_PROGRAM_STR },
-                { "encoding": "jsonParsed", "commitment": "confirmed" }
-            ]),
-        },
-    ];
-
-    let results = rpc_batch_with_retry(client, &urls, &reqs).await?;
     let mut empty = Vec::new();
-
-    for (i, result) in results.iter().enumerate() {
-        let is_2022 = i == 0;
-        let accounts = result.get("result")
-            .and_then(|r| r.get("value"))
-            .and_then(|v| v.as_array());
-
-        if let Some(accounts) = accounts {
-            for acc in accounts {
-                let pubkey = acc.get("pubkey").and_then(|v| v.as_str()).unwrap_or("");
-                let lamports = acc.get("account")
-                    .and_then(|a| a.get("lamports"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0);
-                let info = acc.get("account")
-                    .and_then(|a| a.get("data"))
-                    .and_then(|d| d.get("parsed"))
-                    .and_then(|p| p.get("info"));
-                let mint = info
-                    .and_then(|i| i.get("mint"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("");
-                let amount = info
-                    .and_then(|i| i.get("tokenAmount"))
-                    .and_then(|t| t.get("amount"))
-                    .and_then(|a| a.as_str())
-                    .unwrap_or("0");
-
-                // Skip USDC ATA — user needs it for trading
-                if mint == USDC_MINT {
-                    continue;
-                }
-
-                if amount == "0" && !pubkey.is_empty() && lamports > 0 {
+    for (result, is_2022) in [(t2022_res, true), (tprog_res, false)] {
+        for acc in result?.value {
+            let mint = &acc.account.data.parsed.info.mint;
+            let amount = &acc.account.data.parsed.info.token_amount.amount;
+            // Skip USDC ATA — user needs it for trading
+            if mint == USDC_MINT { continue; }
+            if amount == "0" {
+                let pubkey = acc.pubkey.as_deref().unwrap_or("");
+                let lamports = acc.account.lamports.unwrap_or(0);
+                if !pubkey.is_empty() && lamports > 0 {
                     empty.push(EmptyTokenAccount {
                         address: pubkey.to_string(),
-                        mint: mint.to_string(),
+                        mint: mint.clone(),
                         lamports,
                         is_token_2022: is_2022,
                     });
@@ -1501,18 +1285,6 @@ mod tests {
         assert_eq!(COMPUTE_BUDGET_PROGRAM.as_slice(), expected.as_slice());
     }
 
-    // ── backoff ──────────────────────────────────────────────
-
-    #[test]
-    fn backoff_with_jitter_increases_with_attempt() {
-        // Attempt 1: base 1000ms + jitter 0-500ms → 1000-1500ms
-        // Attempt 3: base 3000ms + jitter 0-500ms → 3000-3500ms
-        let d1 = backoff_with_jitter(1);
-        let d3 = backoff_with_jitter(3);
-        assert!(d1.as_millis() >= 1000 && d1.as_millis() < 1500);
-        assert!(d3.as_millis() >= 3000 && d3.as_millis() < 3500);
-    }
-
     // ── fee cache ────────────────────────────────────────────
 
     #[test]
@@ -1558,39 +1330,6 @@ mod tests {
             confirmed: false,
         };
         assert!(!r.confirmed);
-    }
-
-    // ── HTTP client ──────────────────────────────────────────
-
-    #[test]
-    fn http_client_is_initialized() {
-        // Accessing the LazyLock should not panic
-        let _ = &*HTTP;
-    }
-
-    // ── RPC URL rotation ─────────────────────────────────────
-
-    #[test]
-    fn rpc_urls_default_returns_all() {
-        let urls = rpc_urls(None);
-        assert_eq!(urls.len(), RPC_URLS.len());
-        assert_eq!(urls[0], RPC_URLS[0]);
-    }
-
-    #[test]
-    fn rpc_urls_custom_prepends() {
-        let custom = "https://my-rpc.example.com";
-        let urls = rpc_urls(Some(custom));
-        assert_eq!(urls[0], custom);
-        assert_eq!(urls.len(), RPC_URLS.len() + 1);
-    }
-
-    #[test]
-    fn rpc_urls_custom_deduplicates() {
-        let urls = rpc_urls(Some(RPC_URLS[0]));
-        // Custom URL is same as first default — should not duplicate
-        assert_eq!(urls.len(), RPC_URLS.len());
-        assert_eq!(urls[0], RPC_URLS[0]);
     }
 
     // ── rent constants & fallback ────────────────────────────

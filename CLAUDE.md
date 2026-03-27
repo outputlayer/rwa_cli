@@ -16,17 +16,17 @@ cargo install --path bin/rwa # Install locally
 
 - `bin/rwa/` — Binary entry point (thin — just calls `rwa_cli::run()`)
 - `crates/cli/` — CLI layer: clap v4 derive commands, output formatting, `--json` flag
-- `crates/cli/src/cmd/gm.rs` — All GM command implementations (~1340 lines)
+- `crates/cli/src/cmd/gm/` — GM commands: `trade.rs`, `portfolio.rs`, `list.rs`, `send.rs`, `mod.rs` (preflight, tradable checks)
 - `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
-- `crates/ondo/src/solana.rs` — All Solana RPC calls (retry + URL rotation)
-- `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API (deprecated; migration to Swap V2 planned)
+- `crates/ondo/src/solana/` — Solana operations: `rpc.rs` (retry + URL rotation), `mod.rs` (balances, transfers, token accounts)
+- `crates/ondo/src/jupiter.rs` — Jupiter Ultra swap API
 - `crates/ondo/src/api.rs` — Ondo API (prices, sectors, history)
 
 ## Code Conventions
 
 - **Error handling**: `eyre` everywhere. No `thiserror`, no `anyhow`, no `.unwrap()` on fallible ops.
 - **Dependencies**: centralized `[workspace.dependencies]` in root Cargo.toml. Add versions there, reference with `.workspace = true` in crate Cargo.toml.
-- **Solana RPC**: NEVER fire concurrent RPC calls — sequential only, via `rpc_call_with_retry`. Public endpoints rate-limit at ~10 req/s.
+- **Solana RPC**: Avoid excessive concurrent RPC calls. Use `tokio::join!` for 2-3 independent calls (e.g. preflight). Public endpoints rate-limit at ~10 req/s.
 - **RPC rotation**: 5 fallback URLs in `RPC_URLS` (publicnode, extrnode, solana, ankr, drpc). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
 - **Token symbols**: both `TSLA` and `TSLAon` accepted — resolved in `gm::resolve_token`.
 - **Amounts**: exact number (`100`), percentage (`50%`), or `all`.
@@ -42,7 +42,7 @@ cargo install --path bin/rwa # Install locally
 ## What NOT to Do
 
 - Don't add EVM/alloy/ethers — this is Solana-only
-- Don't fire concurrent Solana RPC calls (use sequential + retry)
+- Don't fire excessive concurrent Solana RPC calls (2-3 parallel via tokio::join! is OK)
 - Don't add native C deps — keep pure Rust for cross-platform
 - Don't use `.unwrap()` — use `?` with eyre context
 
@@ -76,6 +76,27 @@ rwa keys generate|import|show      # Wallet management
 - **Closed**: Fri 8 PM – Sun 8 PM
 
 Not all tokens are tradable in every session. `list` and `hours --tradable` show which tokens can be traded now.
+
+## Jupiter Gasless Swaps
+
+Jupiter Ultra handles gas fees for swaps — users do NOT need SOL for buy/sell:
+- **JupiterZ (RFQ)**: Market maker pays signature + priority fee. User needs SOL only for ATA rent.
+- **Ultra Automatic**: Jupiter pays all gas (including ATA rent) when user has < 0.01 SOL. Fee deducted from swap output.
+- **Limitation**: automatic gasless disabled when using `slippageBps`, `referralAccount`, or other optional params.
+- **send/transfer**: NOT gasless — SOL still needed for SOL/USDC/token transfers.
+
+## Jupiter Error Codes
+
+| Code | Meaning | CLI Behavior |
+|------|---------|-------------|
+| `-1` | Request expired (slow /order → /execute) | Retry with fresh order |
+| `-1000` | Aggregator failed to land | Retry same order |
+| `-2000` | RFQ MM failed to land (congestion) | Retry with fresh order |
+| `-2003` | RFQ quote expired | Retry with fresh order |
+| `-2004` | RFQ swap rejected by MM (rare) | Retry with fresh order |
+| `-2005` | RFQ failure (various) | Retry with fresh order |
+
+CLI auto-retries up to 2× — agents should NOT retry manually.
 
 ## Slippage Protection
 

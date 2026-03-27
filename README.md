@@ -135,15 +135,32 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 - Positions worth less than **$1.50** are automatically skipped during `close-all` (Jupiter market makers reject small swaps)
 - Skipped tokens are reported separately in both text and JSON output
 
+## Performance
+
+| Command | Typical | Notes |
+|---------|---------|-------|
+| `hours` | 0.3–0.7s | Ondo API only |
+| `quote` | 0.8–1s | Jupiter API only |
+| `buy` | 2–10s | Parallel preflight + Jupiter execute |
+| `sell` | 1–10s | Parallel preflight + Jupiter execute |
+| `portfolio` | 1–15s | Batch RPC (1s with private RPC, 15s with rate-limited public) |
+| `reclaim` | 1–18s | Depends on number of empty accounts |
+
+Tip: set `RWA_RPC_URL` to a private Solana RPC endpoint for 5–10x faster responses.
+
 ## Architecture
 
 ```
-bin/rwa/     → Binary entry point
-crates/cli/  → CLI parsing (clap v4), output formatting
-crates/ondo/ → Solana RPC, Jupiter API, Ondo API, wallet
+bin/rwa/          → Binary entry point
+crates/cli/       → CLI parsing (clap v4), output formatting
+crates/ondo/      → Solana RPC, Jupiter API, Ondo API, wallet
+  src/solana/     → RPC infrastructure (rpc.rs) + Solana operations (mod.rs)
+  src/jupiter.rs  → Jupiter Ultra swap API
+  src/api.rs      → Ondo session/pricing API
+  src/wallet.rs   → Ed25519 wallet (SLIP-10, BIP39)
 ```
 
-Pure Rust — no native C dependencies. Uses `rustls-tls`, `ed25519-dalek`, fully cross-platform.
+~5,300 lines of Rust, ~3 MB binary. Pure Rust — no native C dependencies. Uses `rustls-tls`, `ed25519-dalek`, fully cross-platform.
 
 ## Development
 

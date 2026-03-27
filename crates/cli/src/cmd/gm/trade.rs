@@ -112,8 +112,13 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     }).await?;
     let usdc_str = format!("{usdc_f:.2}");
 
-    preflight_buy(&taker, usdc_f, &w, json, rpc_url).await?;
-    check_tradable(&sym).await?;
+    // Parallel: preflight (USDC balance check) + tradable check
+    let (preflight_res, tradable_res) = tokio::join!(
+        preflight_buy(&taker, usdc_f, rpc_url),
+        check_tradable(&sym),
+    );
+    preflight_res?;
+    tradable_res?;
 
     let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
@@ -168,15 +173,18 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    preflight_sell(&taker, &w, json, rpc_url).await?;
-    check_tradable(&sym).await?;
-
     let gm_dec = jupiter::GM_SOL_DECIMALS;
     let is_all = amount.trim().eq_ignore_ascii_case("all");
     let is_pct = amount.trim().ends_with('%');
 
-    // Fetch token balance once — needed for all/pct to compute amount, and for exact to validate.
-    let bal = solana::get_balance(&taker, &gm_mint, rpc_url).await?;
+    // Preflight: trading hours (sync) + tradable check + token balance (parallel)
+    preflight_sell()?;
+    let (tradable_res, bal_res) = tokio::join!(
+        check_tradable(&sym),
+        solana::get_balance(&taker, &gm_mint, rpc_url),
+    );
+    tradable_res?;
+    let bal = bal_res?;
     if bal.balance <= 0.0 {
         return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
     }
@@ -323,7 +331,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         return Ok(());
     }
 
-    preflight_sell(&taker, &w, json, rpc_url).await?;
+    preflight_sell()?;
 
     let mut sold = Vec::new();
     let mut failed = Vec::new();

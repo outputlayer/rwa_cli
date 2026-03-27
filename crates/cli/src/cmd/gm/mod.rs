@@ -365,8 +365,6 @@ const DEFAULT_SLIPPAGE_BPS: u32 = 100;
 const MIN_USDC_AMOUNT: f64 = 1.0;
 /// Minimum sell value in USD (Jupiter MM rejects tiny orders).
 const MIN_SELL_VALUE_USD: f64 = 1.5;
-/// USDC amount to swap for SOL when gas is low.
-const TOPUP_USDC: f64 = 3.0;
 
 fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     if let Some(pi) = order.price_impact {
@@ -526,71 +524,28 @@ where
     s.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {s}"))
 }
 
-async fn preflight_buy(pubkey: &str, usdc_amount: f64, w: &wallet::Wallet, json: bool, rpc_url: Option<&str>) -> Result<()> {
+// Jupiter Ultra handles gas for swaps:
+// - JupiterZ (RFQ): market maker pays signature + priority fee
+// - Ultra Automatic: Jupiter pays all gas when user has < 0.01 SOL
+// - Neither covers token account rent, but Jupiter creates ATAs in the swap tx
+// So preflight only needs to check USDC balance (for buy) and trading hours.
+
+async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
     if usdc_amount < MIN_USDC_AMOUNT {
         return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
-    // Jupiter swaps handle ATA creation internally — only need tx fee
-    let min_sol = solana::estimate_gas_needed(false, false, rpc_url).await;
-    let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
     let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
-    if sol < min_sol && usdc > usdc_amount + TOPUP_USDC {
-        topup_sol(w, pubkey, json, rpc_url).await?;
-        let usdc = usdc - TOPUP_USDC;
-        if usdc < usdc_amount {
-            return Err(eyre::eyre!(
-                "Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})\n  Fund wallet: {pubkey}"
-            ));
-        }
-        return Ok(());
-    }
-    let mut issues = Vec::new();
-    if sol < min_sol {
-        issues.push(format!("Insufficient SOL for gas: {sol:.6} SOL (need ≥{min_sol:.6})"));
-    }
     if usdc < usdc_amount {
-        issues.push(format!("Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})"));
-    }
-    if !issues.is_empty() {
-        let mut msg = issues.join("\n  ");
-        msg.push_str(&format!("\n  Fund wallet: {pubkey}"));
-        return Err(eyre::eyre!(msg));
-    }
-    Ok(())
-}
-
-async fn preflight_sell(pubkey: &str, w: &wallet::Wallet, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    check_trading_hours()?;
-    // Jupiter swaps handle ATA creation internally — only need tx fee
-    let min_sol = solana::estimate_gas_needed(false, false, rpc_url).await;
-    let sol = solana::get_sol_balance(pubkey, rpc_url).await?;
-    if sol < min_sol {
-        let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
-        if usdc >= TOPUP_USDC {
-            topup_sol(w, pubkey, json, rpc_url).await?;
-            return Ok(());
-        }
         return Err(eyre::eyre!(
-            "Insufficient SOL for gas: {sol:.6} SOL (need ≥{min_sol:.6})\n  Fund wallet: {pubkey}"
+            "Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})\n  Fund wallet: {pubkey}"
         ));
     }
     Ok(())
 }
 
-async fn topup_sol(w: &wallet::Wallet, pubkey: &str, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    if !json {
-        eprintln!("SOL too low for gas — swapping ${TOPUP_USDC:.0} USDC → SOL ...");
-    }
-    let raw_usdc = jupiter::usdc_to_raw(&format!("{TOPUP_USDC:.2}"))?;
-    let order = jupiter::get_order(jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey, None).await?;
-    execute_with_retry(w, &order, json, jupiter::USDC_MINT, jupiter::SOL_MINT, &raw_usdc, pubkey, None).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let new_sol = solana::get_sol_balance(pubkey, rpc_url).await?;
-    if !json {
-        eprintln!("SOL topped up: {new_sol:.6} SOL");
-    }
-    Ok(())
+fn preflight_sell() -> Result<()> {
+    check_trading_hours()
 }
 
 const MAX_SWAP_RETRIES: u32 = 2;
@@ -615,12 +570,14 @@ async fn execute_with_retry(
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 let msg = e.to_string();
-                let needs_new_order = msg.contains("code -2003")
-                    || msg.contains("code -2004")
-                    || msg.contains("code -2005");
-                let retry_same = msg.contains("code -1000")
-                    || msg.contains("code -2000")
-                    || msg.contains("code -1)");
+                // Fresh order needed: expired quote/request, rejected, or RFQ failure
+                let needs_new_order = msg.contains("code -1)")   // request expired
+                    || msg.contains("code -2003")                // RFQ quote expired
+                    || msg.contains("code -2004")                // RFQ swap rejected
+                    || msg.contains("code -2005");               // RFQ failure
+                // Retry same order: transient landing failure
+                let retry_same = msg.contains("code -1000")     // aggregator failed to land
+                    || msg.contains("code -2000");               // RFQ MM failed to land
 
                 if (!needs_new_order && !retry_same) || attempt == MAX_SWAP_RETRIES {
                     return Err(e);
