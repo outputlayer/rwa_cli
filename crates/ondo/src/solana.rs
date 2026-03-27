@@ -449,6 +449,11 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
                 }
                 return Err(eyre!("Solana RPC error: {}", err.message));
             }
+            // Malformed response: no result AND no error (per JSON-RPC 2.0, result is required on success)
+            if parsed.result.is_none() {
+                last_err = "RPC returned null result".to_string();
+                continue; // retry — likely transient issue
+            }
             return Ok(parsed);
         }
     }
