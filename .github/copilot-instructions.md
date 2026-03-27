@@ -16,17 +16,19 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 
 - Token symbols: both `TSLA` and `TSLAon` accepted (resolved in `gm::resolve_token`)
 - Amounts: exact number (`100`), percentage (`50%`), or `all`
-- Solana RPC calls are sequential (not concurrent) to avoid 429 rate limits on public endpoints
+- Solana RPC: use `tokio::join!` for 2-3 independent calls, avoid excessive concurrency
 - `rpc_call_with_retry` handles rate limit retries with backoff
 - Wallet stored as JSON keypair in `~/.config/rwa/id.json`
-- All HTTP to Solana goes through `crates/ondo/src/solana.rs`
-- All HTTP to Ondo goes through `crates/ondo/src/api.rs`
-- Jupiter swap via `crates/ondo/src/jupiter.rs` (Swap V2 on lite-api.jup.ag, no API key)
+- Solana RPC transport: `crates/ondo/src/solana/rpc.rs`
+- Solana operations: `crates/ondo/src/solana/mod.rs`
+- Ondo API: `crates/ondo/src/api.rs`
+- Jupiter swap: `crates/ondo/src/jupiter.rs` (Ultra API on api.jup.ag)
+- Jupiter gasless: MM pays gas for swaps (JupiterZ RFQ), user only needs SOL for ATA rent
 
 ## Slippage Protection
 
 - Default slippage: 100 bps (1%) sent to Jupiter when `--slippage` not specified
-- Retry: if quote shows >1% slippage, retries up to 3× with fresh quotes
+- Retry: if quote shows >1% slippage, retries up to 3x with fresh quotes
 - Hard block: >3% slippage blocked entirely
 - Close-all skips positions < $1.50 (market makers reject small swaps)
 
@@ -37,7 +39,6 @@ rwa gm hours                       # Market status
 rwa gm list                        # All 264 tokens
 rwa gm quote <SYM> <AMT>           # Swap quote
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
-rwa gm buy <SYM> <AMT> -y --slippage 50  # Trade with max 0.5% slippage
 rwa gm close-all -y                # Sell ALL positions (sequential, skips <$1.50)
 rwa gm close-all 50% -y            # Sell 50% of every position
 rwa gm portfolio [WALLET]          # Holdings + P&L
@@ -58,7 +59,7 @@ cargo install --path bin/rwa # Install locally
 
 ## When modifying Solana RPC code
 
-- Never fire multiple Solana RPC calls concurrently — use sequential with shared `reqwest::Client`
+- Use `tokio::join!` for 2-3 independent RPC calls, avoid excessive concurrency
 - Use `rpc_call_with_retry` for any new RPC call
 - USDC mint: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
 - GM tokens use Token-2022 program: `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`

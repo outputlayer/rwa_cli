@@ -106,6 +106,10 @@ Not all tokens are tradable in every session. Use `list` or `hours --tradable` t
 - Skipped tokens reported in JSON output with reason
 - Sequential execution with 3s delay between swaps
 
+## Gasless swaps
+
+Jupiter handles gas fees — users do NOT need SOL for buy/sell. SOL still needed for `send` and ATA rent.
+
 ## Error recovery
 
 - "Solana RPC unavailable" → wait 5 seconds, retry. After 3 failures, set `RWA_RPC_URL`
