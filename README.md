@@ -9,12 +9,14 @@ CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https:
 ## Install
 
 ```bash
-# From source (requires Rust 1.91+):
-cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
-
-# Or via install script:
+# Install script (builds from source, installs Rust if needed):
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
+
+# Or directly via cargo:
+cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ```
+
+Pre-built binaries for macOS and Linux are available on [GitHub Releases](https://github.com/outputlayer/rwa_cli/releases).
 
 ## Agent Skills
 
@@ -137,16 +139,18 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 
 ## Performance
 
-| Command | Typical | Notes |
-|---------|---------|-------|
-| `hours` | 0.3–0.7s | Ondo API only |
-| `quote` | 0.8–1s | Jupiter API only |
-| `buy` | 2–10s | Parallel preflight + Jupiter execute |
-| `sell` | 1–10s | Parallel preflight + Jupiter execute |
-| `portfolio` | 1–15s | Batch RPC (1s with private RPC, 15s with rate-limited public) |
-| `reclaim` | 1–18s | Depends on number of empty accounts |
+| Command | Time | Notes |
+|---------|------|-------|
+| `--help` | 7ms | Local |
+| `keys show` | 7ms | Local |
+| `gm hours` | 0.5s | Ondo API |
+| `gm history` | 0.5s | Ondo API |
+| `gm quote` | 0.8s | Jupiter API |
+| `gm portfolio` | 1.0s | RPC + Ondo (parallel) |
+| `gm list` | 1.3s | Ondo API (264 tokens) |
+| `gm buy/sell` | 2–4s | Preflight + Jupiter execute |
 
-Tip: set `RWA_RPC_URL` to a private Solana RPC endpoint for 5–10x faster responses.
+RPC health tracking: auto-remembers the fastest working endpoint. 5 public Solana RPCs with instant failover (100ms). Set `RWA_RPC_URL` to a private RPC for even faster responses.
 
 ## Architecture
 
@@ -160,7 +164,7 @@ crates/ondo/      → Solana RPC, Jupiter API, Ondo API, wallet
   src/wallet.rs   → Ed25519 wallet (SLIP-10, BIP39)
 ```
 
-~5,300 lines of Rust, ~3 MB binary. Pure Rust — no native C dependencies. Uses `rustls-tls`, `ed25519-dalek`, fully cross-platform.
+~5,400 lines of Rust, ~3 MB binary, 110 tests. Pure Rust — no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), fully cross-platform.
 
 ## Development
 
