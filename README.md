@@ -159,7 +159,7 @@ bin/rwa/              → Binary entry point
 crates/cli/           → CLI parsing (clap v4), output formatting
 crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
   src/solana/
-    rpc.rs            → RPC retry + URL rotation (5 fallback endpoints)
+    rpc.rs            → RPC retry + URL rotation (4 fallback endpoints)
     fee.rs            → Priority fees + rent estimation
     transaction.rs    → Transaction building + sending
     transfer.rs       → SOL/SPL transfers + ATA management

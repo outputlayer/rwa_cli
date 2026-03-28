@@ -14,7 +14,6 @@ const RPC_URLS: &[&str] = &[
     "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s, most reliable
     "https://solana-rpc.publicnode.com",           // PublicNode — 10 nodes, stable
     "https://solana-mainnet.rpc.extrnode.com",     // ExtrNode — used by wallets
-    "https://rpc.ankr.com/solana",                 // Ankr — ~30 req/min free
     "https://solana.drpc.org",                     // dRPC — decentralized, free tier
 ];
 

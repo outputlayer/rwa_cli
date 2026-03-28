@@ -27,7 +27,7 @@ cargo install --path bin/rwa # Install locally
 - **Error handling**: `eyre` everywhere. No `thiserror`, no `anyhow`, no `.unwrap()` on fallible ops.
 - **Dependencies**: centralized `[workspace.dependencies]` in root Cargo.toml. Add versions there, reference with `.workspace = true` in crate Cargo.toml.
 - **Solana RPC**: Avoid excessive concurrent RPC calls. Use `tokio::join!` for 2-3 independent calls (e.g. preflight). Public endpoints rate-limit at ~10 req/s.
-- **RPC rotation**: 5 fallback URLs in `RPC_URLS` (publicnode, extrnode, solana, ankr, drpc). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
+- **RPC rotation**: 4 fallback URLs in `RPC_URLS` (solana, publicnode, extrnode, drpc). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
 - **Token symbols**: both `TSLA` and `TSLAon` accepted — resolved in `gm::resolve_token`.
 - **Amounts**: exact number (`100`), percentage (`50%`), or `all`.
 - **HTTP**: `reqwest` with `rustls-tls` only. No native TLS, no OpenSSL.
