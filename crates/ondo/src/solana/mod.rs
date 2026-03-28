@@ -93,6 +93,7 @@ struct GetMultipleAccountsResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MultiAccountInfo {
+    #[serde(default)]
     lamports: u64,
     data: serde_json::Value,
 }

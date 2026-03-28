@@ -194,6 +194,14 @@ pub(super) async fn rpc_batch_with_retry(
                 continue;
             }
 
+            // Check if any individual response contains an RPC error
+            if let Some(err_msg) = results.iter().find_map(|r| {
+                r.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str())
+            }) {
+                last_err = format!("RPC error in batch: {err_msg}");
+                break; // RPC-level error → try next URL
+            }
+
             LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
             return Ok(results);
         }
