@@ -7,6 +7,9 @@ rust-version.workspace = true
 description.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 rwa-ondo.workspace = true
 clap.workspace = true

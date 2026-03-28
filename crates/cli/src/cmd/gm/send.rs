@@ -149,7 +149,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
 async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
     let tokens = token_list::get_token_list();
-    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
     // GM tokens use Token-2022 — recipient may need ATA creation

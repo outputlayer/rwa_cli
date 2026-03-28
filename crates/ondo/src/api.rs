@@ -1,6 +1,6 @@
 use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::HTTP;
@@ -75,7 +75,7 @@ pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
         }
         Err(live_err) => {
             // Live fetch failed — try disk cache
-            if let Some(assets) = cache.as_ref().and_then(read_cache) {
+            if let Some(assets) = cache.as_deref().and_then(read_cache) {
                 Ok(assets)
             } else {
                 Err(live_err)
@@ -99,12 +99,12 @@ fn assets_cache_path() -> Option<PathBuf> {
     Some(dir.join("assets.json"))
 }
 
-fn write_cache(path: &PathBuf, assets: &[OndoAsset]) -> Option<()> {
+fn write_cache(path: &Path, assets: &[OndoAsset]) -> Option<()> {
     let data = serde_json::to_string(assets).ok()?;
     std::fs::write(path, data).ok()
 }
 
-fn read_cache(path: &PathBuf) -> Option<Vec<OndoAsset>> {
+fn read_cache(path: &Path) -> Option<Vec<OndoAsset>> {
     let meta = std::fs::metadata(path).ok()?;
     let age = meta.modified().ok()?.elapsed().ok()?;
     // Accept cache up to 1 hour as fallback (fresh TTL is 5 min)
@@ -116,6 +116,7 @@ fn read_cache(path: &PathBuf) -> Option<Vec<OndoAsset>> {
 }
 
 /// Find an asset by symbol (case-insensitive, accepts "TSLA" or "TSLAon").
+#[must_use]
 pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoAsset> {
     let normalized = symbol.to_uppercase();
     let lookup = if normalized.ends_with("ON") {
@@ -127,6 +128,7 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
 }
 
 /// Parse price string to f64, returning 0.0 on failure.
+#[must_use]
 pub fn parse_price(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
@@ -146,6 +148,7 @@ pub enum Session {
 }
 
 impl Session {
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Session::PreMarket => "Pre-Market",
@@ -156,6 +159,7 @@ impl Session {
         }
     }
 
+    #[must_use]
     pub fn hours(self) -> &'static str {
         match self {
             Session::PreMarket => "4:00 AM – 9:29 AM ET",
@@ -175,6 +179,7 @@ impl Session {
 ///   Post-Market: 4:00 PM – 7:59:59 PM
 ///   Overnight:   8:00 PM – 3:59:59 AM
 ///   Closed:      Saturday all day, Sunday before 8 PM, Friday after 8 PM
+#[must_use]
 pub fn current_session() -> Session {
     use chrono::{Datelike, Timelike};
     use chrono_tz::US::Eastern;
@@ -228,6 +233,7 @@ pub struct SessionInfo {
 
 impl SessionLimits {
     /// Check if this token is tradable in the given session.
+    #[must_use]
     pub fn is_tradable(&self, session: Session) -> bool {
         let info = match session {
             Session::PreMarket => self.premarket.as_ref(),

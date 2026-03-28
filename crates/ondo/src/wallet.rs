@@ -158,6 +158,7 @@ impl Wallet {
     }
 
     /// Base58-encoded public key (Solana address).
+    #[must_use]
     pub fn pubkey(&self) -> String {
         bs58::encode(self.verifying_key().as_bytes()).into_string()
     }

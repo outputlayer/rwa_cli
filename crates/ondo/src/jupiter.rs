@@ -263,6 +263,7 @@ pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
 }
 
 /// Format on-chain amount to human-readable with given decimals.
+#[must_use]
 pub fn format_amount(raw: &str, decimals: u8) -> String {
     let d = decimals as usize;
     if raw.len() <= d {

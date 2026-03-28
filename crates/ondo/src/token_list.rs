@@ -5,8 +5,8 @@ pub struct GmTokenEntry {
     pub solana_address: Option<&'static str>,
 }
 
-/// Return the full list of GM tokens with Solana mint addresses.
-pub fn get_token_list() -> Vec<GmTokenEntry> {
+/// Cached token list — built once on first access, zero allocation on subsequent calls.
+static TOKEN_LIST: std::sync::LazyLock<Vec<GmTokenEntry>> = std::sync::LazyLock::new(|| {
     GM_TOKENS_STATIC
         .iter()
         .map(|&(symbol, sol)| GmTokenEntry {
@@ -14,6 +14,13 @@ pub fn get_token_list() -> Vec<GmTokenEntry> {
             solana_address: if sol.is_empty() { None } else { Some(sol) },
         })
         .collect()
+});
+
+/// Return the full list of GM tokens with Solana mint addresses.
+/// Uses a cached static — zero allocation after first call.
+#[must_use]
+pub fn get_token_list() -> &'static [GmTokenEntry] {
+    &TOKEN_LIST
 }
 
 /// Static fallback list of Ondo GM tokens (264 tokens).
@@ -313,7 +320,7 @@ mod tests {
     fn no_duplicate_symbols() {
         let tokens = get_token_list();
         let mut seen = std::collections::HashSet::new();
-        for token in &tokens {
+        for token in tokens {
             assert!(seen.insert(token.symbol), "duplicate symbol: {}", token.symbol);
         }
     }
@@ -322,7 +329,7 @@ mod tests {
     fn no_duplicate_mint_addresses() {
         let tokens = get_token_list();
         let mut seen = std::collections::HashSet::new();
-        for token in &tokens {
+        for token in tokens {
             if let Some(addr) = token.solana_address {
                 assert!(seen.insert(addr), "duplicate mint: {addr}");
             }

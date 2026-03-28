@@ -6,7 +6,7 @@ use super::*;
 pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
     check_trading_hours()?;
-    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -103,7 +103,7 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
 
 pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
-    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -174,7 +174,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
 
 pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
-    let (sym, gm_mint) = resolve_gm_mint(symbol, &tokens)?;
+    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
     let taker = w.pubkey();
 
@@ -274,30 +274,54 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
 
 // ── Close All ──────────────────────────────────────────────
 
+/// Parse close-all percentage argument (e.g. "50%") or default to 100%.
+fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
+    let Some(s) = amount else { return Ok(100.0) };
+    let s = s.trim();
+    let pct_str = s.strip_suffix('%')
+        .ok_or_else(|| eyre::eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
+    let pct: f64 = pct_str.parse()
+        .map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
+    if !(0.0..=100.0).contains(&pct) {
+        return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
+    }
+    Ok(pct)
+}
+
+/// Check if a position should be skipped during close-all.
+/// Returns `Some(skip_reason)` if it should be skipped, `None` otherwise.
+fn should_skip_position(
+    tb: &solana::SolanaTokenBalance,
+    est_value: f64,
+    tradable_set: &std::collections::HashSet<String>,
+) -> Option<CloseSkipJson> {
+    if est_value > 0.0 && est_value < MIN_SELL_VALUE_USD {
+        return Some(CloseSkipJson {
+            token: tb.symbol.clone(),
+            estimated_usd: est_value,
+            reason: "below $1.50 minimum",
+        });
+    }
+    if !tradable_set.is_empty() && !tradable_set.contains(&tb.symbol.to_uppercase()) {
+        return Some(CloseSkipJson {
+            token: tb.symbol.clone(),
+            estimated_usd: est_value,
+            reason: "not tradable in current session",
+        });
+    }
+    None
+}
+
 pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
-
-    let sell_pct: f64 = match amount {
-        Some(s) => {
-            let s = s.trim();
-            let pct_str = s.strip_suffix('%')
-                .ok_or_else(|| eyre::eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
-            let pct: f64 = pct_str.parse()
-                .map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
-            if !(0.0..=100.0).contains(&pct) {
-                return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
-            }
-            pct
-        }
-        None => 100.0,
-    };
+    let sell_pct = parse_sell_pct(amount)?;
 
     let tokens = token_list::get_token_list();
     let w = load_wallet()?;
     let taker = w.pubkey();
 
     let (balances_res, assets, tradable_set) = tokio::join!(
-        solana::get_all_balances(&taker, &tokens, rpc_url),
+        solana::get_all_balances(&taker, tokens, rpc_url),
         api::fetch_assets(),
         fetch_tradable_set()
     );
@@ -306,10 +330,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
     if balances.is_empty() {
         if json {
             return json_out(&CloseAllResultJson {
-                status: "success",
-                sold: vec![],
-                failed: vec![],
-                skipped: vec![],
+                status: "success", sold: vec![], failed: vec![], skipped: vec![],
                 total_usdc: "0".to_string(),
             });
         }
@@ -322,7 +343,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         println!("Positions to close{}:", pct_label);
         for b in &balances {
             if sell_pct < 100.0 {
-                println!("  {} — {} of {} tokens", b.symbol, format_args!("{:.4}", b.balance * sell_pct / 100.0), b.balance);
+                println!("  {} — {:.4} of {} tokens", b.symbol, b.balance * sell_pct / 100.0, b.balance);
             } else {
                 println!("  {} — {} tokens", b.symbol, b.balance);
             }
@@ -330,16 +351,11 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         println!();
     }
 
-    let prompt = if sell_pct < 100.0 {
-        format!("Sell {}% of all positions?", sell_pct)
-    } else {
-        "Sell all positions?".to_string()
-    };
+    let prompt = if sell_pct < 100.0 { format!("Sell {}% of all positions?", sell_pct) } else { "Sell all positions?".to_string() };
     if !yes && !json && !confirm(&prompt) {
         println!("Cancelled.");
         return Ok(());
     }
-
     preflight_sell()?;
 
     let mut sold = Vec::new();
@@ -356,87 +372,45 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
             let raw: u128 = tb.raw_amount.parse()
                 .map_err(|_| eyre::eyre!("Invalid on-chain amount for {}: {}", tb.symbol, tb.raw_amount))?;
             let partial = pct_of_u128(raw, sell_pct);
-            if partial == 0 {
-                continue;
-            }
+            if partial == 0 { continue; }
             partial.to_string()
         } else {
             tb.raw_amount.clone()
         };
 
-        let sell_balance = if sell_pct < 100.0 {
-            tb.balance * sell_pct / 100.0
-        } else {
-            tb.balance
-        };
+        let sell_balance = if sell_pct < 100.0 { tb.balance * sell_pct / 100.0 } else { tb.balance };
         let price = api::find_asset(&tb.symbol, &assets)
             .and_then(|a| a.primary_market.as_ref())
             .map(|pm| api::parse_price(&pm.price))
             .unwrap_or(0.0);
         let est_value = sell_balance * price;
-        if est_value > 0.0 && est_value < MIN_SELL_VALUE_USD {
-            if !json {
-                eprintln!("  Skipping {} — est. ${:.2} below ${:.2} minimum", tb.symbol, est_value, MIN_SELL_VALUE_USD);
-            }
-            skipped.push(CloseSkipJson {
-                token: tb.symbol.clone(),
-                estimated_usd: est_value,
-                reason: "below $1.50 minimum",
-            });
-            continue;
-        }
 
-        // Skip tokens not tradable in current session
-        if !tradable_set.is_empty() && !tradable_set.contains(&tb.symbol.to_uppercase()) {
-            if !json {
-                eprintln!("  Skipping {} — not tradable in current session", tb.symbol);
-            }
-            skipped.push(CloseSkipJson {
-                token: tb.symbol.clone(),
-                estimated_usd: est_value,
-                reason: "not tradable in current session",
-            });
+        if let Some(skip) = should_skip_position(tb, est_value, &tradable_set) {
+            if !json { eprintln!("  Skipping {} — {}", skip.token, skip.reason); }
+            skipped.push(skip);
             continue;
         }
 
         let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
-        if !json {
-            println!("Selling {} {} ...", sell_display, tb.symbol);
-        }
+        if !json { println!("Selling {} {} ...", sell_display, tb.symbol); }
 
         match sell_one_position(&w, &tb.mint, &sell_raw, &taker, json).await {
             Ok((usdc_str, tx)) => {
                 let usdc_f: f64 = usdc_str.parse().unwrap_or(0.0);
                 total_usdc += usdc_f;
-                if !json {
-                    println!("  ✓ {} {} → {} USDC  tx: {}", sell_display, tb.symbol, usdc_str, tx);
-                }
-                sold.push(CloseItemJson {
-                    token: tb.symbol.clone(),
-                    amount: sell_display,
-                    usdc: usdc_str,
-                    tx,
-                });
+                if !json { println!("  ✓ {} {} → {} USDC  tx: {}", sell_display, tb.symbol, usdc_str, tx); }
+                sold.push(CloseItemJson { token: tb.symbol.clone(), amount: sell_display, usdc: usdc_str, tx });
             }
             Err(e) => {
-                if !json {
-                    eprintln!("  ✗ {} — {}", tb.symbol, e);
-                }
-                failed.push(CloseFailJson {
-                    token: tb.symbol.clone(),
-                    error: e.to_string(),
-                });
+                if !json { eprintln!("  ✗ {} — {}", tb.symbol, e); }
+                failed.push(CloseFailJson { token: tb.symbol.clone(), error: e.to_string() });
             }
         }
     }
 
     if json {
         return json_out(&CloseAllResultJson {
-            status: "success",
-            sold,
-            failed,
-            skipped,
-            total_usdc: format!("{total_usdc:.2}"),
+            status: "success", sold, failed, skipped, total_usdc: format!("{total_usdc:.2}"),
         });
     }
 
@@ -446,9 +420,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
         println!("  Skipped: {} (below ${:.2}: {})", skipped.len(), MIN_SELL_VALUE_USD, names.join(", "));
     }
-    if !failed.is_empty() {
-        println!("  Failed:  {} positions", failed.len());
-    }
+    if !failed.is_empty() { println!("  Failed:  {} positions", failed.len()); }
     Ok(())
 }
 
