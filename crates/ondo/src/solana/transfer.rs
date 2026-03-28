@@ -302,7 +302,7 @@ pub async fn get_empty_token_accounts(
 
     let mut candidates = Vec::new();
     for (result, is_2022) in [(t2022_res, true), (tprog_res, false)] {
-        for acc in result?.value {
+        for acc in result?.accounts() {
             let mint = &acc.account.data.parsed.info.mint;
             let amount = &acc.account.data.parsed.info.token_amount.amount;
             // Skip USDC ATA — user needs it for trading

@@ -202,6 +202,12 @@ pub(super) async fn rpc_batch_with_retry(
                 break; // RPC-level error → try next URL
             }
 
+            // All responses must have a "result" field (JSON-RPC 2.0 spec)
+            if results.iter().any(|r| r.get("result").is_none()) {
+                last_err = "batch: missing 'result' in one or more responses".to_string();
+                continue; // malformed response → retry
+            }
+
             LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
             return Ok(results);
         }

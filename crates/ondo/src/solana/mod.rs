@@ -39,7 +39,18 @@ pub fn validate_address(addr: &str) -> Result<()> {
 
 #[derive(Deserialize)]
 struct GetTokenAccountsResult {
-    value: Vec<TokenAccountInfo>,
+    #[serde(default)]
+    value: Vec<serde_json::Value>,
+}
+
+impl GetTokenAccountsResult {
+    /// Parse token account entries, skipping any that don't have the expected structure.
+    /// Some RPC nodes return malformed entries in batch responses.
+    fn accounts(&self) -> Vec<TokenAccountInfo> {
+        self.value.iter()
+            .filter_map(|v| serde_json::from_value::<TokenAccountInfo>(v.clone()).ok())
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -135,7 +146,8 @@ pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result
         serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         rpc_url,
     ).await?;
-    match accounts.value.first() {
+    let parsed = accounts.accounts();
+    match parsed.first() {
         Some(acc) => {
             let ta = &acc.account.data.parsed.info.token_amount;
             Ok((ta.ui_amount.unwrap_or(0.0), ta.amount.clone()))
@@ -161,10 +173,10 @@ fn build_mint_map(tokens: &[GmTokenEntry]) -> std::collections::HashMap<&str, &G
         .collect()
 }
 
-/// Parse GM token balances from RPC response, matching against known tokens.
-fn parse_gm_balances(accounts: &GetTokenAccountsResult, mint_map: &std::collections::HashMap<&str, &GmTokenEntry>) -> Vec<SolanaTokenBalance> {
+/// Parse GM token balances from parsed token account entries, matching against known tokens.
+fn parse_gm_balances(accounts: &[TokenAccountInfo], mint_map: &std::collections::HashMap<&str, &GmTokenEntry>) -> Vec<SolanaTokenBalance> {
     let mut balances = Vec::new();
-    for acc in &accounts.value {
+    for acc in accounts {
         let info = &acc.account.data.parsed.info;
         let amount = info.token_amount.ui_amount.unwrap_or(0.0);
         if amount <= 0.0 {
@@ -195,7 +207,7 @@ pub async fn get_all_balances(
         rpc_url,
     ).await?;
     let mint_map = build_mint_map(tokens);
-    Ok(parse_gm_balances(&accounts, &mint_map))
+    Ok(parse_gm_balances(&accounts.accounts(), &mint_map))
 }
 
 /// Fetch balance for a specific GM token on Solana.
@@ -210,7 +222,8 @@ pub async fn get_balance(
         rpc_url,
     ).await?;
 
-    let acc = accounts.value.first()
+    let parsed = accounts.accounts();
+    let acc = parsed.first()
         .ok_or_else(|| eyre!("No token account found for mint {mint}"))?;
 
     let info = &acc.account.data.parsed.info;
@@ -290,7 +303,7 @@ pub async fn get_portfolio_balances(
 
     let mint_map = build_mint_map(tokens);
     let gm_tokens = gm_resp.result
-        .map(|accounts| parse_gm_balances(&accounts, &mint_map))
+        .map(|accounts| parse_gm_balances(&accounts.accounts(), &mint_map))
         .unwrap_or_default();
 
     Ok(PortfolioBalances { sol, usdc, gm_tokens })
