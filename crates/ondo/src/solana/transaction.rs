@@ -132,11 +132,9 @@ pub(super) async fn send_legacy_transaction(
             let tight = ((units_consumed as f64) * 1.1) as u32;
             tight.max(1_000) // minimum 1K CU
         }
-        Err(_) => {
-            // Simulation failed — send with skipPreflight (some RPCs don't simulate well)
-            let sig = send_raw_transaction(&sim_tx, true, rpc_url).await?;
-            let confirmed = confirm_transaction(&sig, rpc_url).await.is_ok();
-            return Ok(TransactionResult { signature: sig, confirmed });
+        Err(e) => {
+            // Simulation failed — transaction would fail on-chain, don't send
+            return Err(e);
         }
     };
 
@@ -279,7 +277,7 @@ async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
                         .join("\n  ")
                 })
                 .unwrap_or_default();
-            return Err(eyre!("Transaction simulation failed: {err}\n  {logs}"));
+            return Err(eyre!("Transaction simulation failed: {err}\n  Logs:\n  {logs}"));
         }
     }
 

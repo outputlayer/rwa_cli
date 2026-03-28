@@ -20,8 +20,8 @@ pub(super) const TOKEN_PROGRAM: [u8; 32] = [
 ];
 /// SPL Token-2022 Program ID (for GM tokens)
 const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
-    6, 221, 246, 225, 238, 117, 143, 222, 170, 87, 98, 201, 149, 175, 67, 79,
-    76, 58, 63, 231, 108, 86, 185, 252, 92, 143, 207, 172, 247, 90, 75, 117,
+    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218,
+    182, 26, 252, 77, 131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
 ];
 /// Associated Token Account Program ID
 const ATA_PROGRAM: [u8; 32] = [
@@ -272,7 +272,7 @@ async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<b
 // ── Reclaim (close empty ATAs) ──────────────────────────────
 
 /// An empty token account eligible for rent reclaim.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EmptyTokenAccount {
     pub address: String,
     pub mint: String,
@@ -300,7 +300,7 @@ pub async fn get_empty_token_accounts(
         ),
     );
 
-    let mut empty = Vec::new();
+    let mut candidates = Vec::new();
     for (result, is_2022) in [(t2022_res, true), (tprog_res, false)] {
         for acc in result?.value {
             let mint = &acc.account.data.parsed.info.mint;
@@ -311,7 +311,7 @@ pub async fn get_empty_token_accounts(
                 let pubkey = acc.pubkey.as_deref().unwrap_or("");
                 let lamports = acc.account.lamports.unwrap_or(0);
                 if !pubkey.is_empty() && lamports > 0 {
-                    empty.push(EmptyTokenAccount {
+                    candidates.push(EmptyTokenAccount {
                         address: pubkey.to_string(),
                         mint: mint.clone(),
                         lamports,
@@ -322,10 +322,42 @@ pub async fn get_empty_token_accounts(
         }
     }
 
-    Ok(empty)
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    // Verify accounts still belong to a token program (RPC can return stale data
+    // for accounts already closed — owner reverts to System Program).
+    let t2022_str = super::TOKEN_2022_PROGRAM;
+    let tprog_str = TOKEN_PROGRAM_STR;
+
+    let mut verified = Vec::new();
+    for chunk in candidates.chunks(100) {
+        let addrs: Vec<&str> = chunk.iter().map(|a| a.address.as_str()).collect();
+        let result: serde_json::Value = rpc_call_simple(
+            "getMultipleAccounts",
+            serde_json::json!([addrs, { "encoding": "base64", "commitment": "confirmed" }]),
+            rpc_url,
+        ).await?;
+
+        if let Some(values) = result.get("value").and_then(|v| v.as_array()) {
+            for (i, val) in values.iter().enumerate() {
+                if i >= chunk.len() { break; }
+                // Account must exist AND be owned by the correct token program
+                let owner = val.get("owner").and_then(|o| o.as_str()).unwrap_or("");
+                let is_token_owned = owner == t2022_str || owner == tprog_str;
+                if !val.is_null() && is_token_owned {
+                    verified.push(chunk[i].clone());
+                }
+            }
+        }
+    }
+
+    Ok(verified)
 }
 
 /// Close empty token accounts and reclaim rent. Returns (signatures, total_lamports).
+/// Skips batches that fail (accounts already closed, etc.) and continues with the rest.
 pub async fn close_empty_accounts(
     wallet: &Wallet,
     accounts: &[EmptyTokenAccount],
@@ -344,59 +376,116 @@ pub async fn close_empty_accounts(
     let mut signatures = Vec::new();
     let mut total_lamports = 0u64;
 
-    for batch in token_2022.chunks(15) {
-        if !signatures.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-        let result = close_account_batch(wallet, &owner, batch, &TOKEN_2022_PROGRAM_ID, rpc_url).await?;
-        total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
-        signatures.push(result.signature);
-    }
+    // Token-2022 CloseAccount with pausable extension needs mint per account →
+    // max ~8 accounts per tx to stay within the 1232-byte Solana limit.
+    // Regular SPL Token CloseAccount doesn't need mints → can fit 15.
+    let t2022_batch_size = 8;
+    let tprog_batch_size = 15;
 
-    for batch in token_prog.chunks(15) {
+    let all_batches: Vec<(&[&EmptyTokenAccount], &[u8; 32], bool)> = token_2022.chunks(t2022_batch_size)
+        .map(|b| (b, &TOKEN_2022_PROGRAM_ID, true))
+        .chain(token_prog.chunks(tprog_batch_size).map(|b| (b, &TOKEN_PROGRAM, false)))
+        .collect();
+
+    for (batch, program, is_2022) in &all_batches {
         if !signatures.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        let result = close_account_batch(wallet, &owner, batch, &TOKEN_PROGRAM, rpc_url).await?;
-        total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
-        signatures.push(result.signature);
+        match close_account_batch(wallet, &owner, batch, program, *is_2022, rpc_url).await {
+            Ok(result) if result.confirmed => {
+                total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
+                signatures.push(result.signature);
+            }
+            Ok(result) => {
+                // Sent but not confirmed — don't count lamports
+                eprintln!("Warning: tx {} sent but not confirmed", result.signature);
+            }
+            Err(e) => {
+                // Batch failed (e.g. accounts already closed) — skip
+                eprintln!("Warning: batch of {} accounts skipped: {e}", batch.len());
+            }
+        }
     }
 
     Ok((signatures, total_lamports))
 }
 
 /// Close a batch of empty token accounts in a single transaction.
+/// For Token-2022 accounts with pausableAccount extension, the mint must be
+/// included as an additional readonly account in the CloseAccount instruction.
 async fn close_account_batch(
     wallet: &Wallet,
     owner: &[u8],
     batch: &[&EmptyTokenAccount],
     token_program: &[u8; 32],
+    is_token_2022: bool,
     rpc_url: Option<&str>,
 ) -> Result<TransactionResult> {
+    // Account layout:
+    //   [0]        = owner/destination (signer, writable)
+    //   [1..N]     = ATAs to close (writable)
+    //   [N+1..M]   = mint addresses (readonly, Token-2022 only — needed for pausable extension)
+    //   [last]     = token program (readonly)
     let mut accounts: Vec<Vec<u8>> = vec![owner.to_vec()];
     for acc in batch {
         let bytes = bs58::decode(&acc.address).into_vec()
             .map_err(|e| eyre!("Bad ATA address: {e}"))?;
         accounts.push(bytes);
     }
-    accounts.push(token_program.to_vec());
 
+    // For Token-2022: add unique mint addresses (needed for pausableAccount extension check)
+    let mut mint_indices: Vec<u8> = Vec::new();
+    if is_token_2022 {
+        let mut seen_mints = std::collections::HashMap::new();
+        for acc in batch {
+            let mint_idx = if let Some(&idx) = seen_mints.get(&acc.mint) {
+                idx
+            } else {
+                let mint_bytes = bs58::decode(&acc.mint).into_vec()
+                    .map_err(|e| eyre!("Bad mint address: {e}"))?;
+                let idx = accounts.len() as u8;
+                accounts.push(mint_bytes);
+                seen_mints.insert(&acc.mint, idx);
+                idx
+            };
+            mint_indices.push(mint_idx);
+        }
+    }
+
+    accounts.push(token_program.to_vec());
     let program_idx = accounts.len() as u8 - 1;
+
+    // readonly accounts = mints + token program
+    let num_readonly_unsigned = if is_token_2022 {
+        let unique_mints = mint_indices.iter().collect::<std::collections::HashSet<_>>().len();
+        (unique_mints + 1) as u8 // mints + token program
+    } else {
+        1u8 // just token program
+    };
 
     let mut instructions = Vec::new();
     for (i, _) in batch.iter().enumerate() {
-        // CloseAccount: [account, destination, owner]
-        instructions.push(Instruction {
-            program_id_index: program_idx,
-            account_indices: vec![(i + 1) as u8, 0, 0],
-            data: vec![9], // CloseAccount discriminator
-        });
+        if is_token_2022 {
+            // Token-2022 CloseAccount: [account, destination, owner, mint]
+            instructions.push(Instruction {
+                program_id_index: program_idx,
+                account_indices: vec![(i + 1) as u8, 0, 0, mint_indices[i]],
+                data: vec![9], // CloseAccount discriminator
+            });
+        } else {
+            // SPL Token CloseAccount: [account, destination, owner]
+            instructions.push(Instruction {
+                program_id_index: program_idx,
+                account_indices: vec![(i + 1) as u8, 0, 0],
+                data: vec![9],
+            });
+        }
     }
 
     let header = MessageHeader {
         num_required_sigs: 1,
         num_readonly_signed: 0,
-        num_readonly_unsigned: 1,
+        num_readonly_unsigned,
     };
 
     send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
@@ -421,5 +510,26 @@ mod tests {
         let ata1 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
         let ata2 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
         assert_eq!(ata1, ata2);
+    }
+
+    #[test]
+    fn token_program_id_matches() {
+        let expected = bs58::decode("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            .into_vec().unwrap();
+        assert_eq!(TOKEN_PROGRAM.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn token_2022_program_id_matches() {
+        let expected = bs58::decode("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+            .into_vec().unwrap();
+        assert_eq!(TOKEN_2022_PROGRAM_ID.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn ata_program_id_matches() {
+        let expected = bs58::decode("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+            .into_vec().unwrap();
+        assert_eq!(ATA_PROGRAM.as_slice(), expected.as_slice());
     }
 }

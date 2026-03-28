@@ -488,20 +488,26 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
         println!("Found {} empty token account(s) — ~{:.6} SOL reclaimable", empty.len(), sol_estimate);
     }
 
+    let found_count = empty.len();
     let (signatures, reclaimed_lamports) = solana::close_empty_accounts(&w, &empty, rpc_url).await?;
 
     let sol_reclaimed = reclaimed_lamports as f64 / 1_000_000_000.0;
 
     if json {
+        let status = if signatures.is_empty() && found_count > 0 { "error" } else { "success" };
         return json_out(&ReclaimJson {
-            status: "success",
-            accounts_closed: empty.len(),
+            status,
+            accounts_closed: signatures.len(),
             sol_reclaimed: format!("{sol_reclaimed:.9}"),
             signatures,
         });
     }
 
-    println!("Closed {} account(s), reclaimed {:.6} SOL", empty.len(), sol_reclaimed);
+    if signatures.is_empty() && found_count > 0 {
+        println!("Found {} empty account(s) but all close attempts failed.", found_count);
+    } else {
+        println!("Closed {} account(s), reclaimed {:.6} SOL", signatures.len(), sol_reclaimed);
+    }
     for sig in &signatures {
         println!("  Tx: https://solscan.io/tx/{sig}");
     }
