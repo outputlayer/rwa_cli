@@ -89,7 +89,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 
 - `--json` — Machine-readable JSON output on any command
 - `-y` — Skip confirmation on buy/sell
-- `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: auto (Jupiter RTSE)
+- `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: 1% (100 bps)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL`)
 
 ### Amount Formats
@@ -155,16 +155,21 @@ RPC health tracking: auto-remembers the fastest working endpoint. 5 public Solan
 ## Architecture
 
 ```
-bin/rwa/          → Binary entry point
-crates/cli/       → CLI parsing (clap v4), output formatting
-crates/ondo/      → Solana RPC, Jupiter API, Ondo API, wallet
-  src/solana/     → RPC infrastructure (rpc.rs) + Solana operations (mod.rs)
-  src/jupiter.rs  → Jupiter Ultra swap API
-  src/api.rs      → Ondo session/pricing API
-  src/wallet.rs   → Ed25519 wallet (SLIP-10, BIP39)
+bin/rwa/              → Binary entry point
+crates/cli/           → CLI parsing (clap v4), output formatting
+crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
+  src/solana/
+    rpc.rs            → RPC retry + URL rotation (5 fallback endpoints)
+    fee.rs            → Priority fees + rent estimation
+    transaction.rs    → Transaction building + sending
+    transfer.rs       → SOL/SPL transfers + ATA management
+    mod.rs            → Balances, validation, portfolio queries
+  src/jupiter.rs      → Jupiter Ultra swap API
+  src/api.rs          → Ondo session/pricing API
+  src/wallet.rs       → Ed25519 wallet (SLIP-10, BIP39)
 ```
 
-~5,400 lines of Rust, ~3 MB binary, 110 tests. Pure Rust — no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), fully cross-platform.
+~5,500 lines of Rust, ~3 MB binary, 120 tests. Pure Rust — no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), fully cross-platform.
 
 ## Development
 

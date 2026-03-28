@@ -143,7 +143,8 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     if !json {
         println!("Executing swap...");
     }
-    let result = execute_with_retry(&w, &order, json, jupiter::USDC_MINT, &gm_mint, &raw_usdc, &taker, slippage).await?;
+    let swap = SwapParams { input_mint: jupiter::USDC_MINT, output_mint: &gm_mint, raw_amount: &raw_usdc, taker: &taker, slippage_bps: slippage };
+    let result = execute_with_retry(&w, &order, json, &swap).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, gm_dec))
@@ -242,7 +243,8 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     if !json {
         println!("Executing swap...");
     }
-    let result = execute_with_retry(&w, &order, json, &gm_mint, jupiter::USDC_MINT, &raw_gm, &taker, slippage).await?;
+    let swap = SwapParams { input_mint: &gm_mint, output_mint: jupiter::USDC_MINT, raw_amount: &raw_gm, taker: &taker, slippage_bps: slippage };
+    let result = execute_with_retry(&w, &order, json, &swap).await?;
 
     let final_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
@@ -458,7 +460,8 @@ async fn sell_one_position(
     json: bool,
 ) -> Result<(String, String)> {
     let (order, _) = get_order_checked(mint, jupiter::USDC_MINT, raw_amount, taker, Some(DEFAULT_SLIPPAGE_BPS), json).await?;
-    let result = execute_with_retry(w, &order, json, mint, jupiter::USDC_MINT, raw_amount, taker, Some(DEFAULT_SLIPPAGE_BPS)).await?;
+    let swap = SwapParams { input_mint: mint, output_mint: jupiter::USDC_MINT, raw_amount, taker, slippage_bps: Some(DEFAULT_SLIPPAGE_BPS) };
+    let result = execute_with_retry(w, &order, json, &swap).await?;
 
     let usdc_out = result.output_amount_result.as_deref()
         .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))

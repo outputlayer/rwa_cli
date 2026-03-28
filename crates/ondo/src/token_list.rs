@@ -284,3 +284,98 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("XOMon", "qCYD74QnXzd9pzv6pGHQKJVwoibL6sNcPQDnpDiondo"),
     ("XYZon", "BWxe2FVciUbwrCUZQPUKiREBh5LmVa5AiUqNLAkondo"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_list_has_expected_count() {
+        let tokens = get_token_list();
+        assert_eq!(tokens.len(), 264, "expected 264 GM tokens");
+    }
+
+    #[test]
+    fn all_symbols_non_empty() {
+        for token in get_token_list() {
+            assert!(!token.symbol.is_empty(), "found empty symbol");
+        }
+    }
+
+    #[test]
+    fn all_symbols_end_with_on() {
+        for token in get_token_list() {
+            assert!(token.symbol.ends_with("on"), "{} doesn't end with 'on'", token.symbol);
+        }
+    }
+
+    #[test]
+    fn no_duplicate_symbols() {
+        let tokens = get_token_list();
+        let mut seen = std::collections::HashSet::new();
+        for token in &tokens {
+            assert!(seen.insert(token.symbol), "duplicate symbol: {}", token.symbol);
+        }
+    }
+
+    #[test]
+    fn no_duplicate_mint_addresses() {
+        let tokens = get_token_list();
+        let mut seen = std::collections::HashSet::new();
+        for token in &tokens {
+            if let Some(addr) = token.solana_address {
+                assert!(seen.insert(addr), "duplicate mint: {addr}");
+            }
+        }
+    }
+
+    #[test]
+    fn known_tokens_exist() {
+        let tokens = get_token_list();
+        for sym in ["TSLAon", "AAPLon", "AMZNon", "GOOGLon", "MSFTon"] {
+            assert!(
+                tokens.iter().any(|t| t.symbol == sym),
+                "missing expected token: {sym}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_tokens_have_solana_address() {
+        let tokens = get_token_list();
+        for sym in ["TSLAon", "AAPLon", "AMZNon"] {
+            let token = tokens.iter().find(|t| t.symbol == sym).unwrap();
+            assert!(token.solana_address.is_some(), "{sym} missing Solana address");
+        }
+    }
+
+    #[test]
+    fn solana_addresses_are_valid_base58() {
+        for token in get_token_list() {
+            if let Some(addr) = token.solana_address {
+                assert!(
+                    bs58::decode(addr).into_vec().is_ok(),
+                    "{}: invalid base58 address: {addr}", token.symbol
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn solana_addresses_decode_to_32_bytes() {
+        for token in get_token_list() {
+            if let Some(addr) = token.solana_address {
+                let bytes = bs58::decode(addr).into_vec().unwrap();
+                assert_eq!(bytes.len(), 32, "{}: address is {} bytes, expected 32", token.symbol, bytes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn list_is_sorted_alphabetically() {
+        let symbols: Vec<&str> = GM_TOKENS_STATIC.iter().map(|&(s, _)| s).collect();
+        let mut sorted = symbols.clone();
+        sorted.sort();
+        assert_eq!(symbols, sorted, "token list is not sorted alphabetically");
+    }
+}

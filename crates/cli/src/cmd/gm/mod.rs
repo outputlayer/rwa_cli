@@ -562,16 +562,20 @@ fn preflight_sell() -> Result<()> {
 
 const MAX_SWAP_RETRIES: u32 = 2;
 
-#[allow(clippy::too_many_arguments)]
+/// Parameters needed to re-fetch a Jupiter order on retry.
+struct SwapParams<'a> {
+    input_mint: &'a str,
+    output_mint: &'a str,
+    raw_amount: &'a str,
+    taker: &'a str,
+    slippage_bps: Option<u32>,
+}
+
 async fn execute_with_retry(
     w: &wallet::Wallet,
     order: &jupiter::OrderResponse,
     json: bool,
-    input_mint: &str,
-    output_mint: &str,
-    raw_amount: &str,
-    taker: &str,
-    slippage_bps: Option<u32>,
+    params: &SwapParams<'_>,
 ) -> Result<jupiter::ExecuteResponse> {
     let mut current_order_owned: Option<jupiter::OrderResponse> = None;
     let mut last_err = None;
@@ -600,7 +604,7 @@ async fn execute_with_retry(
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 if needs_new_order {
                     current_order_owned = Some(
-                        jupiter::get_order(input_mint, output_mint, raw_amount, taker, slippage_bps).await?
+                        jupiter::get_order(params.input_mint, params.output_mint, params.raw_amount, params.taker, params.slippage_bps).await?
                     );
                 }
                 last_err = Some(e);
