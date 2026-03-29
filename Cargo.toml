@@ -5,7 +5,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 rust-version = "1.91"
 description = "CLI for trading tokenized stocks & ETFs (Ondo GM) on Solana via Jupiter"

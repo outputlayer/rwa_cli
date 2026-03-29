@@ -386,7 +386,8 @@ pub async fn close_empty_accounts(
         if !signatures.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        match close_account_batch(wallet, &owner, batch, program, *is_2022, rpc_url).await {
+        let batch_result = close_account_batch(wallet, &owner, batch, program, *is_2022, rpc_url).await;
+        match batch_result {
             Ok(result) if result.confirmed => {
                 total_lamports += batch.iter().map(|a| a.lamports).sum::<u64>();
                 signatures.push(result.signature);

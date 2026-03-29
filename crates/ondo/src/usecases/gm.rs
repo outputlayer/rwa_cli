@@ -512,7 +512,8 @@ async fn execute_with_retry(
 
     for attempt in 0..=MAX_SWAP_RETRIES {
         let ord = current_order_owned.as_ref().unwrap_or(order);
-        match jupiter::execute_order(wallet, ord).await {
+        let execute_result = jupiter::execute_order(wallet, ord).await;
+        match execute_result {
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 let retry_action = e
