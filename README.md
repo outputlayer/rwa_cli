@@ -136,12 +136,16 @@ rwa --json gm close-all 50% -y
 rwa --json gm send USDC all <ADDR> -y
 ```
 
-`portfolio` returns `sol` and `usdc` separately. GM position metrics use explicit field names:
+`portfolio` now separates cash from GM positions in the JSON contract:
 
-- `gm_positions_value_usd`
-- `gm_positions_change_24h_usd`
-- `gm_positions_change_24h_pct`
-- `positions[].gm_alloc_pct`
+- `cash.sol`
+- `cash.usdc`
+- `gm_positions.value_usd`
+- `gm_positions.change_24h_usd`
+- `gm_positions.change_24h_pct`
+- `gm_positions.positions[].gm_alloc_pct`
+
+Malformed Ondo market prices now fail loudly instead of silently becoming `0.0`, so bad upstream data is easier to detect.
 
 ## About Ondo GM Tokens
 

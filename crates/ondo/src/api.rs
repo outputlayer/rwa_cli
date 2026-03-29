@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,14 +29,16 @@ pub struct OndoAsset {
 impl OndoAsset {
     /// Extract sector from tags (e.g. "Technology", "Healthcare").
     pub fn sector(&self) -> Option<&str> {
-        self.tags.iter()
+        self.tags
+            .iter()
             .find(|t| t.category_slug == "sector-industry")
             .map(|t| t.tag_label.as_str())
     }
 
     /// Extract instrument type from tags ("Stock" or "ETF").
     pub fn instrument_type(&self) -> Option<&str> {
-        self.tags.iter()
+        self.tags
+            .iter()
             .find(|t| t.category_slug == "instrument-type")
             .map(|t| t.tag_label.as_str())
     }
@@ -127,10 +129,27 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
     assets.iter().find(|a| a.symbol.to_uppercase() == lookup)
 }
 
-/// Parse price string to f64, returning 0.0 on failure.
-#[must_use]
-pub fn parse_price(s: &str) -> f64 {
-    s.parse::<f64>().unwrap_or(0.0)
+fn parse_market_number(field: &str, s: &str, allow_negative: bool) -> Result<f64> {
+    let value = s
+        .parse::<f64>()
+        .map_err(|_| eyre!("Invalid Ondo {field}: {s:?}"))?;
+    if !value.is_finite() {
+        return Err(eyre!("Invalid Ondo {field}: {s:?} is not finite"));
+    }
+    if !allow_negative && value < 0.0 {
+        return Err(eyre!("Invalid Ondo {field}: {s:?} must be non-negative"));
+    }
+    Ok(value)
+}
+
+/// Parse a price string from Ondo market data.
+pub fn parse_price(s: &str) -> Result<f64> {
+    parse_market_number("price", s, false)
+}
+
+/// Parse a 24h change percentage from Ondo market data.
+pub fn parse_change_pct(s: &str) -> Result<f64> {
+    parse_market_number("price_change_pct_24h", s, true)
 }
 
 // ─── Trading sessions ─────────────────────────────────────────────────────
@@ -302,7 +321,11 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
         "3M" => "3months",
         "1Y" => "1year",
         "ALL" => "all",
-        other => return Err(eyre!("Invalid range: {other}. Use: 1D, 1W, 1M, 3M, 1Y, ALL")),
+        other => {
+            return Err(eyre!(
+                "Invalid range: {other}. Use: 1D, 1W, 1M, 3M, 1Y, ALL"
+            ))
+        }
     };
 
     let normalized = symbol.to_lowercase();
@@ -329,19 +352,29 @@ mod tests {
 
     #[test]
     fn parse_valid_price() {
-        assert!((parse_price("385.75") - 385.75).abs() < f64::EPSILON);
+        assert!((parse_price("385.75").unwrap() - 385.75).abs() < f64::EPSILON);
     }
 
     #[test]
     fn parse_integer_price() {
-        assert!((parse_price("100") - 100.0).abs() < f64::EPSILON);
+        assert!((parse_price("100").unwrap() - 100.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn parse_invalid_returns_zero() {
-        assert!((parse_price("N/A") - 0.0).abs() < f64::EPSILON);
-        assert!((parse_price("") - 0.0).abs() < f64::EPSILON);
-        assert!((parse_price("$100") - 0.0).abs() < f64::EPSILON);
+    fn parse_invalid_price_is_error() {
+        assert!(parse_price("N/A").is_err());
+        assert!(parse_price("").is_err());
+        assert!(parse_price("$100").is_err());
+    }
+
+    #[test]
+    fn parse_change_pct_allows_negative_values() {
+        assert!((parse_change_pct("-5.25").unwrap() + 5.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_price_rejects_negative_values() {
+        assert!(parse_price("-1").is_err());
     }
 
     // ── find_asset ────────────────────────────────────────────
@@ -394,7 +427,13 @@ mod tests {
 
     #[test]
     fn session_labels_non_empty() {
-        for s in [Session::PreMarket, Session::Regular, Session::PostMarket, Session::Overnight, Session::Closed] {
+        for s in [
+            Session::PreMarket,
+            Session::Regular,
+            Session::PostMarket,
+            Session::Overnight,
+            Session::Closed,
+        ] {
             assert!(!s.label().is_empty());
             assert!(!s.hours().is_empty());
         }
@@ -404,9 +443,21 @@ mod tests {
     fn session_limits_tradable() {
         let limits = SessionLimits {
             symbol: "TSLAon".into(),
-            premarket: Some(SessionInfo { tradable: true, max_attestation_count: None, max_active_notional_value: None }),
-            regular: Some(SessionInfo { tradable: true, max_attestation_count: None, max_active_notional_value: None }),
-            postmarket: Some(SessionInfo { tradable: false, max_attestation_count: None, max_active_notional_value: None }),
+            premarket: Some(SessionInfo {
+                tradable: true,
+                max_attestation_count: None,
+                max_active_notional_value: None,
+            }),
+            regular: Some(SessionInfo {
+                tradable: true,
+                max_attestation_count: None,
+                max_active_notional_value: None,
+            }),
+            postmarket: Some(SessionInfo {
+                tradable: false,
+                max_attestation_count: None,
+                max_active_notional_value: None,
+            }),
             overnight: None,
         };
         assert!(limits.is_tradable(Session::PreMarket));
@@ -441,8 +492,14 @@ mod tests {
             symbol: "TSLAon".into(),
             asset_name: "Tesla".into(),
             tags: vec![
-                OndoAssetTag { category_slug: "sector-industry".into(), tag_label: "Technology".into() },
-                OndoAssetTag { category_slug: "instrument-type".into(), tag_label: "Stock".into() },
+                OndoAssetTag {
+                    category_slug: "sector-industry".into(),
+                    tag_label: "Technology".into(),
+                },
+                OndoAssetTag {
+                    category_slug: "instrument-type".into(),
+                    tag_label: "Stock".into(),
+                },
             ],
             primary_market: None,
         };

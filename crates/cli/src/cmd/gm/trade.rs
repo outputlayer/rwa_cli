@@ -3,7 +3,15 @@ use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
 
 use super::*;
 
-pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
+pub async fn buy(
+    symbol: &str,
+    amount: &str,
+    yes: bool,
+    dry_run: bool,
+    json: bool,
+    rpc_url: Option<&str>,
+    slippage: Option<u32>,
+) -> Result<()> {
     let w = load_wallet()?;
     let plan = usecases::gm::prepare_buy(&w, symbol, amount, rpc_url, slippage, json).await?;
 
@@ -34,7 +42,9 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would buy: ~{} {}", plan.amount, plan.symbol);
         println!("  Would spend: {} USDC", plan.counter_amount);
-        if let Some(pi) = plan.order.price_impact { println!("  Price impact: {pi:.4}%"); }
+        if let Some(pi) = plan.order.price_impact {
+            println!("  Price impact: {pi:.4}%");
+        }
         return Ok(());
     }
 
@@ -71,7 +81,15 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
     Ok(())
 }
 
-pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
+pub async fn sell(
+    symbol: &str,
+    amount: &str,
+    yes: bool,
+    dry_run: bool,
+    json: bool,
+    rpc_url: Option<&str>,
+    slippage: Option<u32>,
+) -> Result<()> {
     let w = load_wallet()?;
     let plan = usecases::gm::prepare_sell(&w, symbol, amount, rpc_url, slippage, json).await?;
 
@@ -102,7 +120,9 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would sell: {} {}", plan.amount, plan.symbol);
         println!("  Would receive: ~{} USDC", plan.counter_amount);
-        if let Some(pi) = plan.order.price_impact { println!("  Price impact: {pi:.4}%"); }
+        if let Some(pi) = plan.order.price_impact {
+            println!("  Price impact: {pi:.4}%");
+        }
         return Ok(());
     }
 
@@ -139,7 +159,13 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
     Ok(())
 }
 
-pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn close_all(
+    amount: Option<&str>,
+    yes: bool,
+    dry_run: bool,
+    json: bool,
+    rpc_url: Option<&str>,
+) -> Result<()> {
     usecases::gm::ensure_trading_open()?;
     let sell_pct = usecases::gm::parse_sell_pct(amount)?;
 
@@ -157,7 +183,10 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
     if balances.is_empty() {
         if json {
             return json_out(&CloseAllResultJson {
-                status: "success", sold: vec![], failed: vec![], skipped: vec![],
+                status: "success",
+                sold: vec![],
+                failed: vec![],
+                skipped: vec![],
                 total_usdc: "0".to_string(),
             });
         }
@@ -165,12 +194,21 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
         return Ok(());
     }
 
-    let pct_label = if sell_pct < 100.0 { format!(" ({}%)", sell_pct) } else { String::new() };
+    let pct_label = if sell_pct < 100.0 {
+        format!(" ({}%)", sell_pct)
+    } else {
+        String::new()
+    };
     if !json {
         println!("Positions to close{}:", pct_label);
         for b in &balances {
             if sell_pct < 100.0 {
-                println!("  {} — {:.4} of {} tokens", b.symbol, b.balance * sell_pct / 100.0, b.balance);
+                println!(
+                    "  {} — {:.4} of {} tokens",
+                    b.symbol,
+                    b.balance * sell_pct / 100.0,
+                    b.balance
+                );
             } else {
                 println!("  {} — {} tokens", b.symbol, b.balance);
             }
@@ -178,8 +216,12 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
         println!();
     }
 
-        if !dry_run {
-            let prompt = if sell_pct < 100.0 { format!("Sell {}% of all positions?", sell_pct) } else { "Sell all positions?".to_string() };
+    if !dry_run {
+        let prompt = if sell_pct < 100.0 {
+            format!("Sell {}% of all positions?", sell_pct)
+        } else {
+            "Sell all positions?".to_string()
+        };
         if !yes && !json && !confirm(&prompt) {
             println!("Cancelled.");
             return Ok(());
@@ -198,24 +240,42 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
         }
 
         let sell_raw = if sell_pct < 100.0 {
-            let raw: u128 = tb.raw_amount.parse()
-                .map_err(|_| eyre::eyre!("Invalid on-chain amount for {}: {}", tb.symbol, tb.raw_amount))?;
+            let raw: u128 = tb.raw_amount.parse().map_err(|_| {
+                eyre::eyre!(
+                    "Invalid on-chain amount for {}: {}",
+                    tb.symbol,
+                    tb.raw_amount
+                )
+            })?;
             let partial = amounts::pct_of_u128(raw, sell_pct);
-            if partial == 0 { continue; }
+            if partial == 0 {
+                continue;
+            }
             partial.to_string()
         } else {
             tb.raw_amount.clone()
         };
 
-        let sell_balance = if sell_pct < 100.0 { tb.balance * sell_pct / 100.0 } else { tb.balance };
-        let price = api::find_asset(&tb.symbol, &assets)
-            .and_then(|a| a.primary_market.as_ref())
-            .map(|pm| api::parse_price(&pm.price))
-            .unwrap_or(0.0);
+        let sell_balance = if sell_pct < 100.0 {
+            tb.balance * sell_pct / 100.0
+        } else {
+            tb.balance
+        };
+        let asset = api::find_asset(&tb.symbol, &assets)
+            .ok_or_else(|| eyre::eyre!("Missing Ondo asset metadata for {}", tb.symbol))?;
+        let pm = asset
+            .primary_market
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("Missing primary market data for {}", tb.symbol))?;
+        let price = api::parse_price(&pm.price)
+            .map_err(|e| eyre::eyre!("Invalid market price for {}: {}", tb.symbol, e))?;
         let est_value = sell_balance * price;
 
-        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set) {
-            if !json { eprintln!("  Skipping {} — {}", skip.token, skip.reason); }
+        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set)
+        {
+            if !json {
+                eprintln!("  Skipping {} — {}", skip.token, skip.reason);
+            }
             skipped.push(CloseSkipJson {
                 token: skip.token,
                 estimated_usd: skip.estimated_usd,
@@ -227,24 +287,48 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
         let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
 
         if dry_run {
-            if !json { println!("  [DRY RUN] Would sell {} {}", sell_display, tb.symbol); }
-            sold.push(CloseItemJson { token: tb.symbol.clone(), amount: sell_display, usdc: String::new(), tx: String::new() });
+            if !json {
+                println!("  [DRY RUN] Would sell {} {}", sell_display, tb.symbol);
+            }
+            sold.push(CloseItemJson {
+                token: tb.symbol.clone(),
+                amount: sell_display,
+                usdc: String::new(),
+                tx: String::new(),
+            });
             continue;
         }
 
-        if !json { println!("Selling {} {} ...", sell_display, tb.symbol); }
+        if !json {
+            println!("Selling {} {} ...", sell_display, tb.symbol);
+        }
 
         match usecases::gm::execute_sell_raw(&w, &tb.mint, &sell_raw, &taker, json).await {
             Ok(result) => {
                 let usdc_f: f64 = result.output_amount.parse().unwrap_or(0.0);
                 total_usdc += usdc_f;
                 let tx = format!("https://solscan.io/tx/{}", result.signature);
-                if !json { println!("  ✓ {} {} → {} USDC  tx: {}", sell_display, tb.symbol, result.output_amount, tx); }
-                sold.push(CloseItemJson { token: tb.symbol.clone(), amount: sell_display, usdc: result.output_amount, tx });
+                if !json {
+                    println!(
+                        "  ✓ {} {} → {} USDC  tx: {}",
+                        sell_display, tb.symbol, result.output_amount, tx
+                    );
+                }
+                sold.push(CloseItemJson {
+                    token: tb.symbol.clone(),
+                    amount: sell_display,
+                    usdc: result.output_amount,
+                    tx,
+                });
             }
             Err(e) => {
-                if !json { eprintln!("  ✗ {} — {}", tb.symbol, e); }
-                failed.push(CloseFailJson { token: tb.symbol.clone(), error: e.to_string() });
+                if !json {
+                    eprintln!("  ✗ {} — {}", tb.symbol, e);
+                }
+                failed.push(CloseFailJson {
+                    token: tb.symbol.clone(),
+                    error: e.to_string(),
+                });
             }
         }
     }
@@ -252,18 +336,36 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
     if json {
         return json_out(&CloseAllResultJson {
             status: if dry_run { "dry_run" } else { "success" },
-            sold, failed, skipped, total_usdc: format!("{total_usdc:.2}"),
+            sold,
+            failed,
+            skipped,
+            total_usdc: format!("{total_usdc:.2}"),
         });
     }
 
-    let label = if dry_run { "[DRY RUN] Would close-all" } else { "Close-all" };
+    let label = if dry_run {
+        "[DRY RUN] Would close-all"
+    } else {
+        "Close-all"
+    };
     println!("\n{}{} complete:", label, pct_label);
-    println!("  Sold:    {} positions → {:.2} USDC", sold.len(), total_usdc);
+    println!(
+        "  Sold:    {} positions → {:.2} USDC",
+        sold.len(),
+        total_usdc
+    );
     if !skipped.is_empty() {
         let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
-        println!("  Skipped: {} (below ${:.2}: {})", skipped.len(), usecases::gm::MIN_SELL_VALUE_USD, names.join(", "));
+        println!(
+            "  Skipped: {} (below ${:.2}: {})",
+            skipped.len(),
+            usecases::gm::MIN_SELL_VALUE_USD,
+            names.join(", ")
+        );
     }
-    if !failed.is_empty() { println!("  Failed:  {} positions", failed.len()); }
+    if !failed.is_empty() {
+        println!("  Failed:  {} positions", failed.len());
+    }
     Ok(())
 }
 
@@ -280,10 +382,14 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
         let filter_upper = filter.to_uppercase();
         let tokens = token_list::get_token_list();
         // Try to resolve symbol → mint
-        let filter_mint = tokens.iter()
+        let filter_mint = tokens
+            .iter()
             .find(|t| {
                 t.symbol.eq_ignore_ascii_case(&filter_upper)
-                    || t.symbol.strip_suffix("on").unwrap_or(t.symbol).eq_ignore_ascii_case(&filter_upper)
+                    || t.symbol
+                        .strip_suffix("on")
+                        .unwrap_or(t.symbol)
+                        .eq_ignore_ascii_case(&filter_upper)
             })
             .and_then(|t| t.solana_address)
             .map(|s| s.to_string())
@@ -309,16 +415,25 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
     let sol_estimate = total_lamports as f64 / 1_000_000_000.0;
 
     if !json {
-        println!("Found {} empty token account(s) — ~{:.6} SOL reclaimable", empty.len(), sol_estimate);
+        println!(
+            "Found {} empty token account(s) — ~{:.6} SOL reclaimable",
+            empty.len(),
+            sol_estimate
+        );
     }
 
     let found_count = empty.len();
-    let (signatures, reclaimed_lamports) = solana::close_empty_accounts(&w, &empty, rpc_url).await?;
+    let (signatures, reclaimed_lamports) =
+        solana::close_empty_accounts(&w, &empty, rpc_url).await?;
 
     let sol_reclaimed = reclaimed_lamports as f64 / 1_000_000_000.0;
 
     if json {
-        let status = if signatures.is_empty() && found_count > 0 { "error" } else { "success" };
+        let status = if signatures.is_empty() && found_count > 0 {
+            "error"
+        } else {
+            "success"
+        };
         return json_out(&ReclaimJson {
             status,
             accounts_closed: signatures.len(),
@@ -328,9 +443,16 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
     }
 
     if signatures.is_empty() && found_count > 0 {
-        println!("Found {} empty account(s) but all close attempts failed.", found_count);
+        println!(
+            "Found {} empty account(s) but all close attempts failed.",
+            found_count
+        );
     } else {
-        println!("Closed {} account(s), reclaimed {:.6} SOL", signatures.len(), sol_reclaimed);
+        println!(
+            "Closed {} account(s), reclaimed {:.6} SOL",
+            signatures.len(),
+            sol_reclaimed
+        );
     }
     for sig in &signatures {
         println!("  Tx: https://solscan.io/tx/{sig}");

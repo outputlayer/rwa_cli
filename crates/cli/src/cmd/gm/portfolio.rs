@@ -28,14 +28,18 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let mut gm_positions_prev_value = 0.0;
 
     for tb in &balances {
-        let asset = api::find_asset(&tb.symbol, &assets);
-        let (price, pct_24h) = match asset.and_then(|a| a.primary_market.as_ref()) {
-            Some(pm) => {
-                let p = api::parse_price(&pm.price);
-                let pct = pm.price_change_pct_24h.as_deref().map(api::parse_price).unwrap_or(0.0);
-                (p, pct)
-            }
-            None => (0.0, 0.0),
+        let asset = api::find_asset(&tb.symbol, &assets)
+            .ok_or_else(|| eyre::eyre!("Missing Ondo asset metadata for {}", tb.symbol))?;
+        let pm = asset
+            .primary_market
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("Missing primary market data for {}", tb.symbol))?;
+        let price = api::parse_price(&pm.price)
+            .map_err(|e| eyre::eyre!("Invalid market price for {}: {}", tb.symbol, e))?;
+        let pct_24h = match pm.price_change_pct_24h.as_deref() {
+            Some(pct) => api::parse_change_pct(pct)
+                .map_err(|e| eyre::eyre!("Invalid 24h change for {}: {}", tb.symbol, e))?,
+            None => 0.0,
         };
         let value = tb.balance * price;
         let prev_value = if pct_24h.abs() > f64::EPSILON {
@@ -61,7 +65,11 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
         }
     }
 
-    positions.sort_by(|a, b| b.value_usd.partial_cmp(&a.value_usd).unwrap_or(std::cmp::Ordering::Equal));
+    positions.sort_by(|a, b| {
+        b.value_usd
+            .partial_cmp(&a.value_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let gm_positions_change = gm_positions_value - gm_positions_prev_value;
     let gm_positions_change_pct = if gm_positions_prev_value.abs() > f64::EPSILON {
@@ -73,12 +81,16 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     if json {
         return json_out(&PortfolioJson {
             wallet: pubkey.clone(),
-            sol: sol_bal,
-            usdc: usdc_bal,
-            positions,
-            gm_positions_value_usd: gm_positions_value,
-            gm_positions_change_24h_usd: gm_positions_change,
-            gm_positions_change_24h_pct: gm_positions_change_pct,
+            cash: PortfolioCashJson {
+                sol: sol_bal,
+                usdc: usdc_bal,
+            },
+            gm_positions: PortfolioGmPositionsJson {
+                positions,
+                value_usd: gm_positions_value,
+                change_24h_usd: gm_positions_change,
+                change_24h_pct: gm_positions_change_pct,
+            },
         });
     }
 
@@ -117,7 +129,11 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
 pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
     let candles = api::fetch_history(symbol, range).await?;
     if candles.is_empty() {
-        return Err(eyre::eyre!("No price history for {} (range: {})", symbol, range));
+        return Err(eyre::eyre!(
+            "No price history for {} (range: {})",
+            symbol,
+            range
+        ));
     }
 
     let upper = symbol.to_uppercase();
@@ -129,9 +145,16 @@ pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
         format!("{upper}on")
     };
 
-    let first = candles.first().ok_or_else(|| eyre::eyre!("Empty candle data"))?;
-    let last = candles.last().ok_or_else(|| eyre::eyre!("Empty candle data"))?;
-    let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+    let first = candles
+        .first()
+        .ok_or_else(|| eyre::eyre!("Empty candle data"))?;
+    let last = candles
+        .last()
+        .ok_or_else(|| eyre::eyre!("Empty candle data"))?;
+    let high = candles
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
     let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
     let change_pct = if first.open > 0.0 {
         (last.close - first.open) / first.open * 100.0
@@ -144,8 +167,14 @@ pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
             symbol: sym,
             range: range.to_uppercase(),
             candles: candles.len(),
-            first: HistoryCandleJson { timestamp: first.timestamp, price: first.open },
-            last: HistoryCandleJson { timestamp: last.timestamp, price: last.close },
+            first: HistoryCandleJson {
+                timestamp: first.timestamp,
+                price: first.open,
+            },
+            last: HistoryCandleJson {
+                timestamp: last.timestamp,
+                price: last.close,
+            },
             high,
             low,
             change_pct,

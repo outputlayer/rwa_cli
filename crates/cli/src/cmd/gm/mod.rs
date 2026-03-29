@@ -246,19 +246,29 @@ pub(super) struct PositionJson {
 }
 
 #[derive(Serialize)]
-pub(super) struct PortfolioJson {
-    pub wallet: String,
+pub(super) struct PortfolioCashJson {
     #[serde(serialize_with = "ser_f64_4")]
     pub sol: f64,
     #[serde(serialize_with = "ser_f64_2")]
     pub usdc: f64,
+}
+
+#[derive(Serialize)]
+pub(super) struct PortfolioGmPositionsJson {
     pub positions: Vec<PositionJson>,
     #[serde(serialize_with = "ser_f64_2")]
-    pub gm_positions_value_usd: f64,
+    pub value_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
-    pub gm_positions_change_24h_usd: f64,
+    pub change_24h_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
-    pub gm_positions_change_24h_pct: f64,
+    pub change_24h_pct: f64,
+}
+
+#[derive(Serialize)]
+pub(super) struct PortfolioJson {
+    pub wallet: String,
+    pub cash: PortfolioCashJson,
+    pub gm_positions: PortfolioGmPositionsJson,
 }
 
 #[derive(Serialize)]
