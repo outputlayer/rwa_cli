@@ -28,19 +28,8 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let mut gm_positions_prev_value = 0.0;
 
     for tb in &balances {
-        let asset = api::find_asset(&tb.symbol, &assets)
-            .ok_or_else(|| eyre::eyre!("Missing Ondo asset metadata for {}", tb.symbol))?;
-        let pm = asset
-            .primary_market
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("Missing primary market data for {}", tb.symbol))?;
-        let price = api::parse_price(&pm.price)
-            .map_err(|e| eyre::eyre!("Invalid market price for {}: {}", tb.symbol, e))?;
-        let pct_24h = match pm.price_change_pct_24h.as_deref() {
-            Some(pct) => api::parse_change_pct(pct)
-                .map_err(|e| eyre::eyre!("Invalid 24h change for {}: {}", tb.symbol, e))?,
-            None => 0.0,
-        };
+        let (price, pct_24h) = api::market_snapshot_for_symbol(&tb.symbol, &assets)
+            .map_err(|e| eyre::eyre!("Invalid market data for {}: {}", tb.symbol, e))?;
         let value = tb.balance * price;
         let prev_value = if pct_24h.abs() > f64::EPSILON {
             value / (1.0 + pct_24h / 100.0)

@@ -261,14 +261,8 @@ pub async fn close_all(
         } else {
             tb.balance
         };
-        let asset = api::find_asset(&tb.symbol, &assets)
-            .ok_or_else(|| eyre::eyre!("Missing Ondo asset metadata for {}", tb.symbol))?;
-        let pm = asset
-            .primary_market
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("Missing primary market data for {}", tb.symbol))?;
-        let price = api::parse_price(&pm.price)
-            .map_err(|e| eyre::eyre!("Invalid market price for {}: {}", tb.symbol, e))?;
+        let (price, _) = api::market_snapshot_for_symbol(&tb.symbol, &assets)
+            .map_err(|e| eyre::eyre!("Invalid market data for {}: {}", tb.symbol, e))?;
         let est_value = sell_balance * price;
 
         if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set)

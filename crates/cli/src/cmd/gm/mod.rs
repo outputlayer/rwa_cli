@@ -417,6 +417,7 @@ fn token_type_from_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     // ── clean_name ────────────────────────────────────────────
 
@@ -445,5 +446,42 @@ mod tests {
     fn detect_stock() {
         assert_eq!(token_type_from_name("Tesla"), "stock");
         assert_eq!(token_type_from_name("Apple Inc"), "stock");
+    }
+
+    #[test]
+    fn portfolio_json_serializes_nested_cash_and_gm_positions() {
+        let json = serde_json::to_value(PortfolioJson {
+            wallet: "wallet123".into(),
+            cash: PortfolioCashJson {
+                sol: 1.25,
+                usdc: 42.5,
+            },
+            gm_positions: PortfolioGmPositionsJson {
+                positions: vec![PositionJson {
+                    token: "TSLAon".into(),
+                    balance: 0.25,
+                    price: 385.75,
+                    value_usd: 96.44,
+                    gm_alloc_pct: 100.0,
+                    change_pct_24h: 1.23,
+                }],
+                value_usd: 96.44,
+                change_24h_usd: 1.17,
+                change_24h_pct: 1.23,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(json.get("wallet"), Some(&Value::String("wallet123".into())));
+        assert_eq!(json.pointer("/cash/sol"), Some(&Value::from(1.25)));
+        assert_eq!(json.pointer("/cash/usdc"), Some(&Value::from(42.5)));
+        assert_eq!(json.pointer("/gm_positions/value_usd"), Some(&Value::from(96.44)));
+        assert_eq!(
+            json.pointer("/gm_positions/positions/0/gm_alloc_pct"),
+            Some(&Value::from(100.0))
+        );
+        assert!(json.get("sol").is_none());
+        assert!(json.get("usdc").is_none());
+        assert!(json.get("gm_positions_value_usd").is_none());
     }
 }

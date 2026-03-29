@@ -271,8 +271,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn resolve_sol_send_amount_hundred_percent_matches_all() {
+        let all = resolve_sol_send_amount("all", "1000000000", 5000).await.unwrap();
+        let pct = resolve_sol_send_amount("100%", "1000000000", 5000).await.unwrap();
+        assert_eq!(pct, all);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_sol_send_amount_rejects_over_spend() {
         let err = resolve_sol_send_amount("1", "1000000000", 5000).await.unwrap_err();
         assert!(err.to_string().contains("Insufficient SOL"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_sol_send_amount_rejects_balance_below_fee() {
+        let err = resolve_sol_send_amount("all", "5000", 5000).await.unwrap_err();
+        assert!(err.to_string().contains("Balance too low to cover tx fee"));
     }
 }

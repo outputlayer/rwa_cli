@@ -152,6 +152,27 @@ pub fn parse_change_pct(s: &str) -> Result<f64> {
     parse_market_number("price_change_pct_24h", s, true)
 }
 
+/// Parse primary market snapshot for a tokenized asset.
+pub fn market_snapshot(asset: &OndoAsset) -> Result<(f64, f64)> {
+    let pm = asset
+        .primary_market
+        .as_ref()
+        .ok_or_else(|| eyre!("Missing primary market data for {}", asset.symbol))?;
+    let price = parse_price(&pm.price)?;
+    let pct_24h = match pm.price_change_pct_24h.as_deref() {
+        Some(pct) => parse_change_pct(pct)?,
+        None => 0.0,
+    };
+    Ok((price, pct_24h))
+}
+
+/// Find an asset by symbol and parse its primary market snapshot.
+pub fn market_snapshot_for_symbol(symbol: &str, assets: &[OndoAsset]) -> Result<(f64, f64)> {
+    let asset = find_asset(symbol, assets)
+        .ok_or_else(|| eyre!("Missing Ondo asset metadata for {symbol}"))?;
+    market_snapshot(asset)
+}
+
 // ─── Trading sessions ─────────────────────────────────────────────────────
 
 const ONDO_SESSION_URL: &str = "https://status.ondo.finance/api/limits/session";
@@ -377,6 +398,12 @@ mod tests {
         assert!(parse_price("-1").is_err());
     }
 
+    #[test]
+    fn parse_market_numbers_reject_non_finite_values() {
+        assert!(parse_price("inf").is_err());
+        assert!(parse_change_pct("NaN").is_err());
+    }
+
     // ── find_asset ────────────────────────────────────────────
 
     #[test]
@@ -421,6 +448,41 @@ mod tests {
             primary_market: None,
         }];
         assert!(find_asset("AAPL", &assets).is_none());
+    }
+
+    #[test]
+    fn market_snapshot_parses_price_and_change() {
+        let asset = OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: Some(PrimaryMarket {
+                price: "385.75".into(),
+                price_change_24h: Some("4.56".into()),
+                price_change_pct_24h: Some("1.20".into()),
+            }),
+        };
+
+        let (price, pct) = market_snapshot(&asset).unwrap();
+        assert!((price - 385.75).abs() < f64::EPSILON);
+        assert!((pct - 1.20).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn market_snapshot_for_symbol_fails_loudly_on_invalid_price() {
+        let assets = vec![OndoAsset {
+            symbol: "TSLAon".into(),
+            asset_name: "Tesla".into(),
+            tags: vec![],
+            primary_market: Some(PrimaryMarket {
+                price: "N/A".into(),
+                price_change_24h: None,
+                price_change_pct_24h: Some("1.20".into()),
+            }),
+        }];
+
+        let err = market_snapshot_for_symbol("TSLA", &assets).unwrap_err();
+        assert!(err.to_string().contains("Invalid Ondo price"));
     }
 
     // ── Session ───────────────────────────────────────────────
