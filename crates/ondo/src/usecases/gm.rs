@@ -717,4 +717,47 @@ mod tests {
     fn parse_sell_pct_non_numeric_is_err() {
         assert!(parse_sell_pct(Some("abc%")).is_err());
     }
+
+    // ── should_skip_position ──────────────────────────────────
+
+    #[test]
+    fn should_skip_zero_value_never_blocks() {
+        // est_value == 0.0 does NOT trigger the minimum check (condition is `> 0.0 && < MIN`)
+        let tradable: std::collections::HashSet<String> = ["TSLAON".to_string()].into();
+        assert!(should_skip_position("TSLAon", 0.0, &tradable).is_none());
+    }
+
+    #[test]
+    fn should_skip_below_minimum_returns_skip() {
+        let tradable: std::collections::HashSet<String> = ["TSLAON".to_string()].into();
+        let skip = should_skip_position("TSLAon", 1.2, &tradable).unwrap();
+        assert!(skip.reason.contains("below"));
+    }
+
+    #[test]
+    fn should_skip_at_minimum_boundary_does_not_skip() {
+        // 1.5 is exactly MIN_SELL_VALUE_USD — the condition is `< MIN`, not `<=`
+        let tradable: std::collections::HashSet<String> = ["TSLAON".to_string()].into();
+        assert!(should_skip_position("TSLAon", MIN_SELL_VALUE_USD, &tradable).is_none());
+    }
+
+    #[test]
+    fn should_skip_empty_tradable_set_does_not_skip() {
+        // Empty set = market closed, tradability check is bypassed entirely
+        let tradable: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(should_skip_position("TSLAon", 2.0, &tradable).is_none());
+    }
+
+    #[test]
+    fn should_skip_symbol_not_in_tradable_set() {
+        let tradable: std::collections::HashSet<String> = ["AAPLON".to_string()].into();
+        let skip = should_skip_position("TSLAon", 2.0, &tradable).unwrap();
+        assert!(skip.reason.contains("not tradable"));
+    }
+
+    #[test]
+    fn should_skip_symbol_in_tradable_set_does_not_skip() {
+        let tradable: std::collections::HashSet<String> = ["TSLAON".to_string()].into();
+        assert!(should_skip_position("TSLAon", 2.0, &tradable).is_none());
+    }
 }
