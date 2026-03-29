@@ -3,104 +3,6 @@ use rwa_ondo::{api, jupiter, solana, token_list};
 
 use super::*;
 
-pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
-    let tokens = token_list::get_token_list();
-    check_trading_hours()?;
-    let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
-    let w = load_wallet()?;
-    let taker = w.pubkey();
-
-    let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let usdc_dec = jupiter::USDC_DECIMALS;
-
-    let (input_mint, output_mint, raw_amount, direction) = if is_sell {
-        let sell_f = resolve_percent_amount(amount, || {
-            let t = taker.clone();
-            let m = gm_mint.clone();
-            let rpc = rpc_url.map(str::to_string);
-            async move {
-                let bal = solana::get_balance(&t, &m, rpc.as_deref()).await?;
-                Ok(bal.balance)
-            }
-        }).await?;
-        let sell_str = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
-        let raw = jupiter::token_to_raw(&sell_str, gm_dec)?;
-        (gm_mint.as_str().to_string(), jupiter::USDC_MINT.to_string(), raw, "sell")
-    } else {
-        let buy_f = resolve_percent_amount(amount, || {
-            let t = taker.clone();
-            let rpc = rpc_url.map(str::to_string);
-            async move { solana::get_usdc_balance(&t, rpc.as_deref()).await }
-        }).await?;
-        let buy_str = format!("{buy_f:.2}");
-        let raw = jupiter::usdc_to_raw(&buy_str)?;
-        (jupiter::USDC_MINT.to_string(), gm_mint.clone(), raw, "buy")
-    };
-
-    let order = jupiter::get_order(&input_mint, &output_mint, &raw_amount, &taker, slippage).await?;
-
-    let (in_label, out_label, in_dec, out_dec) = if direction == "buy" {
-        ("USDC", sym.as_str(), usdc_dec, gm_dec)
-    } else {
-        (sym.as_str(), "USDC", gm_dec, usdc_dec)
-    };
-
-    let in_fmt = jupiter::format_amount(&order.in_amount, in_dec);
-    let out_fmt = jupiter::format_amount(&order.out_amount, out_dec);
-
-    let (input_usd, output_usd, slippage) = match (order.in_usd_value, order.out_usd_value) {
-        (Some(usd_in), Some(usd_out)) => {
-            let slip = if usd_in > 0.0 { (usd_out - usd_in) / usd_in * 100.0 } else { 0.0 };
-            (Some(usd_in), Some(usd_out), Some(slip))
-        }
-        _ => (None, None, None),
-    };
-
-    // Check tradable status in current Ondo session
-    let tradable = {
-        let session = api::current_session();
-        if session == api::Session::Closed {
-            Some(false)
-        } else {
-            api::fetch_session_limits().await.ok().map(|limits| {
-                let sym_upper = sym.to_uppercase();
-                limits.iter().any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session))
-            })
-        }
-    };
-
-    if json {
-        return json_out(&QuoteJson {
-            input: in_fmt,
-            input_token: in_label.to_string(),
-            output: out_fmt,
-            output_token: out_label.to_string(),
-            input_usd,
-            output_usd,
-            slippage_pct: slippage,
-            price_impact_pct: order.price_impact,
-            fee_bps: order.fee_bps,
-            tradable,
-            gasless: order.gasless,
-            router: order.router,
-        });
-    }
-
-    println!("Quote: {} {} -> {} {}", in_fmt, in_label, out_fmt, out_label);
-    if let (Some(usd_in), Some(usd_out), Some(slip)) = (input_usd, output_usd, slippage) {
-        println!("  Input value:   ${:.2}", usd_in);
-        println!("  Output value:  ${:.2}", usd_out);
-        println!("  Slippage:      {:.2}%", slip);
-    }
-    if let Some(pi) = order.price_impact {
-        println!("  Price impact:  {:.4}%", pi);
-    }
-    if let Some(t) = tradable {
-        println!("  Tradable:      {}", if t { "yes" } else { "no (check `rwa gm hours`)" });
-    }
-    Ok(())
-}
-
 pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -145,6 +47,8 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
                 counter_token: "USDC",
                 tx: String::new(),
                 slippage_pct,
+                price_impact_pct: order.price_impact,
+                fee_bps: order.fee_bps,
                 gasless: order.gasless,
                 router: order.router.clone(),
             });
@@ -152,6 +56,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would buy: ~{} {}", out_fmt, sym);
         println!("  Would spend: {} USDC", usdc_str);
+        if let Some(pi) = order.price_impact { println!("  Price impact: {pi:.4}%"); }
         return Ok(());
     }
 
@@ -180,6 +85,8 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
             slippage_pct,
+            price_impact_pct: order.price_impact,
+            fee_bps: order.fee_bps,
             gasless: order.gasless,
             router: order.router.clone(),
         });
@@ -265,6 +172,8 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
                 counter_token: "USDC",
                 tx: String::new(),
                 slippage_pct,
+                price_impact_pct: order.price_impact,
+                fee_bps: order.fee_bps,
                 gasless: order.gasless,
                 router: order.router.clone(),
             });
@@ -272,6 +181,7 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would sell: {} {}", sell_str, sym);
         println!("  Would receive: ~{} USDC", out_fmt);
+        if let Some(pi) = order.price_impact { println!("  Price impact: {pi:.4}%"); }
         return Ok(());
     }
 
@@ -300,6 +210,8 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", sig),
             slippage_pct,
+            price_impact_pct: order.price_impact,
+            fee_bps: order.fee_bps,
             gasless: order.gasless,
             router: order.router.clone(),
         });

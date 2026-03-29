@@ -53,7 +53,6 @@ rwa gm hours                            # Current trading session + tradable cou
 rwa gm hours --tradable                 # List all tradable tokens in current session
 rwa gm list                             # All 264 tokens (with tradable status)
 rwa gm list --search <keyword>          # Search tokens (includes tradable field)
-rwa gm quote <SYM> <AMT>               # Swap quote
 rwa gm buy <SYM> <AMT> -y              # Buy token
 rwa gm buy <SYM> <AMT> -y --slippage 50  # Buy with max 0.5% slippage
 rwa gm buy <SYM> <AMT> --dry-run       # Preview buy without executing
@@ -155,7 +154,7 @@ rwa --json gm portfolio
 - Do NOT prepend `export PATH=...` to every command. `rwa` is in PATH after install.
 - Run commands **one at a time** with `sleep 3` between them
 - Always use `--json` flag and `-y` for buy/sell/send
-- **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
+- **Use --dry-run to preview**: `rwa --json gm buy TSLA 100 --dry-run` — validates balance, tradability, shows quote (price_impact, fee_bps, slippage) without executing
 - **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
 - **To reduce all positions**: use `rwa --json gm close-all 50% -y` — sells given % of every position
 - **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC

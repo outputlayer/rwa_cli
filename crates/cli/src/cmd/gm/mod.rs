@@ -20,20 +20,6 @@ pub enum GmAction {
         tradable: bool,
     },
 
-    /// Get swap quote for a GM token via Jupiter
-    Quote {
-        /// Token symbol (e.g. TSLA, TSLAon)
-        symbol: String,
-        /// USDC amount to spend (or token amount with --sell)
-        amount: String,
-        /// Quote selling token for USDC instead of buying
-        #[arg(long)]
-        sell: bool,
-        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
-        #[arg(long)]
-        slippage: Option<u32>,
-    },
-
     /// Buy GM token with USDC via Jupiter (Solana)
     Buy {
         /// Token symbol (e.g. TSLA, TSLAon)
@@ -129,7 +115,6 @@ pub enum GmAction {
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Quote { symbol, amount, sell, slippage } => trade::quote(&symbol, &amount, sell, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
         GmAction::Buy { symbol, amount, yes, slippage, dry_run } => trade::buy(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
         GmAction::Sell { symbol, amount, yes, slippage, dry_run } => trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
         GmAction::Portfolio { wallet } => portfolio::portfolio(wallet.as_deref(), json, rpc_url).await,
@@ -150,12 +135,6 @@ fn ser_f64_2<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
 /// Round to 4 decimal places (percentages, slippage).
 fn ser_f64_4<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64((v * 10000.0).round() / 10000.0)
-}
-fn ser_opt_f64_2<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
-    match v {
-        Some(val) => s.serialize_some(&((val * 100.0).round() / 100.0)),
-        None => s.serialize_none(),
-    }
 }
 fn ser_opt_f64_4<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
     match v {
@@ -180,33 +159,6 @@ pub(super) struct HoursJson {
 }
 
 #[derive(Serialize)]
-pub(super) struct QuoteJson {
-    pub input: String,
-    pub input_token: String,
-    pub output: String,
-    pub output_token: String,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_2")]
-    pub input_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_2")]
-    pub output_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
-    pub slippage_pct: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
-    pub price_impact_pct: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fee_bps: Option<u32>,
-    /// Whether the token is tradable in the current Ondo GM session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tradable: Option<bool>,
-    /// Whether this swap is gasless (Jupiter/MM pays gas).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gasless: Option<bool>,
-    /// Which router won: jupiterz, iris, dflow, okx.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub router: Option<String>,
-}
-
-#[derive(Serialize)]
 pub(super) struct TradeJson {
     pub status: &'static str,
     pub amount: String,
@@ -216,10 +168,12 @@ pub(super) struct TradeJson {
     pub tx: String,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub slippage_pct: Option<f64>,
-    /// Whether this swap was gasless.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub price_impact_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_bps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gasless: Option<bool>,
-    /// Which router was used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<String>,
 }
