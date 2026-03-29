@@ -3,6 +3,7 @@ pub mod gm;
 pub mod jupiter;
 pub mod solana;
 pub mod token_list;
+pub mod usecases;
 pub mod wallet;
 
 /// USDC mint address on Solana.

@@ -5,7 +5,7 @@ mod trade;
 
 use clap::Subcommand;
 use eyre::Result;
-use rwa_ondo::{api, gm, jupiter, solana, token_list, wallet};
+use rwa_ondo::{gm, jupiter, token_list, usecases, wallet};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -129,7 +129,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 dry_run,
                 json,
                 rpc_url,
-                Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
+                Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
             )
             .await
         }
@@ -147,7 +147,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 dry_run,
                 json,
                 rpc_url,
-                Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
+                Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
             )
             .await
         }
@@ -392,150 +392,6 @@ fn pct_of_u128(value: u128, pct: f64) -> u128 {
     value * bps / 10_000
 }
 
-/// Maximum allowed slippage before blocking the trade.
-const MAX_SLIPPAGE_PCT: f64 = 3.0;
-/// Slippage threshold that triggers a fresh quote retry.
-const SLIPPAGE_RETRY_PCT: f64 = 1.0;
-/// Maximum retries when slippage exceeds the retry threshold.
-const MAX_SLIPPAGE_RETRIES: u32 = 3;
-/// Default slippage limit in basis points (100 = 1%).
-const DEFAULT_SLIPPAGE_BPS: u32 = 100;
-/// Minimum buy/sell amount in USDC.
-const MIN_USDC_AMOUNT: f64 = 1.0;
-/// Minimum sell value in USD (Jupiter MM rejects tiny orders).
-const MIN_SELL_VALUE_USD: f64 = 1.5;
-
-fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
-    if let Some(pi) = order.price_impact {
-        return Some(pi);
-    }
-    match (order.in_usd_value, order.out_usd_value) {
-        (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => Some((usd_out - usd_in) / usd_in * 100.0),
-        _ => None,
-    }
-}
-
-fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f64>> {
-    let slip = calc_slippage(order);
-    if let Some(s) = slip {
-        if s < -MAX_SLIPPAGE_PCT {
-            return Err(eyre::eyre!(
-                "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
-                 Try a smaller amount or wait for better liquidity."
-            ));
-        }
-        if s < -1.0 && !json {
-            eprintln!("Warning: slippage {s:.2}%");
-        }
-    }
-    Ok(slip)
-}
-
-/// Get an order, retrying with fresh quotes if slippage exceeds the threshold.
-async fn get_order_checked(
-    input_mint: &str,
-    output_mint: &str,
-    amount: &str,
-    taker: &str,
-    slippage_bps: Option<u32>,
-    json: bool,
-) -> Result<(jupiter::OrderResponse, Option<f64>)> {
-    let mut order =
-        jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
-    for attempt in 1..=MAX_SLIPPAGE_RETRIES {
-        let slip = calc_slippage(&order);
-        if let Some(s) = slip {
-            if s < -MAX_SLIPPAGE_PCT {
-                return Err(eyre::eyre!(
-                    "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
-                     Try a smaller amount or wait for better liquidity."
-                ));
-            }
-            if s < -SLIPPAGE_RETRY_PCT && attempt <= MAX_SLIPPAGE_RETRIES {
-                if !json {
-                    eprintln!(
-                        "Slippage {s:.2}% exceeds -{SLIPPAGE_RETRY_PCT:.0}% — refreshing quote ({attempt}/{MAX_SLIPPAGE_RETRIES})..."
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps)
-                    .await?;
-                continue;
-            }
-        }
-        // Slippage acceptable or unknown — proceed
-        let slippage_pct = slip;
-        if let Some(s) = slippage_pct {
-            if s < -1.0 && !json {
-                eprintln!("Warning: slippage {s:.2}%");
-            }
-        }
-        return Ok((order, slippage_pct));
-    }
-    // Exhausted retries — use last order, apply normal check
-    let slippage_pct = check_slippage(&order, json)?;
-    Ok((order, slippage_pct))
-}
-
-fn check_trading_hours() -> Result<()> {
-    let session = api::current_session();
-    if session == api::Session::Closed {
-        use chrono_tz::US::Eastern;
-        let now = chrono::Utc::now().with_timezone(&Eastern);
-        return Err(eyre::eyre!(
-            "Ondo GM market is closed right now.\n  \
-             Trading resumes: Sunday 8:00 PM ET (Overnight session)\n  \
-             Current time:    {} ET\n  \
-             Run `rwa gm hours` for session details",
-            now.format("%A %I:%M %p")
-        ));
-    }
-    Ok(())
-}
-
-/// Check if a specific token is tradable in the current Ondo session.
-/// Returns Ok(()) if tradable, or an error with a clear message if not.
-/// Silently passes if the session API is unreachable (fail-open).
-async fn check_tradable(symbol: &str) -> Result<()> {
-    let session = api::current_session();
-    if session == api::Session::Closed {
-        return Ok(()); // check_trading_hours() handles this
-    }
-    let limits = match api::fetch_session_limits().await {
-        Ok(l) => l,
-        Err(_) => return Ok(()), // fail-open: don't block trade if API is down
-    };
-    let sym_upper = symbol.to_uppercase();
-    let is_tradable = limits
-        .iter()
-        .any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session));
-    if !is_tradable {
-        return Err(eyre::eyre!(
-            "{symbol} is not tradable in current session ({}).\n  \
-             Run `rwa gm hours --tradable` to see which tokens are available.\n  \
-             Run `rwa gm list --search {symbol}` to check tradable status.",
-            session.label()
-        ));
-    }
-    Ok(())
-}
-
-/// Fetch the set of tradable token symbols for the current session.
-/// Returns an empty set if the API is unreachable (fail-open).
-async fn fetch_tradable_set() -> std::collections::HashSet<String> {
-    let session = api::current_session();
-    if session == api::Session::Closed {
-        return std::collections::HashSet::new();
-    }
-    api::fetch_session_limits()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|l| l.is_tradable(session))
-        .map(|l| l.symbol.to_uppercase())
-        .collect()
-}
-
 /// Resolve an amount expression to raw on-chain units.
 async fn resolve_amount_to_raw<F, Fut>(raw: &str, decimals: u8, balance_raw_fn: F) -> Result<String>
 where
@@ -569,109 +425,6 @@ where
     jupiter::token_to_raw(s, decimals)
 }
 
-// Jupiter Ultra handles gas for swaps:
-// - JupiterZ (RFQ): market maker pays signature + priority fee
-// - Ultra Automatic: Jupiter pays all gas when user has < 0.01 SOL
-// - Neither covers token account rent, but Jupiter creates ATAs in the swap tx
-// So preflight only needs to check USDC balance (for buy) and trading hours.
-
-async fn preflight_buy_raw(
-    pubkey: &str,
-    raw_usdc_amount: &str,
-    rpc_url: Option<&str>,
-) -> Result<()> {
-    check_trading_hours()?;
-    let requested: u128 = raw_usdc_amount
-        .parse()
-        .map_err(|_| eyre::eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
-    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
-    if requested < minimum {
-        return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
-    }
-
-    let (_, balance_raw) = solana::get_usdc_balance_raw(pubkey, rpc_url).await?;
-    let balance: u128 = balance_raw
-        .parse()
-        .map_err(|_| eyre::eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
-    if balance < requested {
-        return Err(eyre::eyre!(
-            "Insufficient USDC: {:.6} USDC (need {:.6})\n  Fund wallet: {pubkey}",
-            balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
-            requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
-        ));
-    }
-    Ok(())
-}
-
-fn preflight_sell() -> Result<()> {
-    check_trading_hours()
-}
-
-const MAX_SWAP_RETRIES: u32 = 2;
-
-/// Parameters needed to re-fetch a Jupiter order on retry.
-struct SwapParams<'a> {
-    input_mint: &'a str,
-    output_mint: &'a str,
-    raw_amount: &'a str,
-    taker: &'a str,
-    slippage_bps: Option<u32>,
-}
-
-async fn execute_with_retry(
-    w: &wallet::Wallet,
-    order: &jupiter::OrderResponse,
-    json: bool,
-    params: &SwapParams<'_>,
-) -> Result<jupiter::ExecuteResponse> {
-    let mut current_order_owned: Option<jupiter::OrderResponse> = None;
-    let mut last_err = None;
-
-    for attempt in 0..=MAX_SWAP_RETRIES {
-        let ord = current_order_owned.as_ref().unwrap_or(order);
-        match jupiter::execute_order(w, ord).await {
-            Ok(resp) => return Ok(resp),
-            Err(e) => {
-                let msg = e.to_string();
-                // Fresh order needed: expired quote/request, rejected, or RFQ failure
-                let needs_new_order = msg.contains("code -1)")   // request expired
-                    || msg.contains("code -2003")                // RFQ quote expired
-                    || msg.contains("code -2004")                // RFQ swap rejected
-                    || msg.contains("code -2005"); // RFQ failure
-                                                   // Retry same order: transient landing failure
-                let retry_same = msg.contains("code -1000")     // aggregator failed to land
-                    || msg.contains("code -2000"); // RFQ MM failed to land
-
-                if (!needs_new_order && !retry_same) || attempt == MAX_SWAP_RETRIES {
-                    return Err(e);
-                }
-                if !json {
-                    eprintln!(
-                        "Transient error (attempt {}/{}), retrying in 3s...",
-                        attempt + 1,
-                        MAX_SWAP_RETRIES
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                if needs_new_order {
-                    current_order_owned = Some(
-                        jupiter::get_order(
-                            params.input_mint,
-                            params.output_mint,
-                            params.raw_amount,
-                            params.taker,
-                            params.slippage_bps,
-                        )
-                        .await?,
-                    );
-                }
-                last_err = Some(e);
-            }
-        }
-    }
-    Err(last_err.unwrap_or_else(|| eyre::eyre!("Swap failed after retries")))
-}
-
 fn clean_name(name: &str) -> String {
     name.replace(" (Ondo Tokenized)", "")
 }
@@ -693,43 +446,6 @@ fn token_type_from_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
-    // ── pct_of_u128 ──────────────────────────────────────────
-
-    #[test]
-    fn pct_50_of_1000() {
-        assert_eq!(pct_of_u128(1_000_000_000, 50.0), 500_000_000);
-    }
-
-    #[test]
-    fn pct_100_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 100.0), 1_000_000_000);
-    }
-
-    #[test]
-    fn pct_10_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 10.0), 100_000_000);
-    }
-
-    #[test]
-    fn pct_33_33_of_value() {
-        // 33.33% of 1_000_000_000 = 333_300_000 (via 3333 bps)
-        assert_eq!(pct_of_u128(1_000_000_000, 33.33), 333_300_000);
-    }
-
-    #[test]
-    fn pct_zero() {
-        assert_eq!(pct_of_u128(1_000_000_000, 0.0), 0);
-    }
-
-    #[test]
-    fn pct_large_value() {
-        // Test with a value that would overflow f64 precision
-        let large: u128 = 999_999_999_999_999_999;
-        let result = pct_of_u128(large, 50.0);
-        assert_eq!(result, large * 5000 / 10_000);
-    }
 
     // ── clean_name ────────────────────────────────────────────
 
@@ -758,132 +474,5 @@ mod tests {
     fn detect_stock() {
         assert_eq!(token_type_from_name("Tesla"), "stock");
         assert_eq!(token_type_from_name("Apple Inc"), "stock");
-    }
-
-    // ── calc_slippage ─────────────────────────────────────────
-
-    #[test]
-    fn slippage_from_price_impact() {
-        let order = jupiter::OrderResponse {
-            in_amount: "100".into(),
-            out_amount: "99".into(),
-            in_usd_value: Some(100.0),
-            out_usd_value: Some(99.0),
-            price_impact: Some(-0.5),
-            ..Default::default()
-        };
-        let slip = calc_slippage(&order);
-        assert!((slip.unwrap() - (-0.5)).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn slippage_from_usd_values() {
-        let order = jupiter::OrderResponse {
-            in_amount: "100".into(),
-            out_amount: "97".into(),
-            in_usd_value: Some(100.0),
-            out_usd_value: Some(97.0),
-            ..Default::default()
-        };
-        let slip = calc_slippage(&order);
-        assert!((slip.unwrap() - (-3.0)).abs() < 0.01);
-    }
-
-    #[test]
-    fn slippage_none_when_no_data() {
-        let order = jupiter::OrderResponse {
-            in_amount: "100".into(),
-            out_amount: "97".into(),
-            ..Default::default()
-        };
-        assert!(calc_slippage(&order).is_none());
-    }
-
-    // ── check_slippage ────────────────────────────────────────
-
-    #[test]
-    fn check_slippage_blocks_above_max() {
-        let order = jupiter::OrderResponse {
-            in_amount: "100".into(),
-            out_amount: "96".into(),
-            in_usd_value: Some(100.0),
-            out_usd_value: Some(96.0),
-            ..Default::default()
-        };
-        // -4% slippage should be blocked (max is -3%)
-        let result = check_slippage(&order, true);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Slippage too high"));
-    }
-
-    #[test]
-    fn check_slippage_allows_within_limit() {
-        let order = jupiter::OrderResponse {
-            in_amount: "100".into(),
-            out_amount: "99".into(),
-            in_usd_value: Some(100.0),
-            out_usd_value: Some(99.0),
-            ..Default::default()
-        };
-        // -1% slippage is fine
-        let result = check_slippage(&order, true);
-        assert!(result.is_ok());
-    }
-
-    // ── resolve_amount_to_raw ────────────────────────────────
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_exact_amount_to_raw() {
-        let raw = resolve_amount_to_raw("1.25", jupiter::USDC_DECIMALS, || async {
-            Ok("999999999".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "1250000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_all_amount_to_raw() {
-        let raw = resolve_amount_to_raw("all", jupiter::USDC_DECIMALS, || async {
-            Ok("42000000".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "42000000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_percentage_amount_to_raw() {
-        let raw = resolve_amount_to_raw("25%", jupiter::USDC_DECIMALS, || async {
-            Ok("8000000".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "2000000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_amount_to_raw_rejects_extra_precision() {
-        let err = resolve_amount_to_raw("0.1234567", jupiter::USDC_DECIMALS, || async {
-            Ok("9999999".to_string())
-        })
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("Too many decimal places"));
-    }
-
-    proptest! {
-        #[test]
-        fn pct_of_u128_never_exceeds_input_for_valid_percent(
-            value in 1u128..=u64::MAX as u128,
-            pct_bps in 0u32..=10_000u32,
-        ) {
-            let pct = pct_bps as f64 / 100.0;
-            let result = pct_of_u128(value, pct);
-            prop_assert!(result <= value);
-        }
     }
 }

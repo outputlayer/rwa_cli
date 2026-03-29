@@ -22,6 +22,3 @@ chrono-tz.workspace = true
 fs2.workspace = true
 dirs.workspace = true
 rpassword.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true
