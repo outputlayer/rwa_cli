@@ -123,7 +123,7 @@ pub async fn prepare_buy(
 
     let (preflight_res, tradable_res) = tokio::join!(
         preflight_buy_raw(&taker, &raw_usdc, rpc_url),
-        check_tradable(&symbol),
+        check_tradable(&symbol, None),
     );
     preflight_res?;
     tradable_res?;
@@ -172,7 +172,7 @@ pub async fn prepare_sell(
 
     preflight_sell()?;
     let (tradable_res, bal_res) = tokio::join!(
-        check_tradable(&symbol),
+        check_tradable(&symbol, None),
         solana::get_balance(&taker, &gm_mint, rpc_url),
     );
     tradable_res?;
@@ -339,12 +339,12 @@ pub fn should_skip_position(
     None
 }
 
-pub async fn fetch_tradable_set() -> std::collections::HashSet<String> {
+pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::HashSet<String> {
     let session = api::current_session();
     if session == api::Session::Closed {
         return std::collections::HashSet::new();
     }
-    api::fetch_session_limits()
+    api::fetch_session_limits(api_url)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -457,12 +457,12 @@ fn check_trading_hours() -> Result<()> {
     Ok(())
 }
 
-async fn check_tradable(symbol: &str) -> Result<()> {
+async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
     let session = api::current_session();
     if session == api::Session::Closed {
         return Ok(());
     }
-    let limits = match api::fetch_session_limits().await {
+    let limits = match api::fetch_session_limits(api_url).await {
         Ok(l) => l,
         Err(_) => return Ok(()),
     };

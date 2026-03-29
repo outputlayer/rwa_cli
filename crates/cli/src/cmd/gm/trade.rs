@@ -179,7 +179,7 @@ pub async fn close_all(
     let (balances_res, assets, tradable_set) = tokio::join!(
         solana::get_all_balances(&taker, tokens, rpc_url),
         api::fetch_assets(),
-        usecases::gm::fetch_tradable_set()
+        usecases::gm::fetch_tradable_set(None)
     );
     let balances = balances_res?;
     let assets = assets.unwrap_or_default();

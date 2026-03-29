@@ -54,7 +54,7 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     };
 
     let (tradable_count, tradable_list) = if !closed {
-        match api::fetch_session_limits().await {
+        match api::fetch_session_limits(None).await {
             Ok(limits) => {
                 let tradable: Vec<String> = limits.iter()
                     .filter(|l| l.is_tradable(session))
@@ -116,7 +116,7 @@ pub async fn list(json: bool, search: Option<&str>) -> Result<()> {
     let assets = api::fetch_assets().await.unwrap_or_default();
 
     let session = api::current_session();
-    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits().await
+    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits(None).await
         .unwrap_or_default()
         .iter()
         .filter(|l| l.is_tradable(session))

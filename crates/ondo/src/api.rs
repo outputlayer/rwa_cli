@@ -421,8 +421,9 @@ struct SessionResponse {
 }
 
 /// Fetch session limits from Ondo status API.
-pub async fn fetch_session_limits() -> Result<Vec<SessionLimits>> {
-    let resp = HTTP.get(ONDO_SESSION_URL).send().await.map_err(|e| {
+pub async fn fetch_session_limits(base_url: Option<&str>) -> Result<Vec<SessionLimits>> {
+    let url = base_url.unwrap_or(ONDO_SESSION_URL);
+    let resp = HTTP.get(url).send().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Network,
             "session_limits",
@@ -753,5 +754,60 @@ mod tests {
         };
         assert_eq!(asset.sector(), None);
         assert_eq!(asset.instrument_type(), None);
+    }
+
+    // ── fetch_session_limits httpmock ─────────────────────────
+
+    #[tokio::test]
+    async fn fetch_session_limits_parses_valid_response() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/api/limits/session");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "limits": [
+                        {"symbol": "TSLAon", "regular": {"tradable": true}},
+                        {"symbol": "AAPLon", "regular": {"tradable": false}}
+                    ]
+                }));
+        }).await;
+
+        let url = format!("{}/api/limits/session", server.base_url());
+        let limits = fetch_session_limits(Some(&url)).await.unwrap();
+
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].symbol, "TSLAon");
+        assert!(limits[0].is_tradable(Session::Regular));
+        assert!(!limits[1].is_tradable(Session::Regular));
+    }
+
+    #[tokio::test]
+    async fn fetch_session_limits_returns_err_on_http_500() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/api/limits/session");
+            then.status(500).body("Internal Server Error");
+        }).await;
+
+        let url = format!("{}/api/limits/session", server.base_url());
+        assert!(fetch_session_limits(Some(&url)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_session_limits_returns_err_on_malformed_json() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/api/limits/session");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("not json at all");
+        }).await;
+
+        let url = format!("{}/api/limits/session", server.base_url());
+        assert!(fetch_session_limits(Some(&url)).await.is_err());
     }
 }
