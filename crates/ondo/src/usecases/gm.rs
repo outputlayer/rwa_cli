@@ -135,6 +135,7 @@ pub async fn prepare_buy(
         &taker,
         slippage_bps,
         json,
+        None,
     )
     .await?;
 
@@ -229,6 +230,7 @@ pub async fn prepare_sell(
         &taker,
         slippage_bps,
         json,
+        None,
     )
     .await?;
 
@@ -282,6 +284,7 @@ pub async fn execute_sell_raw(
         taker,
         Some(DEFAULT_SLIPPAGE_BPS),
         json,
+        None,
     )
     .await?;
     let input_mint = Mint::from(mint);
@@ -402,8 +405,9 @@ async fn get_order_checked(
     taker: &str,
     slippage_bps: Option<u32>,
     json: bool,
+    jupiter_url: Option<&str>,
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
-    let mut order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+    let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
         if let Some(s) = slip {
@@ -423,7 +427,7 @@ async fn get_order_checked(
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+                order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
                 continue;
             }
         }
@@ -556,6 +560,7 @@ async fn execute_with_retry(
                 if retry_action == jupiter::ExecuteRetryAction::RefreshOrder {
                     current_order_owned = Some(
                         jupiter::get_order(
+                            None,
                             params.input_mint,
                             params.output_mint,
                             params.raw_amount,

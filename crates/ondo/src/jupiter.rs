@@ -184,6 +184,7 @@ impl std::error::Error for ExecuteFailure {}
 const ORDER_MAX_RETRIES: u32 = 2;
 
 pub async fn get_order(
+    base_url: Option<&str>,
     input_mint: &str,
     output_mint: &str,
     amount: &str,
@@ -191,13 +192,14 @@ pub async fn get_order(
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
     let mut last_err = eyre!("Jupiter /order failed");
+    let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
 
     for attempt in 0..=ORDER_MAX_RETRIES {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
-        let mut request = HTTP.get(format!("{SWAP_API_BASE}/order")).query(&[
+        let mut request = HTTP.get(&order_url).query(&[
             ("inputMint", input_mint),
             ("outputMint", output_mint),
             ("amount", amount),
@@ -374,6 +376,124 @@ mod tests {
         let msg = failure.to_string();
         assert!(msg.contains("code -1000"));
         assert!(msg.contains("failed to land"));
+    }
+
+    // ── get_order httpmock ────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_order_returns_parsed_response_on_success() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "requestId": "test-req-1",
+                    "inAmount": "1000000",
+                    "outAmount": "500000000",
+                    "transaction": "AQAAAA==",
+                    "gasless": true,
+                    "router": "jupiterz"
+                }));
+        }).await;
+
+        let order = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(100),
+        ).await.unwrap();
+
+        assert_eq!(order.in_amount, "1000000");
+        assert_eq!(order.out_amount, "500000000");
+        assert_eq!(order.transaction, Some("AQAAAA==".to_string()));
+        assert_eq!(order.gasless, Some(true));
+        assert_eq!(order.router, Some("jupiterz".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_order_returns_err_when_response_has_error_field() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "requestId": "test-req-2",
+                    "inAmount": "1000000",
+                    "outAmount": "0",
+                    "error": "QUOTE_ERROR",
+                    "errorMessage": "no route found"
+                }));
+        }).await;
+
+        let result = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            None,
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no route found"));
+    }
+
+    #[tokio::test]
+    async fn get_order_returns_err_on_empty_transaction() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "requestId": "test-req-3",
+                    "inAmount": "1000000",
+                    "outAmount": "500000000",
+                    "transaction": ""
+                }));
+        }).await;
+
+        let result = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            None,
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty transaction"));
+    }
+
+    #[tokio::test]
+    async fn get_order_returns_err_on_http_400_failed_quotes() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(400)
+                .body("Failed to get quotes for the given input");
+        }).await;
+
+        let result = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            None,
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No swap route found"));
     }
 }
 
