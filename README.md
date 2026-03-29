@@ -82,6 +82,37 @@ rwa gm reclaim                  # Close empty accounts, reclaim SOL rent
 
 Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 
+## Common Flows
+
+Preview then buy:
+
+```bash
+rwa --json gm buy TSLA 100 --dry-run
+rwa --json gm buy TSLA 100 -y
+```
+
+Preview then sell part of a position:
+
+```bash
+rwa --json gm sell TSLA 50% --dry-run
+rwa --json gm sell TSLA 50% -y
+```
+
+Preview then exit everything:
+
+```bash
+rwa --json gm close-all --dry-run
+rwa --json gm close-all -y
+rwa --json gm reclaim
+```
+
+Withdraw after liquidation:
+
+```bash
+rwa --json gm send USDC all <ADDR> -y
+rwa --json gm send SOL all <ADDR> -y
+```
+
 ## Commands
 
 | Command | Description |
@@ -112,6 +143,12 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 - `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: 1% (100 bps)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL`)
 - `--dry-run` — Validate and preview a trade/transfer without executing it
+
+For agents and scripts:
+
+- Default to `rwa --json ...`
+- Use `--dry-run` before large trades, basket exits, or user-visible previews
+- Prefer the CLI's returned values over manual arithmetic after execution
 
 ### Amount Formats
 
