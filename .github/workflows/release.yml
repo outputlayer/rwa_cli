@@ -25,6 +25,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -50,9 +52,15 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          BIN=target/${{ matrix.target }}/release/rwa
-          ARCHIVE=rwa-${{ matrix.target }}.tar.gz
-          tar czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            BIN=target/${{ matrix.target }}/release/rwa.exe
+            ARCHIVE=rwa-${{ matrix.target }}.zip
+            powershell -Command "Compress-Archive -Path '$BIN' -DestinationPath '$ARCHIVE'"
+          else
+            BIN=target/${{ matrix.target }}/release/rwa
+            ARCHIVE=rwa-${{ matrix.target }}.tar.gz
+            tar czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
+          fi
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
@@ -74,8 +82,10 @@ jobs:
       - name: Collect archives
         run: |
           mkdir -p release
-          find artifacts -name '*.tar.gz' -exec mv {} release/ \;
-          ls -lh release/
+          find artifacts \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} release/ \;
+          cd release
+          sha256sum rwa-* > SHA256SUMS.txt
+          ls -lh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

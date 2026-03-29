@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::wallet::Wallet;
@@ -97,14 +97,12 @@ pub async fn get_order(
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
-        let mut request = HTTP
-            .get(format!("{SWAP_API_BASE}/order"))
-            .query(&[
-                ("inputMint", input_mint),
-                ("outputMint", output_mint),
-                ("amount", amount),
-                ("taker", taker),
-            ]);
+        let mut request = HTTP.get(format!("{SWAP_API_BASE}/order")).query(&[
+            ("inputMint", input_mint),
+            ("outputMint", output_mint),
+            ("amount", amount),
+            ("taker", taker),
+        ]);
 
         if let Some(bps) = slippage_bps {
             request = request.query(&[("slippageBps", bps.to_string())]);
@@ -148,7 +146,9 @@ pub async fn get_order(
 
         let tx = resp.transaction.as_deref().unwrap_or("");
         if tx.is_empty() {
-            let detail = resp.error_message.as_deref()
+            let detail = resp
+                .error_message
+                .as_deref()
                 .or(resp.error.as_deref())
                 .unwrap_or("route may not exist");
             return Err(eyre!("Jupiter returned empty transaction — {detail}"));
@@ -166,11 +166,10 @@ fn is_transient(e: &reqwest::Error) -> bool {
 }
 
 /// Sign and execute a swap via Jupiter Swap V2 API.
-pub async fn execute_order(
-    wallet: &Wallet,
-    order: &OrderResponse,
-) -> Result<ExecuteResponse> {
-    let tx_b64 = order.transaction.as_deref()
+pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+    let tx_b64 = order
+        .transaction
+        .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
     let signed_tx = wallet.sign_transaction(tx_b64)?;
 
@@ -203,30 +202,40 @@ pub async fn execute_order(
 fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
     if let Some(status) = &resp.status {
         if status == "Failed" {
-            let raw_msg = resp.error_message.as_deref()
+            let raw_msg = resp
+                .error_message
+                .as_deref()
                 .or(resp.error.as_deref())
                 .unwrap_or("Unknown execution error");
-            let hint = resp.code.map(|c| match c {
-                -1 => " (missing cached order — retry)",
-                -2 => " (invalid signed transaction)",
-                -3 => " (invalid message bytes)",
-                -1000 => " (failed to land — retry)",
-                -1001 => " (unknown aggregator error)",
-                -2000 => " (RFQ failed to land — retry)",
-                -2001 => " (unknown RFQ error)",
-                -2002 => " (invalid payload)",
-                -2003 => " (quote expired — retry)",
-                -2004 => " (swap rejected)",
-                -2005 => " (internal error — retry)",
-                _ => "",
-            }).unwrap_or("");
-            let code = resp.code.map(|c| format!(" (code {c})")).unwrap_or_default();
+            let hint = resp
+                .code
+                .map(|c| match c {
+                    -1 => " (missing cached order — retry)",
+                    -2 => " (invalid signed transaction)",
+                    -3 => " (invalid message bytes)",
+                    -1000 => " (failed to land — retry)",
+                    -1001 => " (unknown aggregator error)",
+                    -2000 => " (RFQ failed to land — retry)",
+                    -2001 => " (unknown RFQ error)",
+                    -2002 => " (invalid payload)",
+                    -2003 => " (quote expired — retry)",
+                    -2004 => " (swap rejected)",
+                    -2005 => " (internal error — retry)",
+                    _ => "",
+                })
+                .unwrap_or("");
+            let code = resp
+                .code
+                .map(|c| format!(" (code {c})"))
+                .unwrap_or_default();
             return Err(eyre!("Swap failed{code}: {raw_msg}{hint}"));
         }
     }
 
     if resp.signature.is_none() {
-        let msg = resp.error_message.as_deref()
+        let msg = resp
+            .error_message
+            .as_deref()
             .or(resp.error.as_deref())
             .unwrap_or("No signature returned — transaction may have failed");
         return Err(eyre!("Swap failed: {msg}"));
@@ -463,7 +472,10 @@ mod tests {
         for (input, dec) in [("100", 6), ("0.5", 6), ("1.23", 9), ("999.999999", 6)] {
             let raw = token_to_raw(input, dec).unwrap();
             let formatted = format_amount(&raw, dec);
-            assert_eq!(formatted, input, "roundtrip failed for {input} with {dec} decimals");
+            assert_eq!(
+                formatted, input,
+                "roundtrip failed for {input} with {dec} decimals"
+            );
         }
     }
 }
@@ -482,13 +494,21 @@ mod prop_tests {
         match s.find('.') {
             None => {
                 let t = s.trim_start_matches('0');
-                if t.is_empty() { "0".into() } else { t.into() }
+                if t.is_empty() {
+                    "0".into()
+                } else {
+                    t.into()
+                }
             }
             Some(dot) => {
-                let int  = s[..dot].trim_start_matches('0');
+                let int = s[..dot].trim_start_matches('0');
                 let frac = s[dot + 1..].trim_end_matches('0');
-                let int  = if int.is_empty() { "0" } else { int };
-                if frac.is_empty() { int.into() } else { format!("{int}.{frac}") }
+                let int = if int.is_empty() { "0" } else { int };
+                if frac.is_empty() {
+                    int.into()
+                } else {
+                    format!("{int}.{frac}")
+                }
             }
         }
     }
@@ -561,6 +581,15 @@ mod prop_tests {
                 let s = format!("{sign}{magnitude}");
                 prop_assert!(token_to_raw(&s, 6).is_err(), "should reject {s}");
             }
+        }
+
+        #[test]
+        fn token_to_raw_rejects_more_than_allowed_decimals(
+            integer in 0u32..=10_000u32,
+            frac in 1u32..=9_999_999u32,
+        ) {
+            let s = format!("{integer}.{frac:07}");
+            prop_assert!(token_to_raw(&s, 6).is_err(), "should reject {s}");
         }
     }
 }

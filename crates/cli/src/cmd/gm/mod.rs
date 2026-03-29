@@ -115,13 +115,59 @@ pub enum GmAction {
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Buy { symbol, amount, yes, slippage, dry_run } => trade::buy(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
-        GmAction::Sell { symbol, amount, yes, slippage, dry_run } => trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
-        GmAction::Portfolio { wallet } => portfolio::portfolio(wallet.as_deref(), json, rpc_url).await,
+        GmAction::Buy {
+            symbol,
+            amount,
+            yes,
+            slippage,
+            dry_run,
+        } => {
+            trade::buy(
+                &symbol,
+                &amount,
+                yes,
+                dry_run,
+                json,
+                rpc_url,
+                Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
+            )
+            .await
+        }
+        GmAction::Sell {
+            symbol,
+            amount,
+            yes,
+            slippage,
+            dry_run,
+        } => {
+            trade::sell(
+                &symbol,
+                &amount,
+                yes,
+                dry_run,
+                json,
+                rpc_url,
+                Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
+            )
+            .await
+        }
+        GmAction::Portfolio { wallet } => {
+            portfolio::portfolio(wallet.as_deref(), json, rpc_url).await
+        }
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List { search } => list::list(json, search.as_deref()).await,
-        GmAction::Send { token, amount, to, yes, dry_run } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url).await,
-        GmAction::CloseAll { amount, yes, dry_run } => trade::close_all(amount.as_deref(), yes, dry_run, json, rpc_url).await,
+        GmAction::Send {
+            token,
+            amount,
+            to,
+            yes,
+            dry_run,
+        } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url).await,
+        GmAction::CloseAll {
+            amount,
+            yes,
+            dry_run,
+        } => trade::close_all(amount.as_deref(), yes, dry_run, json, rpc_url).await,
         GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
     }
 }
@@ -166,9 +212,15 @@ pub(super) struct TradeJson {
     pub counter_amount: String,
     pub counter_token: &'static str,
     pub tx: String,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
     pub slippage_pct: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
     pub price_impact_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_bps: Option<u32>,
@@ -328,7 +380,8 @@ fn load_wallet() -> Result<wallet::Wallet> {
 
 fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
     let entry = gm::resolve_token(symbol, tokens)?;
-    let mint = entry.solana_address
+    let mint = entry
+        .solana_address
         .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
     Ok((entry.symbol.to_string(), mint.to_string()))
 }
@@ -357,9 +410,7 @@ fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
         return Some(pi);
     }
     match (order.in_usd_value, order.out_usd_value) {
-        (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => {
-            Some((usd_out - usd_in) / usd_in * 100.0)
-        }
+        (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => Some((usd_out - usd_in) / usd_in * 100.0),
         _ => None,
     }
 }
@@ -389,7 +440,8 @@ async fn get_order_checked(
     slippage_bps: Option<u32>,
     json: bool,
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
-    let mut order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+    let mut order =
+        jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
         if let Some(s) = slip {
@@ -406,7 +458,8 @@ async fn get_order_checked(
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps).await?;
+                order = jupiter::get_order(input_mint, output_mint, amount, taker, slippage_bps)
+                    .await?;
                 continue;
             }
         }
@@ -453,9 +506,9 @@ async fn check_tradable(symbol: &str) -> Result<()> {
         Err(_) => return Ok(()), // fail-open: don't block trade if API is down
     };
     let sym_upper = symbol.to_uppercase();
-    let is_tradable = limits.iter().any(|l| {
-        l.symbol.to_uppercase() == sym_upper && l.is_tradable(session)
-    });
+    let is_tradable = limits
+        .iter()
+        .any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session));
     if !is_tradable {
         return Err(eyre::eyre!(
             "{symbol} is not tradable in current session ({}).\n  \
@@ -474,7 +527,8 @@ async fn fetch_tradable_set() -> std::collections::HashSet<String> {
     if session == api::Session::Closed {
         return std::collections::HashSet::new();
     }
-    api::fetch_session_limits().await
+    api::fetch_session_limits()
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter(|l| l.is_tradable(session))
@@ -497,12 +551,15 @@ where
         return Ok(bal_raw);
     }
     if let Some(pct_str) = s.strip_suffix('%') {
-        let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
+        let pct: f64 = pct_str
+            .parse()
+            .map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
         if !(0.0..=100.0).contains(&pct) {
             return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
         }
         let bal_raw = balance_raw_fn().await?;
-        let bal: u128 = bal_raw.parse()
+        let bal: u128 = bal_raw
+            .parse()
             .map_err(|_| eyre::eyre!("Invalid on-chain amount: {bal_raw}"))?;
         if bal == 0 {
             return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
@@ -518,9 +575,14 @@ where
 // - Neither covers token account rent, but Jupiter creates ATAs in the swap tx
 // So preflight only needs to check USDC balance (for buy) and trading hours.
 
-async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<&str>) -> Result<()> {
+async fn preflight_buy_raw(
+    pubkey: &str,
+    raw_usdc_amount: &str,
+    rpc_url: Option<&str>,
+) -> Result<()> {
     check_trading_hours()?;
-    let requested: u128 = raw_usdc_amount.parse()
+    let requested: u128 = raw_usdc_amount
+        .parse()
         .map_err(|_| eyre::eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
     let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
     if requested < minimum {
@@ -528,7 +590,8 @@ async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<
     }
 
     let (_, balance_raw) = solana::get_usdc_balance_raw(pubkey, rpc_url).await?;
-    let balance: u128 = balance_raw.parse()
+    let balance: u128 = balance_raw
+        .parse()
         .map_err(|_| eyre::eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
     if balance < requested {
         return Err(eyre::eyre!(
@@ -574,21 +637,32 @@ async fn execute_with_retry(
                 let needs_new_order = msg.contains("code -1)")   // request expired
                     || msg.contains("code -2003")                // RFQ quote expired
                     || msg.contains("code -2004")                // RFQ swap rejected
-                    || msg.contains("code -2005");               // RFQ failure
-                // Retry same order: transient landing failure
+                    || msg.contains("code -2005"); // RFQ failure
+                                                   // Retry same order: transient landing failure
                 let retry_same = msg.contains("code -1000")     // aggregator failed to land
-                    || msg.contains("code -2000");               // RFQ MM failed to land
+                    || msg.contains("code -2000"); // RFQ MM failed to land
 
                 if (!needs_new_order && !retry_same) || attempt == MAX_SWAP_RETRIES {
                     return Err(e);
                 }
                 if !json {
-                    eprintln!("Transient error (attempt {}/{}), retrying in 3s...", attempt + 1, MAX_SWAP_RETRIES);
+                    eprintln!(
+                        "Transient error (attempt {}/{}), retrying in 3s...",
+                        attempt + 1,
+                        MAX_SWAP_RETRIES
+                    );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 if needs_new_order {
                     current_order_owned = Some(
-                        jupiter::get_order(params.input_mint, params.output_mint, params.raw_amount, params.taker, params.slippage_bps).await?
+                        jupiter::get_order(
+                            params.input_mint,
+                            params.output_mint,
+                            params.raw_amount,
+                            params.taker,
+                            params.slippage_bps,
+                        )
+                        .await?,
                     );
                 }
                 last_err = Some(e);
@@ -604,8 +678,11 @@ fn clean_name(name: &str) -> String {
 
 fn token_type_from_name(name: &str) -> &'static str {
     let n = name.to_lowercase();
-    if n.contains("etf") || n.contains(" fund") || n.contains(" trust")
-        || n.contains(" index") || n.contains(" shares")
+    if n.contains("etf")
+        || n.contains(" fund")
+        || n.contains(" trust")
+        || n.contains(" index")
+        || n.contains(" shares")
     {
         "etf"
     } else {
@@ -616,6 +693,7 @@ fn token_type_from_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // ── pct_of_u128 ──────────────────────────────────────────
 
@@ -670,7 +748,10 @@ mod tests {
     #[test]
     fn detect_etf() {
         assert_eq!(token_type_from_name("SPDR S&P 500 ETF Trust"), "etf");
-        assert_eq!(token_type_from_name("Vanguard Total Stock Market Index Fund"), "etf");
+        assert_eq!(
+            token_type_from_name("Vanguard Total Stock Market Index Fund"),
+            "etf"
+        );
     }
 
     #[test]
@@ -732,7 +813,10 @@ mod tests {
         // -4% slippage should be blocked (max is -3%)
         let result = check_slippage(&order, true);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Slippage too high"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Slippage too high"));
     }
 
     #[test]
@@ -747,5 +831,59 @@ mod tests {
         // -1% slippage is fine
         let result = check_slippage(&order, true);
         assert!(result.is_ok());
+    }
+
+    // ── resolve_amount_to_raw ────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_exact_amount_to_raw() {
+        let raw = resolve_amount_to_raw("1.25", jupiter::USDC_DECIMALS, || async {
+            Ok("999999999".to_string())
+        })
+        .await
+        .unwrap();
+        assert_eq!(raw, "1250000");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_all_amount_to_raw() {
+        let raw = resolve_amount_to_raw("all", jupiter::USDC_DECIMALS, || async {
+            Ok("42000000".to_string())
+        })
+        .await
+        .unwrap();
+        assert_eq!(raw, "42000000");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_percentage_amount_to_raw() {
+        let raw = resolve_amount_to_raw("25%", jupiter::USDC_DECIMALS, || async {
+            Ok("8000000".to_string())
+        })
+        .await
+        .unwrap();
+        assert_eq!(raw, "2000000");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_amount_to_raw_rejects_extra_precision() {
+        let err = resolve_amount_to_raw("0.1234567", jupiter::USDC_DECIMALS, || async {
+            Ok("9999999".to_string())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Too many decimal places"));
+    }
+
+    proptest! {
+        #[test]
+        fn pct_of_u128_never_exceeds_input_for_valid_percent(
+            value in 1u128..=u64::MAX as u128,
+            pct_bps in 0u32..=10_000u32,
+        ) {
+            let pct = pct_bps as f64 / 100.0;
+            let result = pct_of_u128(value, pct);
+            prop_assert!(result <= value);
+        }
     }
 }

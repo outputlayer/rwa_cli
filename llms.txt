@@ -5,75 +5,79 @@ CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via Jupi
 
 ## Install
 
-```bash
-cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
-```
+Preferred:
 
-Or via install script:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 ```
 
-## Error handling
+The installer downloads a pre-built binary from GitHub Releases when available and falls back to building from source.
 
-On failure, commands exit with non-zero code. With `--json`, errors return `{"status":"error","error":"<message>"}` on stdout.
+From source:
 
-## Critical rules
+```bash
+cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
+```
 
-- NEVER run rwa commands in parallel — Jupiter API rejects concurrent requests from the same wallet
-- Run commands one at a time, sequentially: `rwa gm buy TSLA 100 -y && sleep 3 && rwa gm buy AAPL 100 -y`
-- Always use `--json` flag for machine-readable output
-- Always use `-y` flag for buy/sell to skip confirmation
-- CLI auto-retries swap errors (max 2 retries). Do NOT retry manually after a swap error
-- `send` transfers tokens to another wallet; `sell` swaps tokens for USDC — they are different commands
-- Quote requires amount: `rwa --json gm quote <SYMBOL> <AMOUNT>`
+## Critical agent rules
+
+- NEVER run `rwa` wallet-changing commands in parallel
+- Run trades/transfers sequentially with `sleep 3` between commands
+- Always use `--json` for machine-readable output
+- Use `-y` only for real execution, not for `--dry-run`
+- There is no `quote` command; use `buy/sell --dry-run`
+- `send` transfers assets to another wallet; `sell` swaps for USDC
+- CLI auto-retries swap failures; do NOT manually retry them
 
 ## Commands
 
 ### Market info
-- `rwa --json gm hours` — Current trading session + tradable token count
-- `rwa --json gm hours --tradable` — List all tokens tradable in current session
-- `rwa --json gm list` — All 264 tokens with tradable status
-- `rwa --json gm list --search <keyword>` — Search tokens by name/symbol/sector
+- `rwa --json gm hours` — current session + tradable count
+- `rwa --json gm hours --tradable` — all tokens tradable right now
+- `rwa --json gm list` — all tokens with tradable status
+- `rwa --json gm list --search <keyword>` — filter by symbol, name, or sector
 
 ### Trading
-- `rwa --json gm quote <SYM> <AMT>` — Swap quote (buy direction)
-- `rwa --json gm quote <SYM> <AMT> --sell` — Swap quote (sell direction)
-- `rwa --json gm buy <SYM> <AMT> -y` — Buy token with USDC
-- `rwa --json gm buy <SYM> <AMT> -y --slippage 50` — Buy with max 0.5% slippage
-- `rwa --json gm sell <SYM> <AMT> -y` — Sell token for USDC (exact number, `50%`, or `all`)
-- `rwa --json gm close-all -y` — Sell ALL positions sequentially
-- `rwa --json gm close-all <PCT>% -y` — Sell percentage of every position (e.g. `50%`)
+- `rwa --json gm buy <SYM> <AMT> --dry-run` — preview buy
+- `rwa --json gm buy <SYM> <AMT> -y` — execute buy
+- `rwa --json gm sell <SYM> <AMT> --dry-run` — preview sell
+- `rwa --json gm sell <SYM> <AMT> -y` — execute sell
+- `rwa --json gm close-all --dry-run` — preview liquidation
+- `rwa --json gm close-all -y` — sell all positions sequentially
+- `rwa --json gm close-all 50% -y` — sell a percentage of every position
 
 ### Portfolio & history
-- `rwa --json gm portfolio` — Holdings, allocation, 24h change
-- `rwa --json gm portfolio <WALLET>` — View any wallet's holdings
-- `rwa --json gm history <SYM>` — Price history (default 1D)
-- `rwa --json gm history <SYM> -r 1W` — Price history with range (1D/1W/1M/3M/1Y/ALL)
+- `rwa --json gm portfolio` — own wallet holdings
+- `rwa --json gm portfolio <WALLET>` — any public wallet
+- `rwa --json gm history <SYM>` — price history (default `1M`)
+- `rwa --json gm history <SYM> -r 1D` — 1D/1W/1M/3M/1Y/ALL
 
 ### Transfers
-- `rwa --json gm send SOL <AMT> <TO> -y` — Send SOL
-- `rwa --json gm send USDC <AMT> <TO> -y` — Send USDC
-- `rwa --json gm send <TOKEN> <AMT> <TO> -y` — Send any token
+- `rwa --json gm send SOL <AMT> <TO> --dry-run` — preview SOL transfer
+- `rwa --json gm send SOL all <TO> -y` — drain SOL (auto-reserves tx fee)
+- `rwa --json gm send USDC <AMT> <TO> --dry-run` — preview USDC transfer
+- `rwa --json gm send USDC all <TO> -y` — drain USDC with full precision
+- `rwa --json gm send <TOKEN> <AMT> <TO> -y` — send GM token
 
 ### Maintenance
-- `rwa --json gm reclaim` — Close empty token accounts, reclaim SOL rent
-- `rwa --json gm reclaim --token <SYM>` — Reclaim only for a specific token
+- `rwa --json gm reclaim` — close empty token accounts, reclaim SOL rent
+- `rwa --json gm reclaim --token <SYM>` — reclaim one token only
 
 ### Wallet
-- `rwa keys generate` — Create new wallet
-- `rwa keys import --seed-phrase "word1 word2 ..."` — Import from mnemonic
-- `rwa keys show` — Show address + key file path
+- `rwa keys generate --encrypt` — create encrypted wallet
+- `rwa keys import --seed-phrase "word1 word2 ..."` — import mnemonic
+- `rwa keys import --private-key <BASE58>` — import private key
+- `rwa keys show` — show address + key path
+- `rwa keys encrypt` — convert `key.json` -> `key.age`
+- `rwa keys decrypt` — convert `key.age` -> `key.json`
 
 ## Amount formats
 
-- Exact: `100` (100 USDC or 100 tokens)
-- Percentage: `50%` (half of balance)
-- All: `all` (entire balance)
+- Exact: `100`
+- Percentage: `50%`
+- All: `all`
 
-## Token symbols
-
-Both `TSLA` and `TSLAon` formats accepted — resolved automatically.
+Inputs with too many decimal places are rejected instead of being silently rounded.
 
 ## Trading sessions (ET)
 
@@ -83,36 +87,35 @@ Both `TSLA` and `TSLAon` formats accepted — resolved automatically.
 - Overnight: 8:00 PM – 3:59 AM
 - Closed: Fri 8 PM – Sun 8 PM
 
-Not all tokens are tradable in every session. Use `list` or `hours --tradable` to check.
+Not all tokens are tradable in every session. Use `list --search <SYM>` for one token or `hours --tradable` for the full set.
 
-## Flags
+## Bulk workflows
 
-- `--json` — Machine-readable JSON output on any command
-- `-y` — Skip confirmation on buy/sell/send
-- `--slippage <BPS>` — Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
-- `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL` env var)
+Bulk buy:
 
-## Slippage protection
+```bash
+rwa --json gm buy TSLA 100 -y
+sleep 3
+rwa --json gm buy AAPL 150 -y
+sleep 3
+rwa --json gm buy NVDA 200 -y
+```
 
-- Default slippage: 1% (100 bps) sent to Jupiter when `--slippage` not specified
-- Retry on high slippage: if quote shows >1% slippage, retries up to 3× with fresh quotes
-- Hard block: swaps with >3% slippage are blocked entirely (even with `--slippage` flag)
-- Jupiter Ultra uses RFQ (Request For Quote) — market makers decide whether to fill
-- Small sells (<$1.50) are often rejected by MM or have extreme slippage
+Full exit:
 
-## Close-all behavior
+```bash
+rwa --json gm close-all -y
+rwa --json gm reclaim
+rwa --json gm send USDC all <ADDR> -y
+rwa --json gm send SOL all <ADDR> -y
+```
 
-- Positions < $1.50 are skipped automatically (market makers reject small swaps)
-- Skipped tokens reported in JSON output with reason
-- Sequential execution with 3s delay between swaps
+## Error handling
 
-## Gasless swaps
+With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
 
-Jupiter handles gas fees — users do NOT need SOL for buy/sell. SOL still needed for `send` and ATA rent.
-
-## Error recovery
-
-- "Solana RPC unavailable" → wait 5 seconds, retry. After 3 failures, set `RWA_RPC_URL`
-- "No swap route found" / "HTTP 400" → likely parallel execution. Run sequentially
-- "HTTP 429" → rate limited. Wait 5s, retry
-- Swap errors are auto-retried (max 2 retries with fresh orders)
+- `not tradable in current session` → skip token or check `list --search <SYM>`
+- `market is closed` → tell user when trading reopens
+- `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
+- `Slippage too high` → reduce size or skip token
+- `Solana RPC unavailable` → wait 5s, retry; after repeated failures suggest `RWA_RPC_URL`

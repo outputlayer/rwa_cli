@@ -5,197 +5,120 @@ Rust CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via
 ## Build / Test / Lint
 
 ```bash
-cargo build                  # Build all crates
-cargo build --release        # Release build (LTO, strip → ~3.5 MB)
-cargo clippy --all-targets   # Lint (must pass with 0 warnings)
-cargo run -- gm hours        # Quick smoke test
-cargo install --path bin/rwa # Install locally
+cargo build
+cargo build --release
+cargo clippy --all-targets
+cargo test --workspace
+cargo run -- gm hours
+cargo install --path bin/rwa
 ```
 
-## Project Structure
+## Install / Release model
 
-- `bin/rwa/` — Binary entry point (thin — just calls `rwa_cli::run()`)
-- `crates/cli/` — CLI layer: clap v4 derive commands, output formatting, `--json` flag
-- `crates/cli/src/cmd/gm/` — GM commands: `trade.rs`, `portfolio.rs`, `list.rs`, `send.rs`, `mod.rs` (preflight, tradable checks)
-- `crates/ondo/` — Protocol layer: Solana RPC, Jupiter API, Ondo API, wallet
-- `crates/ondo/src/solana/` — Solana operations: `rpc.rs` (retry + URL rotation), `mod.rs` (balances, transfers, token accounts)
-- `crates/ondo/src/jupiter.rs` — Jupiter Swap V2 API (lite-api, no API key)
-- `crates/ondo/src/api.rs` — Ondo API (prices, sectors, history)
+- `install.sh` is binary-first: it downloads a pre-built release asset when available
+- `install.sh` falls back to `cargo install --git ...` when a release asset is unavailable
+- Release assets are produced by `.github/workflows/release.yml`
+- Supported release targets: Linux, macOS, Windows
 
-## Code Conventions
+## Workspace structure
 
-- **Error handling**: `eyre` everywhere. No `thiserror`, no `anyhow`, no `.unwrap()` on fallible ops.
-- **Dependencies**: centralized `[workspace.dependencies]` in root Cargo.toml. Add versions there, reference with `.workspace = true` in crate Cargo.toml.
-- **Solana RPC**: Avoid excessive concurrent RPC calls. Use `tokio::join!` for 2-3 independent calls (e.g. preflight). Public endpoints rate-limit at ~10 req/s.
-- **RPC rotation**: 2 fallback URLs in `RPC_URLS` (solana, publicnode). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
-- **Token symbols**: both `TSLA` and `TSLAon` accepted — resolved in `gm::resolve_token`.
-- **Amounts**: exact number (`100`), percentage (`50%`), or `all`.
-- **HTTP**: `reqwest` with `rustls-tls` only. No native TLS, no OpenSSL.
-- **Wallet**: JSON keypair at `~/.config/rwa/key.json` (or encrypted `key.age`). Permissions `0o600` enforced on Unix.
+- `bin/rwa/` — thin binary entry point
+- `crates/cli/` — clap parsing, human/JSON output, process lock, command orchestration
+- `crates/cli/src/cmd/gm/` — trade, list, portfolio, send, shared preflight helpers
+- `crates/ondo/` — protocol layer: Solana RPC, Jupiter, Ondo API, wallet
+- `crates/ondo/src/solana/` — RPC retry, balances, fees, transactions, transfers
+- `crates/ondo/src/jupiter.rs` — Jupiter Swap V2 API
+- `crates/ondo/src/api.rs` — Ondo prices, history, session limits
 
-## Key Constants
+## Code conventions
 
-- USDC mint: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
-- Token-2022 program: `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`
-- GM tokens use Token-2022 (not Token program)
+- Use `eyre` for errors
+- Keep dependencies in root `[workspace.dependencies]`
+- Avoid `.unwrap()` on fallible runtime paths
+- Keep the repo pure Rust; no native C dependencies
+- Avoid excessive concurrent Solana RPC calls
+- Wallet-changing commands must remain sequential
 
-## What NOT to Do
+## Product conventions
 
-- Don't add EVM/alloy/ethers — this is Solana-only
-- Don't fire excessive concurrent Solana RPC calls (2-3 parallel via tokio::join! is OK)
-- Don't add native C deps — keep pure Rust for cross-platform
-- Don't use `.unwrap()` — use `?` with eyre context
+- Both `TSLA` and `TSLAon` are accepted token symbols
+- Amounts can be exact (`100`), percentage (`50%`), or `all`
+- Inputs with too many decimal places must be rejected, not silently rounded
+- `send` and `sell` are different actions
+- There is no `quote` command; preview uses `buy/sell --dry-run`
+- `close-all` is the canonical path for selling many positions
 
 ## Commands
 
-```
-rwa gm hours                            # Current trading session + tradable count
-rwa gm hours --tradable                 # List all tradable tokens in current session
-rwa gm list                             # All 264 tokens (with tradable status)
-rwa gm list --search <keyword>          # Search tokens (includes tradable field)
-rwa gm buy <SYM> <AMT> -y              # Buy token
-rwa gm buy <SYM> <AMT> -y --slippage 50  # Buy with max 0.5% slippage
-rwa gm buy <SYM> <AMT> --dry-run       # Preview buy without executing
-rwa gm sell <SYM> <AMT> -y             # Sell token
-rwa gm sell <SYM> <AMT> --dry-run      # Preview sell without executing
-rwa gm close-all -y                     # Sell ALL positions (sequential, skips <$1.50)
-rwa gm close-all 50% -y                 # Sell 50% of every position
-rwa gm close-all --dry-run              # Preview what would be sold
-rwa gm portfolio [WALLET]               # Holdings + P&L
-rwa gm history <SYM> [-r RANGE]        # Price chart data
-rwa gm send <TOKEN> <AMT> <TO> -y      # Transfer tokens
-rwa gm send <TOKEN> <AMT> <TO> --dry-run  # Preview transfer without executing
-rwa gm reclaim                          # Close empty token accounts, reclaim SOL rent
-rwa gm reclaim --token <SYM>           # Reclaim only for a specific token
-rwa keys generate                       # Create new wallet (plaintext)
-rwa keys generate --encrypt             # Create new wallet (age-encrypted)
-rwa keys import --seed-phrase|--private-key|--file  # Import wallet
-rwa keys import --seed-phrase ... --encrypt         # Import + encrypt immediately
-rwa keys encrypt                        # Encrypt existing key.json → key.age
-rwa keys decrypt                        # Decrypt key.age → key.json
-rwa keys show                           # Show active wallet address
-```
-
-## Trading Sessions (ET)
-
-- **Pre-Market**: 4:00 AM – 9:29 AM
-- **Regular**: 9:30 AM – 3:59 PM
-- **Post-Market**: 4:00 PM – 7:59 PM
-- **Overnight**: 8:00 PM – 3:59 AM
-- **Closed**: Fri 8 PM – Sun 8 PM
-
-Not all tokens are tradable in every session. `list` and `hours --tradable` show which tokens can be traded now.
-
-## Jupiter Gasless Swaps
-
-Jupiter Ultra handles gas fees for swaps — users do NOT need SOL for buy/sell:
-- **JupiterZ (RFQ)**: Market maker pays signature + priority fee. User needs SOL only for ATA rent.
-- **Ultra Automatic**: Jupiter pays all gas (including ATA rent) when user has < 0.01 SOL. Fee deducted from swap output.
-- **Limitation**: automatic gasless disabled when using `slippageBps`, `referralAccount`, or other optional params.
-- **send/transfer**: NOT gasless — SOL still needed for SOL/USDC/token transfers.
-
-## Jupiter Error Codes
-
-| Code | Meaning | CLI Behavior |
-|------|---------|-------------|
-| `-1` | Request expired (slow /order → /execute) | Retry with fresh order |
-| `-1000` | Aggregator failed to land | Retry same order |
-| `-2000` | RFQ MM failed to land (congestion) | Retry with fresh order |
-| `-2003` | RFQ quote expired | Retry with fresh order |
-| `-2004` | RFQ swap rejected by MM (rare) | Retry with fresh order |
-| `-2005` | RFQ failure (various) | Retry with fresh order |
-
-CLI auto-retries up to 2× — agents should NOT retry manually.
-
-## Slippage Protection
-
-- **Default slippage**: 1% (100 bps) sent to Jupiter when `--slippage` not specified
-- **Retry on high slippage**: if quote shows >1% slippage, retries up to 3× with fresh quotes
-- **Hard block**: swaps with >3% slippage are blocked entirely (even with `--slippage` flag)
-- `--slippage <BPS>` overrides the default 100 bps (e.g. `--slippage 50` = 0.5%)
-- Jupiter Ultra uses RFQ (Request For Quote) — market makers decide whether to fill
-- Small sells (<$1.50) are often rejected by MM or have extreme slippage
-
-## Close-All Limits
-
-- Positions < $1.50 are skipped automatically (market makers reject small swaps)
-- Tokens not tradable in current session are skipped automatically
-- Skipped tokens are listed separately in JSON (`skipped` array with `reason`)
-
-## Tradable Check
-
-- `buy` and `sell` check if the token is tradable in the current Ondo session BEFORE calling Jupiter
-- If not tradable, returns a clear error: `"TSLAon is not tradable in current session (Pre-Market)"`
-- `close-all` skips non-tradable tokens and puts them in the `skipped` array
-- Fails open: if the Ondo session API is unreachable, the check is skipped (doesn't block trades)
-
-## Wallet Encryption
-
-Wallets can be stored encrypted with a passphrase (age format):
-
 ```bash
-rwa keys generate --encrypt   # new wallet → key.age
-rwa keys encrypt              # convert existing key.json → key.age (deletes key.json)
-rwa keys decrypt              # convert key.age → key.json (deletes key.age)
+rwa gm hours
+rwa gm hours --tradable
+rwa gm list
+rwa gm list --search <keyword>
+
+rwa gm buy <SYM> <AMT> --dry-run
+rwa gm buy <SYM> <AMT> -y
+rwa gm buy <SYM> <AMT> -y --slippage 50
+rwa gm sell <SYM> <AMT> --dry-run
+rwa gm sell <SYM> <AMT> -y
+rwa gm close-all --dry-run
+rwa gm close-all -y
+rwa gm close-all 50% -y
+
+rwa gm portfolio [WALLET]
+rwa gm history <SYM> [-r RANGE]
+
+rwa gm send <TOKEN> <AMT> <TO> --dry-run
+rwa gm send <TOKEN> <AMT> <TO> -y
+rwa gm reclaim
+rwa gm reclaim --token <SYM>
+
+rwa keys generate
+rwa keys generate --encrypt
+rwa keys import --seed-phrase|--private-key|--file
+rwa keys encrypt
+rwa keys decrypt
+rwa keys show
 ```
 
-When an encrypted wallet exists (`~/.config/rwa/key.age`), all commands prompt for passphrase automatically. Set `RWA_PASSPHRASE` env var to skip the prompt (for scripting):
+`history` default range is `1M`.
 
-```bash
-export RWA_PASSPHRASE="my passphrase"
-rwa --json gm portfolio
-```
+## Trading / market behavior
 
-## Agent Usage Rules (for AI agents running `rwa` commands)
+- Trading sessions are ET-based: Pre-Market, Regular, Post-Market, Overnight, Closed
+- `buy` and `sell` check tradability before calling Jupiter
+- `close-all` skips tiny positions and non-tradable tokens
+- `close-all` and basket trading must remain sequential, with 3s spacing between swaps
 
-**CRITICAL — NEVER run rwa commands in parallel (`&`).** Jupiter API rejects concurrent requests from the same wallet (HTTP 400, "Failed to get quotes"). Always run one command at a time, sequentially. This applies to ALL commands: quotes, trades, history, portfolio.
+## Jupiter behavior
 
-### Command execution
-- Do NOT prepend `export PATH=...` to every command. `rwa` is in PATH after install.
-- Run commands **one at a time** with `sleep 3` between them
-- Always use `--json` flag and `-y` for buy/sell/send
-- **Use --dry-run to preview**: `rwa --json gm buy TSLA 100 --dry-run` — validates balance, tradability, shows quote (price_impact, fee_bps, slippage) without executing
-- **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
-- **To reduce all positions**: use `rwa --json gm close-all 50% -y` — sells given % of every position
-- **send ≠ sell**: `send` transfers tokens/USDC to another wallet, `sell` swaps for USDC
-- **After selling**: use exact amount from sell result: `rwa --json gm send USDC 83.30 <ADDR> -y`
-- **send USDC all / send SOL all**: safe to use for draining wallet — handles precision and fees correctly
-- **After selling all positions**: run `rwa --json gm reclaim` to close empty token accounts and reclaim SOL rent
-- **Check market hours**: `rwa --json gm hours` — NOT `market-hours`
-- **Use --dry-run before large orders**: preview without executing, then run without flag to confirm
+- Jupiter handles gas for swaps in many cases; users still need SOL for transfers
+- Default slippage is 100 bps
+- Quotes with >1% slippage are refreshed up to 3 times
+- Swaps with >3% slippage are blocked
+- CLI auto-retries transient swap failures; agents should not retry manually
 
-### Buying multiple tokens (basket / rebalance)
+## Wallet behavior
 
-There is no multi-buy command — run `buy` sequentially, one token at a time:
+- Plaintext wallet: `~/.config/rwa/key.json`
+- Encrypted wallet: `~/.config/rwa/key.age`
+- Unix permissions should stay `0o600`
+- `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets
 
-```bash
-# Buy a basket — always sequential, always sleep 3 between trades
-rwa --json gm buy TSLA 100 -y && sleep 3 && \
-rwa --json gm buy AAPL 150 -y && sleep 3 && \
-rwa --json gm buy NVDA 200 -y
-```
+## Agent usage rules
 
-**Preview first with `--dry-run`** to verify amounts before committing:
-```bash
-rwa --json gm buy TSLA 100 --dry-run && \
-rwa --json gm buy AAPL 150 --dry-run && \
-rwa --json gm buy NVDA 200 --dry-run
-```
+- Always prefer `rwa --json`
+- Use `-y` only for real execution
+- Use `--dry-run` for large or uncertain actions
+- Never run wallet-changing commands in parallel
+- Use `list --search <SYM>` to check one token
+- Use `hours --tradable` only when the user wants the full currently tradable set
+- For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 
-**If one trade fails** — stop the chain, do NOT continue with remaining orders. Check the error and handle it before proceeding. Each `&&` already stops on failure.
+## What not to do
 
-### Token search
-- **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)
-- Each result includes `tradable: true/false` for the current session
-- To check if a specific token is tradable: look at the `tradable` field in search results
-- To get all tradable tokens: `rwa --json gm hours --tradable`
-- Sectors: Technology, Healthcare, Financials, Consumer Discretionary, Energy, Industrials, Materials, Utilities, Real Estate, Infrastructure
-
-### Error handling
-- With `--json`, errors return `{"status":"error","error":"..."}` on stdout (exit code 1)
-- CLI auto-retries swap errors (max 2 retries with fresh orders). Do NOT retry manually after a swap error.
-- "not tradable in current session" → token can't be traded now. Check `rwa gm hours --tradable`
-- "Solana RPC unavailable" → wait **at least 5 seconds** before retry. After 3 failures, stop and ask user to set `RWA_RPC_URL`
-- "No swap route found" / "HTTP 400" → you are running commands in parallel. Stop. Run sequentially
-- "Quote not available from market maker" → no liquidity for this token. Skip it.
-- "HTTP 429" → rate limited. Wait 5s, retry
+- Do not add EVM code or dependencies
+- Do not reintroduce a separate `quote` command without strong product reason
+- Do not silently round user-entered amounts
+- Do not replace `close-all` with manual multi-sell flows
+- Do not let docs, skills, `llms.txt`, and CLI drift out of sync

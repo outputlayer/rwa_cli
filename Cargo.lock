@@ -2502,6 +2502,7 @@ dependencies = [
  "dirs",
  "eyre",
  "fs2",
+ "proptest",
  "rpassword",
  "rwa-ondo",
  "serde",

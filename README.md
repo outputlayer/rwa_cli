@@ -9,14 +9,21 @@ CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https:
 ## Install
 
 ```bash
-# Install script (builds from source, installs Rust if needed):
+# Recommended: install script (downloads pre-built binary from GitHub Releases,
+# falls back to building from source if needed)
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 
 # Or directly via cargo:
 cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ```
 
-Pre-built binaries for macOS and Linux are available on [GitHub Releases](https://github.com/outputlayer/rwa_cli/releases).
+Pre-built binaries for Linux, macOS, and Windows are published on [GitHub Releases](https://github.com/outputlayer/rwa_cli/releases).
+
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | RWA_VERSION=v0.1.0 sh
+```
 
 ## Agent Skills
 
