@@ -5,7 +5,7 @@ mod trade;
 
 use clap::Subcommand;
 use eyre::Result;
-use rwa_ondo::{gm, jupiter, token_list, usecases, wallet};
+use rwa_ondo::{gm, token_list, usecases, wallet};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -384,45 +384,6 @@ fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<
         .solana_address
         .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
     Ok((entry.symbol.to_string(), mint.to_string()))
-}
-
-/// Compute `value * pct / 100` using integer math to avoid f64 precision loss.
-fn pct_of_u128(value: u128, pct: f64) -> u128 {
-    let bps = (pct * 100.0).round() as u128;
-    value * bps / 10_000
-}
-
-/// Resolve an amount expression to raw on-chain units.
-async fn resolve_amount_to_raw<F, Fut>(raw: &str, decimals: u8, balance_raw_fn: F) -> Result<String>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<String>>,
-{
-    let s = raw.trim();
-    if s.eq_ignore_ascii_case("all") {
-        let bal_raw = balance_raw_fn().await?;
-        if bal_raw == "0" {
-            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
-        }
-        return Ok(bal_raw);
-    }
-    if let Some(pct_str) = s.strip_suffix('%') {
-        let pct: f64 = pct_str
-            .parse()
-            .map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
-        if !(0.0..=100.0).contains(&pct) {
-            return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
-        }
-        let bal_raw = balance_raw_fn().await?;
-        let bal: u128 = bal_raw
-            .parse()
-            .map_err(|_| eyre::eyre!("Invalid on-chain amount: {bal_raw}"))?;
-        if bal == 0 {
-            return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
-        }
-        return Ok(pct_of_u128(bal, pct).to_string());
-    }
-    jupiter::token_to_raw(s, decimals)
 }
 
 fn clean_name(name: &str) -> String {

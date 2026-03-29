@@ -1,6 +1,6 @@
 use eyre::{Result, eyre};
 
-use crate::{api, gm, jupiter, solana, token_list, wallet};
+use crate::{amounts, api, gm, jupiter, solana, token_list, wallet};
 
 /// Maximum allowed slippage before blocking the trade.
 const MAX_SLIPPAGE_PCT: f64 = 3.0;
@@ -66,7 +66,7 @@ pub async fn prepare_buy(
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let taker = wallet.pubkey();
 
-    let raw_usdc = resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
+    let raw_usdc = amounts::resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
         let taker = taker.clone();
         let rpc = rpc_url.map(str::to_string);
         async move {
@@ -75,7 +75,7 @@ pub async fn prepare_buy(
         }
     })
     .await?;
-    let usdc_amount = jupiter::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
+    let usdc_amount = amounts::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
 
     let (preflight_res, tradable_res) = tokio::join!(
         preflight_buy_raw(&taker, &raw_usdc, rpc_url),
@@ -96,7 +96,7 @@ pub async fn prepare_buy(
 
     Ok(SwapPlan {
         symbol,
-        amount: jupiter::format_amount(&order.out_amount, jupiter::GM_SOL_DECIMALS),
+        amount: amounts::format_amount(&order.out_amount, jupiter::GM_SOL_DECIMALS),
         counter_amount: usdc_amount,
         order,
         slippage_pct,
@@ -140,7 +140,7 @@ pub async fn prepare_sell(
     let (sell_amount, raw_gm) = if is_all || is_pct {
         if is_all {
             (
-                jupiter::format_amount(&bal.raw_amount, gm_dec),
+                amounts::format_amount(&bal.raw_amount, gm_dec),
                 bal.raw_amount.clone(),
             )
         } else {
@@ -158,11 +158,11 @@ pub async fn prepare_sell(
                 .raw_amount
                 .parse()
                 .map_err(|_| eyre!("Invalid on-chain amount: {}", bal.raw_amount))?;
-            let pct_raw = pct_of_u128(raw, pct).to_string();
-            (jupiter::format_amount(&pct_raw, gm_dec), pct_raw)
+            let pct_raw = amounts::pct_of_u128(raw, pct).to_string();
+            (amounts::format_amount(&pct_raw, gm_dec), pct_raw)
         }
     } else {
-        let raw = jupiter::token_to_raw(amount, gm_dec)?;
+        let raw = amounts::token_to_raw(amount, gm_dec)?;
         let raw_sell: u128 = raw.parse().map_err(|_| eyre!("Invalid amount: {amount}"))?;
         let raw_balance: u128 = bal
             .raw_amount
@@ -171,11 +171,11 @@ pub async fn prepare_sell(
         if raw_sell > raw_balance {
             return Err(eyre!(
                 "Insufficient {symbol} balance: have {}, trying to sell {}",
-                jupiter::format_amount(&bal.raw_amount, gm_dec),
-                jupiter::format_amount(&raw, gm_dec)
+                amounts::format_amount(&bal.raw_amount, gm_dec),
+                amounts::format_amount(&raw, gm_dec)
             ));
         }
-        (jupiter::format_amount(&raw, gm_dec), raw)
+        (amounts::format_amount(&raw, gm_dec), raw)
     };
 
     let (order, slippage_pct) = get_order_checked(
@@ -191,7 +191,7 @@ pub async fn prepare_sell(
     Ok(SwapPlan {
         symbol,
         amount: sell_amount,
-        counter_amount: jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS),
+        counter_amount: amounts::format_amount(&order.out_amount, jupiter::USDC_DECIMALS),
         order,
         slippage_pct,
         swap: SwapParamsOwned {
@@ -205,11 +205,7 @@ pub async fn prepare_sell(
     })
 }
 
-pub async fn execute_swap(
-    wallet: &wallet::Wallet,
-    plan: &SwapPlan,
-    json: bool,
-) -> Result<SwapExecution> {
+pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) -> Result<SwapExecution> {
     let params = SwapParams {
         input_mint: &plan.swap.input_mint,
         output_mint: &plan.swap.output_mint,
@@ -222,8 +218,8 @@ pub async fn execute_swap(
         output_amount: result
             .output_amount_result
             .as_deref()
-            .map(|r| jupiter::format_amount(r, plan.output_decimals))
-            .unwrap_or_else(|| jupiter::format_amount(&plan.order.out_amount, plan.output_decimals)),
+            .map(|r| amounts::format_amount(r, plan.output_decimals))
+            .unwrap_or_else(|| amounts::format_amount(&plan.order.out_amount, plan.output_decimals)),
         signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
     })
 }
@@ -256,8 +252,8 @@ pub async fn execute_sell_raw(
         output_amount: result
             .output_amount_result
             .as_deref()
-            .map(|r| jupiter::format_amount(r, jupiter::USDC_DECIMALS))
-            .unwrap_or_else(|| jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS)),
+            .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
+            .unwrap_or_else(|| amounts::format_amount(&order.out_amount, jupiter::USDC_DECIMALS)),
         signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
     })
 }
@@ -324,11 +320,6 @@ fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<
 }
 
 /// Compute `value * pct / 100` using integer math to avoid f64 precision loss.
-pub fn pct_of_u128(value: u128, pct: f64) -> u128 {
-    let bps = (pct * 100.0).round() as u128;
-    value * bps / 10_000
-}
-
 fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     if let Some(pi) = order.price_impact {
         return Some(pi);
@@ -436,34 +427,6 @@ async fn check_tradable(symbol: &str) -> Result<()> {
     Ok(())
 }
 
-async fn resolve_amount_to_raw<F, Fut>(raw: &str, decimals: u8, balance_raw_fn: F) -> Result<String>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<String>>,
-{
-    let s = raw.trim();
-    if s.eq_ignore_ascii_case("all") {
-        let bal_raw = balance_raw_fn().await?;
-        if bal_raw == "0" {
-            return Err(eyre!("Balance is 0 — nothing to trade"));
-        }
-        return Ok(bal_raw);
-    }
-    if let Some(pct_str) = s.strip_suffix('%') {
-        let pct: f64 = pct_str.parse().map_err(|_| eyre!("Invalid percentage: {s}"))?;
-        if !(0.0..=100.0).contains(&pct) {
-            return Err(eyre!("Percentage must be 0–100, got {pct}"));
-        }
-        let bal_raw = balance_raw_fn().await?;
-        let bal: u128 = bal_raw.parse().map_err(|_| eyre!("Invalid on-chain amount: {bal_raw}"))?;
-        if bal == 0 {
-            return Err(eyre!("Balance is 0 — nothing to trade"));
-        }
-        return Ok(pct_of_u128(bal, pct).to_string());
-    }
-    jupiter::token_to_raw(s, decimals)
-}
-
 async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
     let requested: u128 = raw_usdc_amount.parse().map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
@@ -542,39 +505,6 @@ async fn execute_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
-    #[test]
-    fn pct_50_of_1000() {
-        assert_eq!(pct_of_u128(1_000_000_000, 50.0), 500_000_000);
-    }
-
-    #[test]
-    fn pct_100_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 100.0), 1_000_000_000);
-    }
-
-    #[test]
-    fn pct_10_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 10.0), 100_000_000);
-    }
-
-    #[test]
-    fn pct_33_33_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 33.33), 333_300_000);
-    }
-
-    #[test]
-    fn pct_zero() {
-        assert_eq!(pct_of_u128(1_000_000_000, 0.0), 0);
-    }
-
-    #[test]
-    fn pct_large_value() {
-        let large: u128 = 999_999_999_999_999_999;
-        let result = pct_of_u128(large, 50.0);
-        assert_eq!(result, large * 5000 / 10_000);
-    }
 
     #[test]
     fn slippage_from_price_impact() {
@@ -640,55 +570,4 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_exact_amount_to_raw() {
-        let raw = resolve_amount_to_raw("1.25", jupiter::USDC_DECIMALS, || async {
-            Ok("999999999".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "1250000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_all_amount_to_raw() {
-        let raw = resolve_amount_to_raw("all", jupiter::USDC_DECIMALS, || async {
-            Ok("42000000".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "42000000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_percentage_amount_to_raw() {
-        let raw = resolve_amount_to_raw("25%", jupiter::USDC_DECIMALS, || async {
-            Ok("8000000".to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(raw, "2000000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_amount_to_raw_rejects_extra_precision() {
-        let err = resolve_amount_to_raw("0.1234567", jupiter::USDC_DECIMALS, || async {
-            Ok("9999999".to_string())
-        })
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("Too many decimal places"));
-    }
-
-    proptest! {
-        #[test]
-        fn pct_of_u128_never_exceeds_input_for_valid_percent(
-            value in 1u128..=u64::MAX as u128,
-            pct_bps in 0u32..=10_000u32,
-        ) {
-            let pct = pct_bps as f64 / 100.0;
-            let result = pct_of_u128(value, pct);
-            prop_assert!(result <= value);
-        }
-    }
 }

@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::{api, jupiter, solana, token_list, usecases};
+use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
 
 use super::*;
 
@@ -200,7 +200,7 @@ pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: boo
         let sell_raw = if sell_pct < 100.0 {
             let raw: u128 = tb.raw_amount.parse()
                 .map_err(|_| eyre::eyre!("Invalid on-chain amount for {}: {}", tb.symbol, tb.raw_amount))?;
-            let partial = usecases::gm::pct_of_u128(raw, sell_pct);
+            let partial = amounts::pct_of_u128(raw, sell_pct);
             if partial == 0 { continue; }
             partial.to_string()
         } else {

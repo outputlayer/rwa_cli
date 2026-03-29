@@ -1,5 +1,6 @@
 use eyre::{Result, eyre};
 
+use crate::amounts;
 use crate::wallet::Wallet;
 use crate::USDC_MINT;
 use super::rpc::rpc_call_simple;
@@ -42,7 +43,7 @@ pub async fn transfer_sol(
 ) -> Result<TransactionResult> {
     // String-based conversion to avoid float→integer precision loss.
     let amount_str = format!("{amount_sol:.9}");
-    let lamports: u64 = crate::jupiter::token_to_raw(&amount_str, 9)?
+    let lamports: u64 = amounts::token_to_raw(&amount_str, 9)?
         .parse()
         .map_err(|e| eyre!("Invalid lamports value: {e}"))?;
     super::validate_address(recipient)?;

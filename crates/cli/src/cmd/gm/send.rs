@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::{jupiter, solana, token_list};
+use rwa_ondo::{amounts, jupiter, solana, token_list};
 
 use super::*;
 
@@ -116,7 +116,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
         let (_, raw) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
         raw
     } else {
-        resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
+        amounts::resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
             let pk = pubkey.clone();
             let rpc = rpc_url.map(String::from);
             async move {
@@ -128,7 +128,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
     if raw_str == "0" {
         return Err(eyre::eyre!("USDC balance is 0"));
     }
-    let display_amount = jupiter::format_amount(&raw_str, jupiter::USDC_DECIMALS);
+    let display_amount = amounts::format_amount(&raw_str, jupiter::USDC_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
 
     if !json {
@@ -186,7 +186,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
     }
 
-    let raw_str = resolve_amount_to_raw(amount, jupiter::GM_SOL_DECIMALS, || {
+    let raw_str = amounts::resolve_amount_to_raw(amount, jupiter::GM_SOL_DECIMALS, || {
         let pk = pubkey.clone();
         let mint = gm_mint.clone();
         let rpc = rpc_url.map(String::from);
@@ -200,7 +200,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Balance is 0 — nothing to send"));
     }
 
-    let token_display = jupiter::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
+    let token_display = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid token amount"))?;
 
     if !json {
