@@ -1,7 +1,9 @@
+use age::secrecy::Secret;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use eyre::{Result, eyre};
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 type HmacSha512 = Hmac<Sha512>;
@@ -27,14 +29,86 @@ impl Wallet {
     /// Load from a solana-keygen compatible JSON file (64-byte array).
     pub fn from_file(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        let bytes: Vec<u8> = serde_json::from_str(&data)?;
+        Self::from_json(&data)
+    }
+
+    /// Parse from a JSON byte-array string (solana-keygen format).
+    fn from_json(json: &str) -> Result<Self> {
+        let bytes: Vec<u8> = serde_json::from_str(json)?;
         if bytes.len() != 64 {
             return Err(eyre!("Invalid key file: expected 64 bytes, got {}", bytes.len()));
         }
         let secret: [u8; 32] = bytes[..32].try_into()
             .map_err(|_| eyre!("Failed to extract secret key from file"))?;
-        let signing_key = SigningKey::from_bytes(&secret);
-        Ok(Self { signing_key })
+        Ok(Self { signing_key: SigningKey::from_bytes(&secret) })
+    }
+
+    /// Save wallet encrypted with a passphrase (age format → `key.age`).
+    pub fn save_encrypted(&self, path: &Path, passphrase: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut key_bytes = Vec::with_capacity(64);
+        key_bytes.extend_from_slice(self.signing_key.as_bytes());
+        key_bytes.extend_from_slice(self.verifying_key().as_bytes());
+        let json = serde_json::to_string(&key_bytes)?;
+
+        let encryptor = age::Encryptor::with_user_passphrase(Secret::new(passphrase.to_string()));
+        let mut encrypted = vec![];
+        let mut writer = encryptor.wrap_output(&mut encrypted)
+            .map_err(|e| eyre!("Failed to init encryption: {e}"))?;
+        writer.write_all(json.as_bytes())
+            .map_err(|e| eyre!("Failed to encrypt wallet: {e}"))?;
+        writer.finish()
+            .map_err(|e| eyre!("Failed to finalize encryption: {e}"))?;
+
+        std::fs::write(path, &encrypted)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+
+    /// Load wallet from an age-encrypted file.
+    pub fn from_encrypted_file(path: &Path, passphrase: &str) -> Result<Self> {
+        let encrypted = std::fs::read(path)?;
+        let decryptor = match age::Decryptor::new(&encrypted[..])
+            .map_err(|e| eyre!("Failed to open encrypted wallet: {e}"))?
+        {
+            age::Decryptor::Passphrase(d) => d,
+            _ => return Err(eyre!("Wallet is not passphrase-encrypted")),
+        };
+        let mut decrypted = vec![];
+        let mut reader = decryptor
+            .decrypt(&Secret::new(passphrase.to_string()), None)
+            .map_err(|_| eyre!("Wrong passphrase"))?;
+        reader.read_to_end(&mut decrypted)
+            .map_err(|e| eyre!("Failed to decrypt wallet: {e}"))?;
+        let json = std::str::from_utf8(&decrypted)
+            .map_err(|e| eyre!("Invalid wallet data after decryption: {e}"))?;
+        Self::from_json(json)
+    }
+
+    /// Save encrypted to the default path `~/.config/rwa/key.age`.
+    pub fn save_default_encrypted(&self, passphrase: &str) -> Result<PathBuf> {
+        let path = encrypted_key_path()?;
+        self.save_encrypted(&path, passphrase)?;
+        Ok(path)
+    }
+
+    /// Load from the default encrypted path using a passphrase.
+    pub fn load_default_encrypted(passphrase: &str) -> Result<Self> {
+        let path = encrypted_key_path()?;
+        if !path.exists() {
+            return Err(eyre!(
+                "No encrypted wallet found at {}. \
+                 Run `rwa keys generate --encrypt` to create one.",
+                path.display()
+            ));
+        }
+        Self::from_encrypted_file(&path, passphrase)
     }
 
     /// Import from a private key string.
@@ -243,6 +317,18 @@ pub fn default_key_path() -> Result<PathBuf> {
     let config = dirs::config_dir()
         .ok_or_else(|| eyre!("Cannot determine config directory"))?;
     Ok(config.join("rwa").join("key.json"))
+}
+
+/// Encrypted wallet path: ~/.config/rwa/key.age
+pub fn encrypted_key_path() -> Result<PathBuf> {
+    let config = dirs::config_dir()
+        .ok_or_else(|| eyre!("Cannot determine config directory"))?;
+    Ok(config.join("rwa").join("key.age"))
+}
+
+/// Returns `true` if an age-encrypted wallet exists.
+pub fn is_wallet_encrypted() -> bool {
+    encrypted_key_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 #[cfg(test)]

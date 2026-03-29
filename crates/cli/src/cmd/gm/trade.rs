@@ -101,7 +101,7 @@ pub async fn quote(symbol: &str, amount: &str, is_sell: bool, json: bool, rpc_ur
     Ok(())
 }
 
-pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
+pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
@@ -133,6 +133,26 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     let out_fmt = jupiter::format_amount(&order.out_amount, gm_dec);
     if !json {
         println!("You will receive ~{} {}", out_fmt, sym);
+    }
+
+    if dry_run {
+        if json {
+            return json_out(&TradeJson {
+                status: "dry_run",
+                amount: out_fmt,
+                token: sym,
+                counter_amount: usdc_str,
+                counter_token: "USDC",
+                tx: String::new(),
+                slippage_pct,
+                gasless: order.gasless,
+                router: order.router.clone(),
+            });
+        }
+        println!("\n[DRY RUN] Trade not executed.");
+        println!("  Would buy: ~{} {}", out_fmt, sym);
+        println!("  Would spend: {} USDC", usdc_str);
+        return Ok(());
     }
 
     if !yes && !json && !confirm("Proceed?") {
@@ -172,7 +192,7 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Opt
     Ok(())
 }
 
-pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
+pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, slippage: Option<u32>) -> Result<()> {
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let w = load_wallet()?;
@@ -233,6 +253,26 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, json: bool, rpc_url: Op
     let out_fmt = jupiter::format_amount(&order.out_amount, jupiter::USDC_DECIMALS);
     if !json {
         println!("You will receive ~{} USDC", out_fmt);
+    }
+
+    if dry_run {
+        if json {
+            return json_out(&TradeJson {
+                status: "dry_run",
+                amount: sell_str,
+                token: sym,
+                counter_amount: out_fmt,
+                counter_token: "USDC",
+                tx: String::new(),
+                slippage_pct,
+                gasless: order.gasless,
+                router: order.router.clone(),
+            });
+        }
+        println!("\n[DRY RUN] Trade not executed.");
+        println!("  Would sell: {} {}", sell_str, sym);
+        println!("  Would receive: ~{} USDC", out_fmt);
+        return Ok(());
     }
 
     if !yes && !json && !confirm("Proceed?") {
@@ -312,7 +352,7 @@ fn should_skip_position(
     None
 }
 
-pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn close_all(amount: Option<&str>, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
     let sell_pct = parse_sell_pct(amount)?;
 
@@ -351,12 +391,14 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         println!();
     }
 
-    let prompt = if sell_pct < 100.0 { format!("Sell {}% of all positions?", sell_pct) } else { "Sell all positions?".to_string() };
-    if !yes && !json && !confirm(&prompt) {
-        println!("Cancelled.");
-        return Ok(());
+    if !dry_run {
+        let prompt = if sell_pct < 100.0 { format!("Sell {}% of all positions?", sell_pct) } else { "Sell all positions?".to_string() };
+        if !yes && !json && !confirm(&prompt) {
+            println!("Cancelled.");
+            return Ok(());
+        }
+        preflight_sell()?;
     }
-    preflight_sell()?;
 
     let mut sold = Vec::new();
     let mut failed = Vec::new();
@@ -392,6 +434,13 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
         }
 
         let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
+
+        if dry_run {
+            if !json { println!("  [DRY RUN] Would sell {} {}", sell_display, tb.symbol); }
+            sold.push(CloseItemJson { token: tb.symbol.clone(), amount: sell_display, usdc: String::new(), tx: String::new() });
+            continue;
+        }
+
         if !json { println!("Selling {} {} ...", sell_display, tb.symbol); }
 
         match sell_one_position(&w, &tb.mint, &sell_raw, &taker, json).await {
@@ -410,11 +459,13 @@ pub async fn close_all(amount: Option<&str>, yes: bool, json: bool, rpc_url: Opt
 
     if json {
         return json_out(&CloseAllResultJson {
-            status: "success", sold, failed, skipped, total_usdc: format!("{total_usdc:.2}"),
+            status: if dry_run { "dry_run" } else { "success" },
+            sold, failed, skipped, total_usdc: format!("{total_usdc:.2}"),
         });
     }
 
-    println!("\nClose-all{} complete:", pct_label);
+    let label = if dry_run { "[DRY RUN] Would close-all" } else { "Close-all" };
+    println!("\n{}{} complete:", label, pct_label);
     println!("  Sold:    {} positions → {:.2} USDC", sold.len(), total_usdc);
     if !skipped.is_empty() {
         let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();

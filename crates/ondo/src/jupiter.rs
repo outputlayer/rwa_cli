@@ -448,3 +448,100 @@ mod tests {
         }
     }
 }
+
+// ── Property-based tests ─────────────────────────────────────────────────────
+// Verifies invariants that hold for ALL valid inputs, not just hand-picked examples.
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Canonical form of a decimal string: no leading integer zeros, no trailing
+    /// fractional zeros, no trailing decimal point.
+    fn canonical(s: &str) -> String {
+        match s.find('.') {
+            None => {
+                let t = s.trim_start_matches('0');
+                if t.is_empty() { "0".into() } else { t.into() }
+            }
+            Some(dot) => {
+                let int  = s[..dot].trim_start_matches('0');
+                let frac = s[dot + 1..].trim_end_matches('0');
+                let int  = if int.is_empty() { "0" } else { int };
+                if frac.is_empty() { int.into() } else { format!("{int}.{frac}") }
+            }
+        }
+    }
+
+    proptest! {
+        /// token_to_raw followed by format_amount returns the canonical decimal form
+        /// for any positive amount with at most `decimals` fractional digits.
+        #[test]
+        fn roundtrip_6_decimals(
+            integer in 0u32..=1_000_000u32,
+            // frac is 0–999_999; we pad to exactly 6 digits below
+            frac    in 0u32..=999_999u32,
+        ) {
+            // Skip the zero case
+            if integer == 0 && frac == 0 { return Ok(()); }
+
+            let input = format!("{integer}.{frac:06}");
+            let expected = canonical(&input);
+            if expected == "0" { return Ok(()); }
+
+            let raw  = token_to_raw(&expected, 6).unwrap();
+            let back = format_amount(&raw, 6);
+            prop_assert_eq!(&back, &expected);
+        }
+
+        /// Same property for 9-decimal GM tokens.
+        #[test]
+        fn roundtrip_9_decimals(
+            integer in 0u32..=100_000u32,
+            frac    in 0u32..=999_999_999u32,
+        ) {
+            if integer == 0 && frac == 0 { return Ok(()); }
+
+            let input    = format!("{integer}.{frac:09}");
+            let expected = canonical(&input);
+            if expected == "0" { return Ok(()); }
+
+            let raw  = token_to_raw(&expected, 9).unwrap();
+            let back = format_amount(&raw, 9);
+            prop_assert_eq!(&back, &expected);
+        }
+
+        /// format_amount never produces a string with a leading zero on the integer
+        /// part (other than the canonical "0" itself) or trailing zeros.
+        #[test]
+        fn format_amount_is_canonical(raw_digits in "[1-9][0-9]{0,14}", decimals in 0u8..=9u8) {
+            let out = format_amount(&raw_digits, decimals);
+            // No trailing zeros after decimal point
+            if out.contains('.') {
+                prop_assert!(!out.ends_with('0'), "trailing zero in {out:?}");
+            }
+            // Integer part has no leading zero (unless the whole thing is "0.xxx")
+            let int_part = out.split('.').next().unwrap();
+            if int_part != "0" {
+                prop_assert!(!int_part.starts_with('0'), "leading zero in {out:?}");
+            }
+        }
+
+        /// token_to_raw always rejects zero and negative amounts.
+        #[test]
+        fn token_to_raw_rejects_non_positive(
+            sign in prop::sample::select(&["-", ""]),
+            magnitude in 0u64..=1_000_000u64,
+        ) {
+            if magnitude == 0 {
+                // "0", "-0", "0.0", etc. must all fail
+                prop_assert!(token_to_raw("0", 6).is_err());
+                prop_assert!(token_to_raw("-0", 6).is_err());
+            } else if !sign.is_empty() {
+                let s = format!("{sign}{magnitude}");
+                prop_assert!(token_to_raw(&s, 6).is_err(), "should reject {s}");
+            }
+        }
+    }
+}

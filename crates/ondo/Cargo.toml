@@ -27,3 +27,9 @@ sha2.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 hex.workspace = true
+age.workspace = true
+
+[dev-dependencies]
+httpmock.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }

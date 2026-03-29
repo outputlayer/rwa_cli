@@ -3,7 +3,7 @@ use rwa_ondo::{jupiter, solana, token_list};
 
 use super::*;
 
-pub async fn send(token: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let w = load_wallet()?;
     let pubkey = w.pubkey();
 
@@ -15,13 +15,13 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, json: bool, rp
     let token_upper = token.to_uppercase();
 
     match token_upper.as_str() {
-        "SOL" => send_sol(&w, amount, to, yes, json, rpc_url).await,
-        "USDC" => send_usdc(&w, amount, to, yes, json, rpc_url).await,
-        _ => send_gm_token(&w, &token_upper, amount, to, yes, json, rpc_url).await,
+        "SOL"  => send_sol(&w, amount, to, yes, dry_run, json, rpc_url).await,
+        "USDC" => send_usdc(&w, amount, to, yes, dry_run, json, rpc_url).await,
+        _      => send_gm_token(&w, &token_upper, amount, to, yes, dry_run, json, rpc_url).await,
     }
 }
 
-async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
 
     let sol_bal = solana::get_sol_balance(&pubkey, rpc_url).await?;
@@ -61,6 +61,21 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
     if !json {
         println!("Send {:.6} SOL → {to}", send_amount);
     }
+
+    if dry_run {
+        if json {
+            return json_out(&SendJson {
+                status: "dry_run",
+                token: "SOL".into(),
+                amount: format!("{send_amount:.6}"),
+                recipient: to.into(),
+                tx: String::new(),
+            });
+        }
+        println!("[DRY RUN] Transfer not executed.");
+        return Ok(());
+    }
+
     if !yes && !json && !confirm("Proceed?") {
         return Err(eyre::eyre!("Cancelled"));
     }
@@ -85,7 +100,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: b
     Ok(())
 }
 
-async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
@@ -122,6 +137,21 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
     if !json {
         println!("Send {display_f:.2} USDC → {to}");
     }
+
+    if dry_run {
+        if json {
+            return json_out(&SendJson {
+                status: "dry_run",
+                token: "USDC".into(),
+                amount: format!("{display_f:.2}"),
+                recipient: to.into(),
+                tx: String::new(),
+            });
+        }
+        println!("[DRY RUN] Transfer not executed.");
+        return Ok(());
+    }
+
     if !yes && !json && !confirm("Proceed?") {
         return Err(eyre::eyre!("Cancelled"));
     }
@@ -146,7 +176,8 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, json: 
     Ok(())
 }
 
-async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -179,6 +210,21 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     if !json {
         println!("Send {token_f:.6} {sym} → {to}");
     }
+
+    if dry_run {
+        if json {
+            return json_out(&SendJson {
+                status: "dry_run",
+                token: sym.clone(),
+                amount: format!("{token_f:.6}"),
+                recipient: to.into(),
+                tx: String::new(),
+            });
+        }
+        println!("[DRY RUN] Transfer not executed.");
+        return Ok(());
+    }
+
     if !yes && !json && !confirm("Proceed?") {
         return Err(eyre::eyre!("Cancelled"));
     }

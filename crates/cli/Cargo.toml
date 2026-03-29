@@ -21,3 +21,4 @@ chrono.workspace = true
 chrono-tz.workspace = true
 fs2.workspace = true
 dirs.workspace = true
+rpassword.workspace = true

@@ -237,6 +237,7 @@ pub async fn get_balance(
 
 /// Portfolio balances — SOL + USDC + all GM tokens.
 /// Uses sequential RPC calls to avoid rate limiting on public Solana endpoints.
+#[derive(Debug)]
 pub struct PortfolioBalances {
     pub sol: f64,
     pub usdc: f64,

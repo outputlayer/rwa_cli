@@ -27,11 +27,11 @@ cargo install --path bin/rwa # Install locally
 - **Error handling**: `eyre` everywhere. No `thiserror`, no `anyhow`, no `.unwrap()` on fallible ops.
 - **Dependencies**: centralized `[workspace.dependencies]` in root Cargo.toml. Add versions there, reference with `.workspace = true` in crate Cargo.toml.
 - **Solana RPC**: Avoid excessive concurrent RPC calls. Use `tokio::join!` for 2-3 independent calls (e.g. preflight). Public endpoints rate-limit at ~10 req/s.
-- **RPC rotation**: 4 fallback URLs in `RPC_URLS` (solana, publicnode, extrnode, drpc). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
+- **RPC rotation**: 2 fallback URLs in `RPC_URLS` (solana, publicnode). User can override with `--rpc-url` or `RWA_RPC_URL` env var.
 - **Token symbols**: both `TSLA` and `TSLAon` accepted — resolved in `gm::resolve_token`.
 - **Amounts**: exact number (`100`), percentage (`50%`), or `all`.
 - **HTTP**: `reqwest` with `rustls-tls` only. No native TLS, no OpenSSL.
-- **Wallet**: JSON keypair at `~/.config/rwa/id.json`. Permissions `0o600` enforced on Unix.
+- **Wallet**: JSON keypair at `~/.config/rwa/key.json` (or encrypted `key.age`). Permissions `0o600` enforced on Unix.
 
 ## Key Constants
 
@@ -49,22 +49,32 @@ cargo install --path bin/rwa # Install locally
 ## Commands
 
 ```
-rwa gm hours                       # Current trading session + tradable count
-rwa gm hours --tradable            # List all tradable tokens in current session
-rwa gm list                        # All 264 tokens (with tradable status)
-rwa gm list --search <keyword>     # Search tokens (includes tradable field)
-rwa gm quote <SYM> <AMT>          # Swap quote
-rwa gm buy <SYM> <AMT> -y         # Buy token
+rwa gm hours                            # Current trading session + tradable count
+rwa gm hours --tradable                 # List all tradable tokens in current session
+rwa gm list                             # All 264 tokens (with tradable status)
+rwa gm list --search <keyword>          # Search tokens (includes tradable field)
+rwa gm quote <SYM> <AMT>               # Swap quote
+rwa gm buy <SYM> <AMT> -y              # Buy token
 rwa gm buy <SYM> <AMT> -y --slippage 50  # Buy with max 0.5% slippage
-rwa gm sell <SYM> <AMT> -y        # Sell token
-rwa gm close-all -y               # Sell ALL positions (sequential, skips <$1.50)
-rwa gm close-all 50% -y           # Sell 50% of every position
-rwa gm portfolio [WALLET]          # Holdings + P&L
-rwa gm history <SYM> [-r RANGE]   # Price chart data
-rwa gm send <TOKEN> <AMT> <TO> -y # Transfer tokens
-rwa gm reclaim                    # Close empty token accounts, reclaim SOL rent
-rwa gm reclaim --token <SYM>      # Reclaim only for a specific token
-rwa keys generate|import|show      # Wallet management
+rwa gm buy <SYM> <AMT> --dry-run       # Preview buy without executing
+rwa gm sell <SYM> <AMT> -y             # Sell token
+rwa gm sell <SYM> <AMT> --dry-run      # Preview sell without executing
+rwa gm close-all -y                     # Sell ALL positions (sequential, skips <$1.50)
+rwa gm close-all 50% -y                 # Sell 50% of every position
+rwa gm close-all --dry-run              # Preview what would be sold
+rwa gm portfolio [WALLET]               # Holdings + P&L
+rwa gm history <SYM> [-r RANGE]        # Price chart data
+rwa gm send <TOKEN> <AMT> <TO> -y      # Transfer tokens
+rwa gm send <TOKEN> <AMT> <TO> --dry-run  # Preview transfer without executing
+rwa gm reclaim                          # Close empty token accounts, reclaim SOL rent
+rwa gm reclaim --token <SYM>           # Reclaim only for a specific token
+rwa keys generate                       # Create new wallet (plaintext)
+rwa keys generate --encrypt             # Create new wallet (age-encrypted)
+rwa keys import --seed-phrase|--private-key|--file  # Import wallet
+rwa keys import --seed-phrase ... --encrypt         # Import + encrypt immediately
+rwa keys encrypt                        # Encrypt existing key.json → key.age
+rwa keys decrypt                        # Decrypt key.age → key.json
+rwa keys show                           # Show active wallet address
 ```
 
 ## Trading Sessions (ET)
@@ -120,14 +130,30 @@ CLI auto-retries up to 2× — agents should NOT retry manually.
 - `close-all` skips non-tradable tokens and puts them in the `skipped` array
 - Fails open: if the Ondo session API is unreachable, the check is skipped (doesn't block trades)
 
+## Wallet Encryption
+
+Wallets can be stored encrypted with a passphrase (age format):
+
+```bash
+rwa keys generate --encrypt   # new wallet → key.age
+rwa keys encrypt              # convert existing key.json → key.age (deletes key.json)
+rwa keys decrypt              # convert key.age → key.json (deletes key.age)
+```
+
+When an encrypted wallet exists (`~/.config/rwa/key.age`), all commands prompt for passphrase automatically. Set `RWA_PASSPHRASE` env var to skip the prompt (for scripting):
+
+```bash
+export RWA_PASSPHRASE="my passphrase"
+rwa --json gm portfolio
+```
+
 ## Agent Usage Rules (for AI agents running `rwa` commands)
 
 **CRITICAL — NEVER run rwa commands in parallel (`&`).** Jupiter API rejects concurrent requests from the same wallet (HTTP 400, "Failed to get quotes"). Always run one command at a time, sequentially. This applies to ALL commands: quotes, trades, history, portfolio.
 
 ### Command execution
 - Do NOT prepend `export PATH=...` to every command. `rwa` is in PATH after install.
-- Run commands **one at a time**: `rwa gm buy TSLA 100 -y && sleep 5 && rwa gm buy AAPL 100 -y`
-- Add `sleep 3` between consecutive commands
+- Run commands **one at a time** with `sleep 3` between them
 - Always use `--json` flag and `-y` for buy/sell/send
 - **Quote requires amount**: `rwa --json gm quote <SYMBOL> <AMOUNT>` — amount is mandatory
 - **To sell all positions**: use `rwa --json gm close-all -y` — do NOT sell each token manually
@@ -137,6 +163,27 @@ CLI auto-retries up to 2× — agents should NOT retry manually.
 - **send USDC all / send SOL all**: safe to use for draining wallet — handles precision and fees correctly
 - **After selling all positions**: run `rwa --json gm reclaim` to close empty token accounts and reclaim SOL rent
 - **Check market hours**: `rwa --json gm hours` — NOT `market-hours`
+- **Use --dry-run before large orders**: preview without executing, then run without flag to confirm
+
+### Buying multiple tokens (basket / rebalance)
+
+There is no multi-buy command — run `buy` sequentially, one token at a time:
+
+```bash
+# Buy a basket — always sequential, always sleep 3 between trades
+rwa --json gm buy TSLA 100 -y && sleep 3 && \
+rwa --json gm buy AAPL 150 -y && sleep 3 && \
+rwa --json gm buy NVDA 200 -y
+```
+
+**Preview first with `--dry-run`** to verify amounts before committing:
+```bash
+rwa --json gm buy TSLA 100 --dry-run && \
+rwa --json gm buy AAPL 150 --dry-run && \
+rwa --json gm buy NVDA 200 --dry-run
+```
+
+**If one trade fails** — stop the chain, do NOT continue with remaining orders. Check the error and handle it before proceeding. Each `&&` already stops on failure.
 
 ### Token search
 - **Always** use `rwa --json gm list --search <keyword>` to filter tokens (searches symbol, name, and sector)

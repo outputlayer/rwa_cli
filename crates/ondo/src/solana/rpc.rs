@@ -9,26 +9,23 @@ use crate::HTTP;
 static LAST_GOOD_IDX: AtomicUsize = AtomicUsize::new(0);
 
 /// Public Solana RPC endpoints — rotated on rate-limit errors.
+/// Only nodes that support unauthenticated JSON-RPC batch requests are listed here.
 /// Order: most stable first. User can override with --rpc-url or RWA_RPC_URL.
+///
+/// Excluded (tested, broken for free-tier batch):
+///   extrnode (solana-mainnet.rpc.extrnode.com) — returns 401, requires auth
+///   drpc (solana.drpc.org) — returns 400 on all requests, auth-gated
 const RPC_URLS: &[&str] = &[
-    "https://api.mainnet-beta.solana.com",         // Solana Foundation — 10 req/s, most reliable
-    "https://solana-rpc.publicnode.com",           // PublicNode — 10 nodes, stable
-    "https://solana-mainnet.rpc.extrnode.com",     // ExtrNode — used by wallets
-    "https://solana.drpc.org",                     // dRPC — decentralized, free tier
+    "https://api.mainnet-beta.solana.com",         // Solana Foundation — most reliable
+    "https://solana-rpc.publicnode.com",           // PublicNode — stable, no auth required
 ];
 
-/// Return the list of RPC URLs to try: user-provided first, then public fallbacks.
+/// Return the list of RPC URLs to try.
+/// Custom URL: use only that URL — the user knows what they want, no silent fallback.
+/// No custom URL: rotate through the public fallback list.
 pub(crate) fn rpc_urls(custom: Option<&str>) -> Vec<&str> {
     match custom {
-        Some(url) => {
-            let mut urls = vec![url];
-            for u in RPC_URLS {
-                if *u != url {
-                    urls.push(u);
-                }
-            }
-            urls
-        }
+        Some(url) => vec![url],
         None => RPC_URLS.to_vec(),
     }
 }
@@ -180,7 +177,7 @@ pub(super) async fn rpc_batch_with_retry(
                 break; // 401/403 etc → not retryable, try next URL
             }
 
-            let results: Vec<serde_json::Value> = match resp.json().await {
+            let mut results: Vec<serde_json::Value> = match resp.json().await {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = format!("error decoding response body: {e}");
@@ -206,6 +203,10 @@ pub(super) async fn rpc_batch_with_retry(
                 last_err = "batch: missing 'result' in one or more responses".to_string();
                 continue; // malformed response → retry
             }
+
+            // JSON-RPC 2.0 spec: batch responses may arrive in any order.
+            // Sort by id to match request order so callers can index by position.
+            results.sort_by_key(|r| r.get("id").and_then(|id| id.as_u64()).unwrap_or(u64::MAX));
 
             LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
             return Ok(results);
@@ -239,18 +240,10 @@ mod tests {
     }
 
     #[test]
-    fn rpc_urls_custom_prepends() {
+    fn rpc_urls_custom_returns_only_that_url() {
         let custom = "https://my-rpc.example.com";
         let urls = rpc_urls(Some(custom));
-        assert_eq!(urls[0], custom);
-        assert_eq!(urls.len(), RPC_URLS.len() + 1);
-    }
-
-    #[test]
-    fn rpc_urls_custom_deduplicates() {
-        let urls = rpc_urls(Some(RPC_URLS[0]));
-        assert_eq!(urls.len(), RPC_URLS.len());
-        assert_eq!(urls[0], RPC_URLS[0]);
+        assert_eq!(urls, vec![custom]);
     }
 
     #[test]

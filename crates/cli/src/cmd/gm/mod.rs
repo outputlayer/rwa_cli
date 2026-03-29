@@ -46,6 +46,9 @@ pub enum GmAction {
         /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
+        /// Show quote and validate without executing the swap
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -60,6 +63,9 @@ pub enum GmAction {
         /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
+        /// Show quote and validate without executing the swap
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Portfolio positions and P&L (Solana)
@@ -95,6 +101,9 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
+        /// Validate and show transfer details without sending
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Close all GM positions — sell every token for USDC sequentially
@@ -104,6 +113,9 @@ pub enum GmAction {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
+        /// Show what would be sold without executing
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Close empty token accounts and reclaim SOL rent
@@ -118,13 +130,13 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
         GmAction::Quote { symbol, amount, sell, slippage } => trade::quote(&symbol, &amount, sell, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
-        GmAction::Buy { symbol, amount, yes, slippage } => trade::buy(&symbol, &amount, yes, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
-        GmAction::Sell { symbol, amount, yes, slippage } => trade::sell(&symbol, &amount, yes, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
+        GmAction::Buy { symbol, amount, yes, slippage, dry_run } => trade::buy(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
+        GmAction::Sell { symbol, amount, yes, slippage, dry_run } => trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, Some(slippage.unwrap_or(DEFAULT_SLIPPAGE_BPS))).await,
         GmAction::Portfolio { wallet } => portfolio::portfolio(wallet.as_deref(), json, rpc_url).await,
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List { search } => list::list(json, search.as_deref()).await,
-        GmAction::Send { token, amount, to, yes } => send::send(&token, &amount, &to, yes, json, rpc_url).await,
-        GmAction::CloseAll { amount, yes } => trade::close_all(amount.as_deref(), yes, json, rpc_url).await,
+        GmAction::Send { token, amount, to, yes, dry_run } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url).await,
+        GmAction::CloseAll { amount, yes, dry_run } => trade::close_all(amount.as_deref(), yes, dry_run, json, rpc_url).await,
         GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
     }
 }
@@ -340,6 +352,14 @@ fn confirm(msg: &str) -> bool {
 }
 
 fn load_wallet() -> Result<wallet::Wallet> {
+    if wallet::is_wallet_encrypted() {
+        let passphrase = match std::env::var("RWA_PASSPHRASE") {
+            Ok(p) => p,
+            Err(_) => rpassword::prompt_password("Wallet passphrase: ")
+                .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))?,
+        };
+        return wallet::Wallet::load_default_encrypted(&passphrase);
+    }
     wallet::Wallet::load_default().map_err(|_| {
         eyre::eyre!(
             "No wallet found.\n\n\
