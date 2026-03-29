@@ -112,30 +112,27 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
 
     let is_all = amount.trim().eq_ignore_ascii_case("all") || amount.trim() == "100%";
 
-    // For "all", use raw on-chain balance to avoid float precision loss.
-    let (display_f, raw) = if is_all {
-        let (ui, raw_str) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
-        if ui <= 0.0 {
-            return Err(eyre::eyre!("USDC balance is 0"));
-        }
-        let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid on-chain USDC amount"))?;
-        (ui, raw)
+    let raw_str = if is_all {
+        let (_, raw) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
+        raw
     } else {
-        let usdc_f = resolve_percent_amount(amount, || {
+        resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
             let pk = pubkey.clone();
             let rpc = rpc_url.map(String::from);
-            async move { solana::get_usdc_balance(&pk, rpc.as_deref()).await }
-        }).await?;
-        if usdc_f <= 0.0 {
-            return Err(eyre::eyre!("USDC balance is 0"));
-        }
-        let raw_str = jupiter::usdc_to_raw(&format!("{usdc_f:.2}"))?;
-        let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
-        (usdc_f, raw)
+            async move {
+                let (_, raw) = solana::get_usdc_balance_raw(&pk, rpc.as_deref()).await?;
+                Ok(raw)
+            }
+        }).await?
     };
+    if raw_str == "0" {
+        return Err(eyre::eyre!("USDC balance is 0"));
+    }
+    let display_amount = jupiter::format_amount(&raw_str, jupiter::USDC_DECIMALS);
+    let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
 
     if !json {
-        println!("Send {display_f:.2} USDC → {to}");
+        println!("Send {} USDC → {to}", display_amount);
     }
 
     if dry_run {
@@ -143,7 +140,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
             return json_out(&SendJson {
                 status: "dry_run",
                 token: "USDC".into(),
-                amount: format!("{display_f:.2}"),
+                amount: display_amount.clone(),
                 recipient: to.into(),
                 tx: String::new(),
             });
@@ -163,12 +160,12 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
         return json_out(&SendJson {
             status: if result.confirmed { "success" } else { "sent" },
             token: "USDC".into(),
-            amount: format!("{display_f:.2}"),
+            amount: display_amount.clone(),
             recipient: to.into(),
             tx: format!("https://solscan.io/tx/{sig}"),
         });
     }
-    println!("✓ Sent {display_f:.2} USDC → {to}");
+    println!("✓ Sent {} USDC → {to}", display_amount);
     println!("  https://solscan.io/tx/{sig}");
     if !result.confirmed {
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
@@ -189,26 +186,25 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
     }
 
-    let token_f = resolve_percent_amount(amount, || {
+    let raw_str = resolve_amount_to_raw(amount, jupiter::GM_SOL_DECIMALS, || {
         let pk = pubkey.clone();
         let mint = gm_mint.clone();
         let rpc = rpc_url.map(String::from);
         async move {
             let b = solana::get_balance(&pk, &mint, rpc.as_deref()).await?;
-            Ok(b.balance)
+            Ok(b.raw_amount)
         }
     }).await?;
 
-    if token_f <= 0.0 {
+    if raw_str == "0" {
         return Err(eyre::eyre!("Balance is 0 — nothing to send"));
     }
 
-    let token_str = format!("{:.9}", token_f);
-    let raw_str = jupiter::token_to_raw(&token_str, jupiter::GM_SOL_DECIMALS)?;
+    let token_display = jupiter::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid token amount"))?;
 
     if !json {
-        println!("Send {token_f:.6} {sym} → {to}");
+        println!("Send {} {sym} → {to}", token_display);
     }
 
     if dry_run {
@@ -216,7 +212,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
             return json_out(&SendJson {
                 status: "dry_run",
                 token: sym.clone(),
-                amount: format!("{token_f:.6}"),
+                amount: token_display.clone(),
                 recipient: to.into(),
                 tx: String::new(),
             });
@@ -236,12 +232,12 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return json_out(&SendJson {
             status: if result.confirmed { "success" } else { "sent" },
             token: sym.clone(),
-            amount: format!("{token_f:.6}"),
+            amount: token_display.clone(),
             recipient: to.into(),
             tx: format!("https://solscan.io/tx/{sig}"),
         });
     }
-    println!("✓ Sent {token_f:.6} {sym} → {to}");
+    println!("✓ Sent {} {sym} → {to}", token_display);
     println!("  https://solscan.io/tx/{sig}");
     if !result.confirmed {
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");

@@ -9,22 +9,24 @@ pub async fn buy(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: boo
     let w = load_wallet()?;
     let taker = w.pubkey();
 
-    let usdc_f = resolve_percent_amount(amount, || {
+    let raw_usdc = resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
         let t = taker.clone();
         let rpc = rpc_url.map(str::to_string);
-        async move { solana::get_usdc_balance(&t, rpc.as_deref()).await }
+        async move {
+            let (_, raw) = solana::get_usdc_balance_raw(&t, rpc.as_deref()).await?;
+            Ok(raw)
+        }
     }).await?;
-    let usdc_str = format!("{usdc_f:.2}");
+    let usdc_str = jupiter::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
 
     // Parallel: preflight (USDC balance check) + tradable check
     let (preflight_res, tradable_res) = tokio::join!(
-        preflight_buy(&taker, usdc_f, rpc_url),
+        preflight_buy_raw(&taker, &raw_usdc, rpc_url),
         check_tradable(&sym),
     );
     preflight_res?;
     tradable_res?;
 
-    let raw_usdc = jupiter::usdc_to_raw(&usdc_str)?;
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
     if !json {
@@ -140,15 +142,18 @@ pub async fn sell(symbol: &str, amount: &str, yes: bool, dry_run: bool, json: bo
             (sell_display, pct_raw_str)
         }
     } else {
-        let sell_f: f64 = amount.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
-        if sell_f > bal.balance {
+        let raw = jupiter::token_to_raw(amount, gm_dec)?;
+        let raw_sell: u128 = raw.parse().map_err(|_| eyre::eyre!("Invalid amount: {amount}"))?;
+        let raw_balance: u128 = bal.raw_amount.parse()
+            .map_err(|_| eyre::eyre!("Invalid on-chain amount: {}", bal.raw_amount))?;
+        if raw_sell > raw_balance {
             return Err(eyre::eyre!(
-                "Insufficient {sym} balance: have {:.6}, trying to sell {sell_f:.6}",
-                bal.balance
+                "Insufficient {sym} balance: have {}, trying to sell {}",
+                jupiter::format_amount(&bal.raw_amount, gm_dec),
+                jupiter::format_amount(&raw, gm_dec)
             ));
         }
-        let sell_display = format!("{:.prec$}", sell_f, prec = gm_dec as usize);
-        let raw = jupiter::token_to_raw(&sell_display, gm_dec)?;
+        let sell_display = jupiter::format_amount(&raw, gm_dec);
         (sell_display, raw)
     };
 

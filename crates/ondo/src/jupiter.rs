@@ -241,10 +241,14 @@ pub fn usdc_to_raw(amount: &str) -> Result<String> {
 
 /// Convert a human-readable token amount to on-chain units with specified decimals.
 pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
-    let f: f64 = amount.parse().map_err(|_| eyre!("Invalid amount: {amount}"))?;
-    if f <= 0.0 {
+    let amount = amount.trim();
+    if amount.is_empty() {
         return Err(eyre!("Amount must be positive"));
     }
+    if amount.starts_with('-') || amount.starts_with('+') {
+        return Err(eyre!("Amount must be positive"));
+    }
+
     let d = decimals as usize;
     let parts: Vec<&str> = amount.split('.').collect();
     let (integer, frac) = match parts.len() {
@@ -252,6 +256,17 @@ pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
         2 => (parts[0], parts[1]),
         _ => return Err(eyre!("Invalid amount format")),
     };
+    let integer = if integer.is_empty() { "0" } else { integer };
+    if !integer.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return Err(eyre!("Invalid amount format"));
+    }
+    if frac.len() > d {
+        return Err(eyre!(
+            "Too many decimal places: got {}, max allowed is {d}",
+            frac.len()
+        ));
+    }
+
     let frac_padded = format!("{:0<width$}", frac, width = d);
     let frac_trimmed = &frac_padded[..d];
     let raw = format!("{integer}{frac_trimmed}");
@@ -314,8 +329,7 @@ mod tests {
 
     #[test]
     fn usdc_truncates_extra_decimals() {
-        // 7 decimal places, but USDC has 6 — truncate to 6
-        assert_eq!(usdc_to_raw("1.1234567").unwrap(), "1123456");
+        assert!(usdc_to_raw("1.1234567").is_err());
     }
 
     #[test]
@@ -426,6 +440,11 @@ mod tests {
     fn token_exact_decimals() {
         // Exactly 6 decimal digits for USDC
         assert_eq!(usdc_to_raw("1.123456").unwrap(), "1123456");
+    }
+
+    #[test]
+    fn token_rejects_extra_decimals() {
+        assert!(token_to_raw("0.1234567891", 9).is_err());
     }
 
     #[test]

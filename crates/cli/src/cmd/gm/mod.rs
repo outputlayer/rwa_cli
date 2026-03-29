@@ -482,32 +482,34 @@ async fn fetch_tradable_set() -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Resolve percentage or "all" amounts into absolute numbers.
-async fn resolve_percent_amount<F, Fut>(raw: &str, balance_fn: F) -> Result<f64>
+/// Resolve an amount expression to raw on-chain units.
+async fn resolve_amount_to_raw<F, Fut>(raw: &str, decimals: u8, balance_raw_fn: F) -> Result<String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<f64>>,
+    Fut: std::future::Future<Output = Result<String>>,
 {
     let s = raw.trim();
     if s.eq_ignore_ascii_case("all") {
-        let bal = balance_fn().await?;
-        if bal <= 0.0 {
+        let bal_raw = balance_raw_fn().await?;
+        if bal_raw == "0" {
             return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
         }
-        return Ok(bal);
+        return Ok(bal_raw);
     }
     if let Some(pct_str) = s.strip_suffix('%') {
         let pct: f64 = pct_str.parse().map_err(|_| eyre::eyre!("Invalid percentage: {s}"))?;
         if !(0.0..=100.0).contains(&pct) {
             return Err(eyre::eyre!("Percentage must be 0–100, got {pct}"));
         }
-        let bal = balance_fn().await?;
-        if bal <= 0.0 {
+        let bal_raw = balance_raw_fn().await?;
+        let bal: u128 = bal_raw.parse()
+            .map_err(|_| eyre::eyre!("Invalid on-chain amount: {bal_raw}"))?;
+        if bal == 0 {
             return Err(eyre::eyre!("Balance is 0 — nothing to trade"));
         }
-        return Ok(bal * pct / 100.0);
+        return Ok(pct_of_u128(bal, pct).to_string());
     }
-    s.parse::<f64>().map_err(|_| eyre::eyre!("Invalid amount: {s}"))
+    jupiter::token_to_raw(s, decimals)
 }
 
 // Jupiter Ultra handles gas for swaps:
@@ -516,15 +518,23 @@ where
 // - Neither covers token account rent, but Jupiter creates ATAs in the swap tx
 // So preflight only needs to check USDC balance (for buy) and trading hours.
 
-async fn preflight_buy(pubkey: &str, usdc_amount: f64, rpc_url: Option<&str>) -> Result<()> {
+async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<&str>) -> Result<()> {
     check_trading_hours()?;
-    if usdc_amount < MIN_USDC_AMOUNT {
+    let requested: u128 = raw_usdc_amount.parse()
+        .map_err(|_| eyre::eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
+    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
+    if requested < minimum {
         return Err(eyre::eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
-    let usdc = solana::get_usdc_balance(pubkey, rpc_url).await?;
-    if usdc < usdc_amount {
+
+    let (_, balance_raw) = solana::get_usdc_balance_raw(pubkey, rpc_url).await?;
+    let balance: u128 = balance_raw.parse()
+        .map_err(|_| eyre::eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
+    if balance < requested {
         return Err(eyre::eyre!(
-            "Insufficient USDC: {usdc:.2} USDC (need {usdc_amount:.2})\n  Fund wallet: {pubkey}"
+            "Insufficient USDC: {:.6} USDC (need {:.6})\n  Fund wallet: {pubkey}",
+            balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+            requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
         ));
     }
     Ok(())
