@@ -1,4 +1,5 @@
 use eyre::{eyre, Result};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,6 +7,86 @@ use std::time::Duration;
 use crate::HTTP;
 
 const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
+const ONDO_SESSION_URL: &str = "https://status.ondo.finance/api/limits/session";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OndoErrorKind {
+    Network,
+    HttpStatus,
+    Decode,
+    MissingData,
+    InvalidData,
+}
+
+#[derive(Debug)]
+pub struct OndoError {
+    pub kind: OndoErrorKind,
+    pub endpoint: String,
+    pub status: Option<StatusCode>,
+    pub detail: String,
+}
+
+impl OndoError {
+    fn new(
+        kind: OndoErrorKind,
+        endpoint: impl Into<String>,
+        status: Option<StatusCode>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            endpoint: endpoint.into(),
+            status,
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self.kind {
+            OndoErrorKind::Network => true,
+            OndoErrorKind::HttpStatus => self
+                .status
+                .map(|status| status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                .unwrap_or(false),
+            OndoErrorKind::Decode | OndoErrorKind::MissingData | OndoErrorKind::InvalidData => {
+                false
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for OndoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(status) => write!(
+                f,
+                "Ondo {} error [{}] ({}): {}",
+                self.endpoint, self.kind, status, self.detail
+            ),
+            None => write!(
+                f,
+                "Ondo {} error [{}]: {}",
+                self.endpoint, self.kind, self.detail
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OndoError {}
+
+impl std::fmt::Display for OndoErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Network => "network",
+            Self::HttpStatus => "http_status",
+            Self::Decode => "decode",
+            Self::MissingData => "missing_data",
+            Self::InvalidData => "invalid_data",
+        };
+        f.write_str(label)
+    }
+}
 
 // ─── app.ondo.finance/api/v2/assets (free, no auth) ────────────────────────
 
@@ -87,11 +168,31 @@ pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
 }
 
 async fn fetch_assets_live() -> Result<Vec<OndoAsset>> {
-    let resp = HTTP.get(ONDO_API_URL).send().await?;
+    let resp = HTTP.get(ONDO_API_URL).send().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Network,
+            "assets",
+            None,
+            format!("request failed: {e}"),
+        )
+    })?;
     if !resp.status().is_success() {
-        return Err(eyre!("Ondo API returned status {}", resp.status()));
+        return Err(OndoError::new(
+            OndoErrorKind::HttpStatus,
+            "assets",
+            Some(resp.status()),
+            "non-success response",
+        )
+        .into());
     }
-    let wrapper: AssetsResponse = resp.json().await?;
+    let wrapper: AssetsResponse = resp.json().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Decode,
+            "assets",
+            None,
+            format!("failed to decode response body: {e}"),
+        )
+    })?;
     Ok(wrapper.assets)
 }
 
@@ -129,15 +230,26 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
     assets.iter().find(|a| a.symbol.to_uppercase() == lookup)
 }
 
+fn invalid_market_data(field: &str, detail: impl Into<String>) -> eyre::Report {
+    OndoError::new(OndoErrorKind::InvalidData, field, None, detail).into()
+}
+
+fn missing_market_data(field: &str, detail: impl Into<String>) -> eyre::Report {
+    OndoError::new(OndoErrorKind::MissingData, field, None, detail).into()
+}
+
 fn parse_market_number(field: &str, s: &str, allow_negative: bool) -> Result<f64> {
     let value = s
         .parse::<f64>()
-        .map_err(|_| eyre!("Invalid Ondo {field}: {s:?}"))?;
+        .map_err(|_| invalid_market_data(field, format!("invalid number {s:?}")))?;
     if !value.is_finite() {
-        return Err(eyre!("Invalid Ondo {field}: {s:?} is not finite"));
+        return Err(invalid_market_data(field, format!("{s:?} is not finite")));
     }
     if !allow_negative && value < 0.0 {
-        return Err(eyre!("Invalid Ondo {field}: {s:?} must be non-negative"));
+        return Err(invalid_market_data(
+            field,
+            format!("{s:?} must be non-negative"),
+        ));
     }
     Ok(value)
 }
@@ -154,10 +266,12 @@ pub fn parse_change_pct(s: &str) -> Result<f64> {
 
 /// Parse primary market snapshot for a tokenized asset.
 pub fn market_snapshot(asset: &OndoAsset) -> Result<(f64, f64)> {
-    let pm = asset
-        .primary_market
-        .as_ref()
-        .ok_or_else(|| eyre!("Missing primary market data for {}", asset.symbol))?;
+    let pm = asset.primary_market.as_ref().ok_or_else(|| {
+        missing_market_data(
+            "market_snapshot",
+            format!("missing primary market data for {}", asset.symbol),
+        )
+    })?;
     let price = parse_price(&pm.price)?;
     let pct_24h = match pm.price_change_pct_24h.as_deref() {
         Some(pct) => parse_change_pct(pct)?,
@@ -168,14 +282,16 @@ pub fn market_snapshot(asset: &OndoAsset) -> Result<(f64, f64)> {
 
 /// Find an asset by symbol and parse its primary market snapshot.
 pub fn market_snapshot_for_symbol(symbol: &str, assets: &[OndoAsset]) -> Result<(f64, f64)> {
-    let asset = find_asset(symbol, assets)
-        .ok_or_else(|| eyre!("Missing Ondo asset metadata for {symbol}"))?;
+    let asset = find_asset(symbol, assets).ok_or_else(|| {
+        missing_market_data(
+            "market_snapshot",
+            format!("missing asset metadata for {symbol}"),
+        )
+    })?;
     market_snapshot(asset)
 }
 
 // ─── Trading sessions ─────────────────────────────────────────────────────
-
-const ONDO_SESSION_URL: &str = "https://status.ondo.finance/api/limits/session";
 
 /// Trading session name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,11 +422,31 @@ struct SessionResponse {
 
 /// Fetch session limits from Ondo status API.
 pub async fn fetch_session_limits() -> Result<Vec<SessionLimits>> {
-    let resp = HTTP.get(ONDO_SESSION_URL).send().await?;
+    let resp = HTTP.get(ONDO_SESSION_URL).send().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Network,
+            "session_limits",
+            None,
+            format!("request failed: {e}"),
+        )
+    })?;
     if !resp.status().is_success() {
-        return Err(eyre!("Ondo session API returned status {}", resp.status()));
+        return Err(OndoError::new(
+            OndoErrorKind::HttpStatus,
+            "session_limits",
+            Some(resp.status()),
+            "non-success response",
+        )
+        .into());
     }
-    let data: SessionResponse = resp.json().await?;
+    let data: SessionResponse = resp.json().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Decode,
+            "session_limits",
+            None,
+            format!("failed to decode response body: {e}"),
+        )
+    })?;
     Ok(data.limits)
 }
 
@@ -357,11 +493,31 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
     };
 
     let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
-    let resp = HTTP.get(&url).send().await?;
+    let resp = HTTP.get(&url).send().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Network,
+            "history",
+            None,
+            format!("request failed: {e}"),
+        )
+    })?;
     if !resp.status().is_success() {
-        return Err(eyre!("Ondo history API returned status {}", resp.status()));
+        return Err(OndoError::new(
+            OndoErrorKind::HttpStatus,
+            "history",
+            Some(resp.status()),
+            format!("symbol={sym}"),
+        )
+        .into());
     }
-    let data: HistoryResponse = resp.json().await?;
+    let data: HistoryResponse = resp.json().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Decode,
+            "history",
+            None,
+            format!("failed to decode response body: {e}"),
+        )
+    })?;
     Ok(data.primary_market_price)
 }
 
@@ -482,7 +638,25 @@ mod tests {
         }];
 
         let err = market_snapshot_for_symbol("TSLA", &assets).unwrap_err();
-        assert!(err.to_string().contains("Invalid Ondo price"));
+        let typed = err.downcast_ref::<OndoError>().expect("typed Ondo error");
+        assert_eq!(typed.kind, OndoErrorKind::InvalidData);
+        assert_eq!(typed.endpoint, "price");
+    }
+
+    #[test]
+    fn ondo_error_retryable_only_for_network_and_retryable_http() {
+        let network = OndoError::new(OndoErrorKind::Network, "assets", None, "boom");
+        let rate_limited = OndoError::new(
+            OndoErrorKind::HttpStatus,
+            "assets",
+            Some(StatusCode::TOO_MANY_REQUESTS),
+            "429",
+        );
+        let invalid = OndoError::new(OndoErrorKind::InvalidData, "price", None, "bad data");
+
+        assert!(network.is_retryable());
+        assert!(rate_limited.is_retryable());
+        assert!(!invalid.is_retryable());
     }
 
     // ── Session ───────────────────────────────────────────────
