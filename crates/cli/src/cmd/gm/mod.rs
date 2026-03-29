@@ -240,7 +240,7 @@ pub(super) struct PositionJson {
     #[serde(serialize_with = "ser_f64_2")]
     pub value_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
-    pub alloc_pct: f64,
+    pub gm_alloc_pct: f64,
     #[serde(serialize_with = "ser_f64_2")]
     pub change_pct_24h: f64,
 }
@@ -254,11 +254,11 @@ pub(super) struct PortfolioJson {
     pub usdc: f64,
     pub positions: Vec<PositionJson>,
     #[serde(serialize_with = "ser_f64_2")]
-    pub total_value_usd: f64,
+    pub gm_positions_value_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
-    pub change_24h_usd: f64,
+    pub gm_positions_change_24h_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
-    pub change_24h_pct: f64,
+    pub gm_positions_change_24h_pct: f64,
 }
 
 #[derive(Serialize)]

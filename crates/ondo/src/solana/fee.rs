@@ -65,10 +65,15 @@ async fn fetch_priority_fee(writable_accounts: &[&str], rpc_url: Option<&str>) -
 /// Estimate the transaction fee in SOL for a simple transfer (1 signature).
 /// Fetches recent priority fees from RPC with caching (10s TTL), adds 30% buffer.
 pub async fn estimate_tx_fee(rpc_url: Option<&str>) -> f64 {
+    estimate_tx_fee_lamports(rpc_url).await as f64 / 1_000_000_000.0
+}
+
+/// Estimate the transaction fee in lamports for a simple transfer (1 signature).
+/// Fetches recent priority fees from RPC with caching (10s TTL), adds 30% buffer.
+pub async fn estimate_tx_fee_lamports(rpc_url: Option<&str>) -> u64 {
     let priority = get_priority_fee_cached(rpc_url).await;
     let total = BASE_FEE_LAMPORTS + priority;
-    let with_buffer = (total as f64 * 1.3) as u64;
-    with_buffer as f64 / 1_000_000_000.0
+    (total as f64 * 1.3) as u64
 }
 
 /// Estimate SOL needed for gas, optionally including ATA creation rent.

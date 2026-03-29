@@ -1,6 +1,5 @@
 use eyre::{Result, eyre};
 
-use crate::amounts;
 use crate::wallet::Wallet;
 use crate::USDC_MINT;
 use super::rpc::rpc_call_simple;
@@ -38,14 +37,9 @@ const TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub async fn transfer_sol(
     wallet: &Wallet,
     recipient: &str,
-    amount_sol: f64,
+    amount_lamports: u64,
     rpc_url: Option<&str>,
 ) -> Result<TransactionResult> {
-    // String-based conversion to avoid float→integer precision loss.
-    let amount_str = format!("{amount_sol:.9}");
-    let lamports: u64 = amounts::token_to_raw(&amount_str, 9)?
-        .parse()
-        .map_err(|e| eyre!("Invalid lamports value: {e}"))?;
     super::validate_address(recipient)?;
     let from = bs58::decode(wallet.pubkey()).into_vec()
         .map_err(|e| eyre!("Invalid sender pubkey: {e}"))?;
@@ -58,7 +52,7 @@ pub async fn transfer_sol(
 
     // System transfer instruction: program_id_index=3, data=lamports(u32_le(2) + u64_le)
     let mut ix_data = vec![2, 0, 0, 0]; // Transfer instruction index
-    ix_data.extend_from_slice(&lamports.to_le_bytes());
+    ix_data.extend_from_slice(&amount_lamports.to_le_bytes());
 
     let accounts = vec![
         from.clone(),                   // 0: sender (signer, writable)

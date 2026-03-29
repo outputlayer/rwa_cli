@@ -24,8 +24,8 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let balances = portfolio_bal.gm_tokens;
 
     let mut positions = Vec::new();
-    let mut total_value = 0.0;
-    let mut total_prev_value = 0.0;
+    let mut gm_positions_value = 0.0;
+    let mut gm_positions_prev_value = 0.0;
 
     for tb in &balances {
         let asset = api::find_asset(&tb.symbol, &assets);
@@ -43,29 +43,29 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
         } else {
             value
         };
-        total_value += value;
-        total_prev_value += prev_value;
+        gm_positions_value += value;
+        gm_positions_prev_value += prev_value;
         positions.push(PositionJson {
             token: tb.symbol.clone(),
             balance: tb.balance,
             price,
             value_usd: value,
-            alloc_pct: 0.0,
+            gm_alloc_pct: 0.0,
             change_pct_24h: pct_24h,
         });
     }
 
-    if total_value.abs() > f64::EPSILON {
+    if gm_positions_value.abs() > f64::EPSILON {
         for p in &mut positions {
-            p.alloc_pct = (p.value_usd / total_value) * 100.0;
+            p.gm_alloc_pct = (p.value_usd / gm_positions_value) * 100.0;
         }
     }
 
     positions.sort_by(|a, b| b.value_usd.partial_cmp(&a.value_usd).unwrap_or(std::cmp::Ordering::Equal));
 
-    let total_change = total_value - total_prev_value;
-    let total_pct = if total_prev_value.abs() > f64::EPSILON {
-        (total_change / total_prev_value) * 100.0
+    let gm_positions_change = gm_positions_value - gm_positions_prev_value;
+    let gm_positions_change_pct = if gm_positions_prev_value.abs() > f64::EPSILON {
+        (gm_positions_change / gm_positions_prev_value) * 100.0
     } else {
         0.0
     };
@@ -76,9 +76,9 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
             sol: sol_bal,
             usdc: usdc_bal,
             positions,
-            total_value_usd: total_value,
-            change_24h_usd: total_change,
-            change_24h_pct: total_pct,
+            gm_positions_value_usd: gm_positions_value,
+            gm_positions_change_24h_usd: gm_positions_change,
+            gm_positions_change_24h_pct: gm_positions_change_pct,
         });
     }
 
@@ -94,22 +94,23 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     println!();
     println!(
         "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
-        "TOKEN", "BALANCE", "PRICE", "VALUE", "ALLOC", "24h"
+        "TOKEN", "BALANCE", "PRICE", "VALUE", "GM %", "24h"
     );
     println!("{}", "-".repeat(64));
 
     for p in &positions {
         println!(
             "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
-            p.token, p.balance, p.price, p.value_usd, p.alloc_pct, p.change_pct_24h
+            p.token, p.balance, p.price, p.value_usd, p.gm_alloc_pct, p.change_pct_24h
         );
     }
 
     println!("{}", "-".repeat(64));
     println!(
         "{:<10} {:>12} {:>10} {:>11.2} {:>7} {:>+7.2}%",
-        "TOTAL", "", "", total_value, "", total_pct
+        "GM TOTAL", "", "", gm_positions_value, "", gm_positions_change_pct
     );
+    println!("  Cash balances shown above are separate from GM position totals.");
     Ok(())
 }
 

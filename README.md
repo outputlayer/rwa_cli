@@ -118,7 +118,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 - Percentage: `50%` (half of balance)
 - All: `all` (entire balance)
 
-Amounts are converted with exact token precision. Inputs with too many decimal places are rejected instead of being silently rounded.
+Amounts are converted with exact on-chain precision. Inputs with too many decimal places are rejected instead of being silently rounded.
 
 ## JSON Output
 
@@ -136,7 +136,12 @@ rwa --json gm close-all 50% -y
 rwa --json gm send USDC all <ADDR> -y
 ```
 
-`portfolio` returns `sol` and `usdc` separately. Current `total_value_usd`, `change_24h_usd`, `change_24h_pct`, and `positions[].alloc_pct` describe GM positions only, not wallet cash plus positions combined.
+`portfolio` returns `sol` and `usdc` separately. GM position metrics use explicit field names:
+
+- `gm_positions_value_usd`
+- `gm_positions_change_24h_usd`
+- `gm_positions_change_24h_pct`
+- `positions[].gm_alloc_pct`
 
 ## About Ondo GM Tokens
 

@@ -12,7 +12,7 @@ use transfer::{derive_ata, TOKEN_PROGRAM};
 
 // Re-export public API
 pub use crate::USDC_MINT;
-pub use fee::{estimate_tx_fee, estimate_gas_needed};
+pub use fee::{estimate_gas_needed, estimate_tx_fee, estimate_tx_fee_lamports};
 pub use transaction::{TransactionResult, confirm_transaction};
 pub use transfer::{
     transfer_sol, transfer_spl,
@@ -124,12 +124,21 @@ impl MultiAccountInfo {
 
 /// Get SOL balance in SOL (not lamports).
 pub async fn get_sol_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64> {
+    let raw = get_sol_balance_raw(wallet, rpc_url).await?;
+    let lamports: u64 = raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain SOL amount: {raw}"))?;
+    Ok(lamports as f64 / 1_000_000_000.0)
+}
+
+/// Get SOL balance in raw lamports.
+pub async fn get_sol_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result<String> {
     let result: GetBalanceResult = rpc_call_simple(
         "getBalance",
         serde_json::json!([wallet, { "commitment": "confirmed" }]),
         rpc_url,
     ).await?;
-    Ok(result.value as f64 / 1_000_000_000.0)
+    Ok(result.value.to_string())
 }
 
 /// Get USDC balance for a wallet on Solana.
