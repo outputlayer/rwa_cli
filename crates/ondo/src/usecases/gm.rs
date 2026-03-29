@@ -2,6 +2,47 @@ use eyre::{Result, eyre};
 
 use crate::{amounts, api, gm, jupiter, solana, token_list, wallet};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GmTradeErrorKind {
+    MarketClosed,
+    NotTradable,
+    SlippageTooHigh,
+}
+
+#[derive(Debug)]
+pub struct GmTradeError {
+    pub kind: GmTradeErrorKind,
+    pub detail: String,
+}
+
+impl GmTradeError {
+    fn new(kind: GmTradeErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for GmTradeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GM trade error [{}]: {}", self.kind, self.detail)
+    }
+}
+
+impl std::fmt::Display for GmTradeErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::MarketClosed => "market_closed",
+            Self::NotTradable => "not_tradable",
+            Self::SlippageTooHigh => "slippage_too_high",
+        };
+        f.write_str(label)
+    }
+}
+
+impl std::error::Error for GmTradeError {}
+
 /// Maximum allowed slippage before blocking the trade.
 const MAX_SLIPPAGE_PCT: f64 = 3.0;
 /// Slippage threshold that triggers a fresh quote retry.
@@ -334,10 +375,13 @@ fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f
     let slip = calc_slippage(order);
     if let Some(s) = slip {
         if s < -MAX_SLIPPAGE_PCT {
-            return Err(eyre!(
-                "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
-                 Try a smaller amount or wait for better liquidity."
-            ));
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::SlippageTooHigh,
+                format!(
+                    "slippage {s:.2}% exceeds -{MAX_SLIPPAGE_PCT:.0}%. Try a smaller amount or wait for better liquidity."
+                ),
+            )
+            .into());
         }
         if s < -1.0 && !json {
             eprintln!("Warning: slippage {s:.2}%");
@@ -359,10 +403,13 @@ async fn get_order_checked(
         let slip = calc_slippage(&order);
         if let Some(s) = slip {
             if s < -MAX_SLIPPAGE_PCT {
-                return Err(eyre!(
-                    "Slippage too high ({s:.2}%). Max allowed: -{MAX_SLIPPAGE_PCT:.0}%. \
-                     Try a smaller amount or wait for better liquidity."
-                ));
+                return Err(GmTradeError::new(
+                    GmTradeErrorKind::SlippageTooHigh,
+                    format!(
+                        "slippage {s:.2}% exceeds -{MAX_SLIPPAGE_PCT:.0}%. Try a smaller amount or wait for better liquidity."
+                    ),
+                )
+                .into());
             }
             if s < -SLIPPAGE_RETRY_PCT && attempt <= MAX_SLIPPAGE_RETRIES {
                 if !json {
@@ -392,13 +439,14 @@ fn check_trading_hours() -> Result<()> {
     if session == api::Session::Closed {
         use chrono_tz::US::Eastern;
         let now = chrono::Utc::now().with_timezone(&Eastern);
-        return Err(eyre!(
-            "Ondo GM market is closed right now.\n  \
-             Trading resumes: Sunday 8:00 PM ET (Overnight session)\n  \
-             Current time:    {} ET\n  \
-             Run `rwa gm hours` for session details",
-            now.format("%A %I:%M %p")
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::MarketClosed,
+            format!(
+                "trading resumes Sunday 8:00 PM ET (current time: {} ET). Run `rwa gm hours` for session details",
+                now.format("%A %I:%M %p")
+            ),
+        )
+        .into());
     }
     Ok(())
 }
@@ -417,12 +465,14 @@ async fn check_tradable(symbol: &str) -> Result<()> {
         .iter()
         .any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session));
     if !is_tradable {
-        return Err(eyre!(
-            "{symbol} is not tradable in current session ({}).\n  \
-             Run `rwa gm hours --tradable` to see which tokens are available.\n  \
-             Run `rwa gm list --search {symbol}` to check tradable status.",
-            session.label()
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::NotTradable,
+            format!(
+                "{symbol} is not tradable in current session ({}). Run `rwa gm hours --tradable` to see which tokens are available.",
+                session.label()
+            ),
+        )
+        .into());
     }
     Ok(())
 }
@@ -552,7 +602,9 @@ mod tests {
         };
         let result = check_slippage(&order, true);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Slippage too high"));
+        let err = result.unwrap_err();
+        let typed = err.downcast_ref::<GmTradeError>().expect("typed slippage error");
+        assert_eq!(typed.kind, GmTradeErrorKind::SlippageTooHigh);
     }
 
     #[test]
@@ -568,4 +620,10 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn market_closed_error_is_typed() {
+        let err = GmTradeError::new(GmTradeErrorKind::MarketClosed, "closed");
+        assert_eq!(err.kind, GmTradeErrorKind::MarketClosed);
+        assert!(err.to_string().contains("market_closed"));
+    }
 }

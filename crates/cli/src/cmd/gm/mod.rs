@@ -484,4 +484,96 @@ mod tests {
         assert!(json.get("usdc").is_none());
         assert!(json.get("gm_positions_value_usd").is_none());
     }
+
+    #[test]
+    fn trade_json_serializes_optional_fields_and_rounding() {
+        let json = serde_json::to_value(TradeJson {
+            status: "success",
+            amount: "0.2584".into(),
+            token: "TSLAon".into(),
+            counter_amount: "100.00".into(),
+            counter_token: "USDC",
+            tx: "https://solscan.io/tx/abc".into(),
+            slippage_pct: Some(0.51234),
+            price_impact_pct: Some(-0.12345),
+            fee_bps: Some(5),
+            gasless: Some(false),
+            router: Some("jupiterz".into()),
+        })
+        .unwrap();
+
+        assert_eq!(json.pointer("/status"), Some(&Value::from("success")));
+        assert_eq!(json.pointer("/slippage_pct"), Some(&Value::from(0.5123)));
+        assert_eq!(json.pointer("/price_impact_pct"), Some(&Value::from(-0.1235)));
+        assert_eq!(json.pointer("/fee_bps"), Some(&Value::from(5)));
+        assert_eq!(json.pointer("/gasless"), Some(&Value::from(false)));
+        assert_eq!(json.pointer("/router"), Some(&Value::from("jupiterz")));
+    }
+
+    #[test]
+    fn send_json_keeps_stable_shape() {
+        let json = serde_json::to_value(SendJson {
+            status: "dry_run",
+            token: "SOL".into(),
+            amount: "0.999995".into(),
+            recipient: "recipient123".into(),
+            tx: String::new(),
+        })
+        .unwrap();
+
+        assert_eq!(json.pointer("/status"), Some(&Value::from("dry_run")));
+        assert_eq!(json.pointer("/token"), Some(&Value::from("SOL")));
+        assert_eq!(json.pointer("/amount"), Some(&Value::from("0.999995")));
+        assert_eq!(json.pointer("/recipient"), Some(&Value::from("recipient123")));
+        assert_eq!(json.pointer("/tx"), Some(&Value::from("")));
+    }
+
+    #[test]
+    fn close_all_json_omits_skipped_when_empty() {
+        let json = serde_json::to_value(CloseAllResultJson {
+            status: "success",
+            sold: vec![CloseItemJson {
+                token: "TSLAon".into(),
+                amount: "0.2500".into(),
+                usdc: "96.44".into(),
+                tx: "https://solscan.io/tx/abc".into(),
+            }],
+            failed: vec![CloseFailJson {
+                token: "AAPLon".into(),
+                error: "not tradable".into(),
+            }],
+            skipped: vec![],
+            total_usdc: "96.44".into(),
+        })
+        .unwrap();
+
+        assert_eq!(json.pointer("/status"), Some(&Value::from("success")));
+        assert_eq!(json.pointer("/sold/0/token"), Some(&Value::from("TSLAon")));
+        assert_eq!(json.pointer("/failed/0/token"), Some(&Value::from("AAPLon")));
+        assert_eq!(json.pointer("/total_usdc"), Some(&Value::from("96.44")));
+        assert!(json.get("skipped").is_none());
+    }
+
+    #[test]
+    fn close_all_json_serializes_skipped_when_present() {
+        let json = serde_json::to_value(CloseAllResultJson {
+            status: "dry_run",
+            sold: vec![],
+            failed: vec![],
+            skipped: vec![CloseSkipJson {
+                token: "QQQon".into(),
+                estimated_usd: 1.234,
+                reason: "below $1.50 minimum",
+            }],
+            total_usdc: "0.00".into(),
+        })
+        .unwrap();
+
+        assert_eq!(json.pointer("/skipped/0/token"), Some(&Value::from("QQQon")));
+        assert_eq!(json.pointer("/skipped/0/estimated_usd"), Some(&Value::from(1.23)));
+        assert_eq!(
+            json.pointer("/skipped/0/reason"),
+            Some(&Value::from("below $1.50 minimum"))
+        );
+    }
 }

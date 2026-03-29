@@ -1,7 +1,52 @@
-use eyre::{Result, eyre};
+use eyre::Result;
 
 use crate::wallet::Wallet;
 use super::rpc::rpc_call_simple;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionErrorKind {
+    ConfirmationTimeout,
+    OnChainFailure,
+    MissingBlockhash,
+    InvalidBlockhash,
+    SimulationFailure,
+}
+
+#[derive(Debug)]
+pub struct TransactionError {
+    pub kind: TransactionErrorKind,
+    pub detail: String,
+}
+
+impl TransactionError {
+    fn new(kind: TransactionErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Solana transaction error [{}]: {}", self.kind, self.detail)
+    }
+}
+
+impl std::fmt::Display for TransactionErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::ConfirmationTimeout => "confirmation_timeout",
+            Self::OnChainFailure => "on_chain_failure",
+            Self::MissingBlockhash => "missing_blockhash",
+            Self::InvalidBlockhash => "invalid_blockhash",
+            Self::SimulationFailure => "simulation_failure",
+        };
+        f.write_str(label)
+    }
+}
+
+impl std::error::Error for TransactionError {}
 
 /// Result of sending a transaction — includes whether it was confirmed on-chain.
 pub struct TransactionResult {
@@ -178,7 +223,11 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
 
     loop {
         if start.elapsed() > timeout {
-            return Err(eyre!("Transaction confirmation timeout (30s) — tx may still land: {signature}"));
+            return Err(TransactionError::new(
+                TransactionErrorKind::ConfirmationTimeout,
+                format!("transaction may still land: {signature}"),
+            )
+            .into());
         }
 
         if let Ok(result) = rpc_call_simple::<serde_json::Value>(
@@ -203,7 +252,11 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
                     }
                     if let Some(err) = status.get("err") {
                         if !err.is_null() {
-                            return Err(eyre!("Transaction failed on-chain: {err}"));
+                            return Err(TransactionError::new(
+                                TransactionErrorKind::OnChainFailure,
+                                err.to_string(),
+                            )
+                            .into());
                         }
                     }
                     return Ok(()); // confirmed, no error
@@ -227,15 +280,30 @@ async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<BlockhashInfo> {
 
     let hash_str = result["value"]["blockhash"]
         .as_str()
-        .ok_or_else(|| eyre!("Missing blockhash in response"))?;
+        .ok_or_else(|| {
+            TransactionError::new(
+                TransactionErrorKind::MissingBlockhash,
+                "RPC response did not include blockhash",
+            )
+        })?;
     let last_valid = result["value"]["lastValidBlockHeight"]
         .as_u64()
         .unwrap_or(0);
 
     let hash_bytes = bs58::decode(hash_str).into_vec()
-        .map_err(|e| eyre!("Invalid blockhash: {e}"))?;
+        .map_err(|e| {
+            TransactionError::new(
+                TransactionErrorKind::InvalidBlockhash,
+                format!("invalid base58 blockhash: {e}"),
+            )
+        })?;
     let hash: [u8; 32] = hash_bytes.try_into()
-        .map_err(|_| eyre!("Blockhash wrong length"))?;
+        .map_err(|_| {
+            TransactionError::new(
+                TransactionErrorKind::InvalidBlockhash,
+                "blockhash wrong length",
+            )
+        })?;
     Ok(BlockhashInfo { hash, last_valid_block_height: last_valid })
 }
 
@@ -277,7 +345,11 @@ async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
                         .join("\n  ")
                 })
                 .unwrap_or_default();
-            return Err(eyre!("Transaction simulation failed: {err}\n  Logs:\n  {logs}"));
+            return Err(TransactionError::new(
+                TransactionErrorKind::SimulationFailure,
+                format!("{err}\n  Logs:\n  {logs}"),
+            )
+            .into());
         }
     }
 
@@ -405,5 +477,16 @@ mod tests {
             confirmed: false,
         };
         assert!(!r.confirmed);
+    }
+
+    #[test]
+    fn transaction_error_display_includes_kind() {
+        let err = TransactionError::new(
+            TransactionErrorKind::ConfirmationTimeout,
+            "transaction may still land: abc123",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("confirmation_timeout"));
+        assert!(msg.contains("abc123"));
     }
 }
