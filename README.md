@@ -56,6 +56,7 @@ Recommended agent behavior:
 - Use `--dry-run` before large or uncertain trades
 - Never run buy/sell/send commands in parallel for the same wallet
 - For multi-token liquidation, use `rwa gm close-all` instead of manual loops
+- Treat JSON output as a stable contract; do not rely on legacy flat `portfolio` fields
 
 Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for manual install (Cursor, Claude Code, OpenCode, etc.).
 
@@ -145,7 +146,17 @@ rwa --json gm send USDC all <ADDR> -y
 - `gm_positions.change_24h_pct`
 - `gm_positions.positions[].gm_alloc_pct`
 
+Trade/send/close-all JSON shapes are covered by regression tests and are intended to remain stable for agents and scripts.
+
 Malformed Ondo market prices now fail loudly instead of silently becoming `0.0`, so bad upstream data is easier to detect.
+
+Common surfaced trade/runtime error kinds now map more cleanly to the real failure:
+
+- `market_closed`
+- `not_tradable`
+- `slippage_too_high`
+- `confirmation_timeout`
+- `on_chain_failure`
 
 ## About Ondo GM Tokens
 
