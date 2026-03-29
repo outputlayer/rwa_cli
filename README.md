@@ -20,23 +20,47 @@ Pre-built binaries for macOS and Linux are available on [GitHub Releases](https:
 
 ## Agent Skills
 
-**Send this to any AI agent to get started:**
-
-```
-I'd like to trade tokenized stocks on Solana.
-
-First install the CLI: curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
-
-Then if npm is available, install skills: npx skills add outputlayer/rwa_skills -g -y
-```
-
-Install the rwa skill for AI agents via [Agent Skills](https://agentskills.io/):
+For agents, the best workflow is:
 
 ```bash
-# 1. Install the CLI first (required)
+# 1. Install the CLI
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
 
-# 2. Then install skills for your AI agent
+# 2. Install the skills
+npx skills add outputlayer/rwa_skills -g -y
+```
+
+Then tell the agent the task directly:
+
+```
+Buy $100 of TSLAon
+Show my portfolio
+Create a wallet
+Send all USDC to <ADDRESS>
+```
+
+The skills repo is [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
+
+| Skill | Best for |
+|-------|----------|
+| `rwa-trade` | Buy, sell, market hours, tradable tokens, close-all |
+| `rwa-portfolio` | Holdings, allocation, 24h change, history |
+| `rwa-wallet` | Wallet creation/import, encryption, send/withdraw, reclaim |
+
+Recommended agent behavior:
+
+- Prefer `rwa --json` for machine-readable output
+- Use `--dry-run` before large or uncertain trades
+- Never run buy/sell/send commands in parallel for the same wallet
+- For multi-token liquidation, use `rwa gm close-all` instead of manual loops
+
+Install the skills for AI agents via [Agent Skills](https://agentskills.io/):
+
+```bash
+# Install the CLI first (required)
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
+
+# Then install skills for your AI agent
 npx skills add outputlayer/rwa_skills -g -y
 ```
 
@@ -46,12 +70,14 @@ Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for m
 
 ```bash
 rwa keys generate               # Create Solana wallet
+rwa keys generate --encrypt     # Create encrypted wallet
 rwa gm hours                    # Market session + tradable count
 rwa gm hours --tradable         # List all tradable tokens right now
 rwa gm list                     # See all 264 tokens (with tradable status)
 rwa gm list --search biotech    # Search tokens by keyword
-rwa gm quote TSLA 100           # Quote: 100 USDC → TSLA
+rwa gm buy TSLA 100 --dry-run   # Validate + preview buy
 rwa gm buy TSLA 100 -y          # Execute buy
+rwa gm sell TSLA 50% --dry-run  # Validate + preview sell
 rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
 rwa gm close-all -y             # Sell ALL positions (sequential)
 rwa gm close-all 50% -y         # Sell 50% of every position
@@ -70,9 +96,9 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 | `rwa gm hours --tradable` | List all tradable tokens in current session |
 | `rwa gm list` | All 264 tokens with tradable status |
 | `rwa gm list --search <keyword>` | Search tokens by name/symbol/sector (includes `tradable` field) |
-| `rwa gm quote <SYM> <AMT>` | Swap quote (buy) |
-| `rwa gm quote <SYM> <AMT> --sell` | Swap quote (sell) |
+| `rwa gm buy <SYM> <AMT> --dry-run` | Validate + preview buy quote without executing |
 | `rwa gm buy <SYM> <AMT> -y` | Buy with USDC |
+| `rwa gm sell <SYM> <AMT> --dry-run` | Validate + preview sell quote without executing |
 | `rwa gm sell <SYM> <AMT> -y` | Sell for USDC (exact, `50%`, or `all`) |
 | `rwa gm close-all -y` | Sell ALL positions sequentially |
 | `rwa gm close-all <PCT> -y` | Sell percentage of every position (e.g. `10%`, `50%`) |
@@ -88,15 +114,18 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 ### Flags
 
 - `--json` — Machine-readable JSON output on any command
-- `-y` — Skip confirmation on buy/sell
+- `-y` — Skip confirmation on buy/sell/send/close-all
 - `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: 1% (100 bps)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL`)
+- `--dry-run` — Validate and preview a trade/transfer without executing it
 
 ### Amount Formats
 
 - Exact: `100` (100 USDC or 100 tokens)
 - Percentage: `50%` (half of balance)
 - All: `all` (entire balance)
+
+Amounts are converted with exact token precision. Inputs with too many decimal places are rejected instead of being silently rounded.
 
 ## JSON Output
 
@@ -106,11 +135,12 @@ Every command supports `--json` for agent/script integration:
 rwa --json gm portfolio
 rwa --json gm list --search biotech
 rwa --json gm hours
-rwa --json gm quote TSLA 100
+rwa --json gm buy TSLA 100 --dry-run
 rwa --json gm buy TSLA 100 -y
 rwa --json gm sell TSLA 50% -y
 rwa --json gm close-all -y
 rwa --json gm close-all 50% -y
+rwa --json gm send USDC all <ADDR> -y
 ```
 
 ## About Ondo GM Tokens
@@ -145,12 +175,12 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 | `keys show` | 7ms | Local |
 | `gm hours` | 0.5s | Ondo API |
 | `gm history` | 0.5s | Ondo API |
-| `gm quote` | 0.8s | Jupiter API |
+| `gm buy --dry-run` | 0.8s | Jupiter quote + validation |
 | `gm portfolio` | 1.0s | RPC + Ondo (parallel) |
 | `gm list` | 1.3s | Ondo API (264 tokens) |
 | `gm buy/sell` | 2–4s | Preflight + Jupiter execute |
 
-RPC health tracking: auto-remembers the fastest working endpoint. 5 public Solana RPCs with instant failover (100ms). Set `RWA_RPC_URL` to a private RPC for even faster responses.
+RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs with fast failover. Set `RWA_RPC_URL` to a private RPC for even faster responses.
 
 ## Architecture
 
@@ -159,7 +189,7 @@ bin/rwa/              → Binary entry point
 crates/cli/           → CLI parsing (clap v4), output formatting
 crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
   src/solana/
-    rpc.rs            → RPC retry + URL rotation (4 fallback endpoints)
+    rpc.rs            → RPC retry + URL rotation
     fee.rs            → Priority fees + rent estimation
     transaction.rs    → Transaction building + sending
     transfer.rs       → SOL/SPL transfers + ATA management
