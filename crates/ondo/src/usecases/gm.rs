@@ -670,4 +670,51 @@ mod tests {
         assert!(msg.contains("landing failure"));
         assert!(msg.contains("-1000"));
     }
+
+    // ── parse_sell_pct ────────────────────────────────────────
+
+    #[test]
+    fn parse_sell_pct_none_returns_100() {
+        assert_eq!(parse_sell_pct(None).unwrap(), 100.0);
+    }
+
+    #[test]
+    fn parse_sell_pct_full_percent() {
+        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 100.0);
+    }
+
+    #[test]
+    fn parse_sell_pct_half_percent() {
+        assert_eq!(parse_sell_pct(Some("50%")).unwrap(), 50.0);
+    }
+
+    #[test]
+    fn parse_sell_pct_zero_percent() {
+        assert_eq!(parse_sell_pct(Some("0%")).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn parse_sell_pct_decimal_percent() {
+        assert_eq!(parse_sell_pct(Some("1.5%")).unwrap(), 1.5);
+    }
+
+    #[test]
+    fn parse_sell_pct_over_100_is_err() {
+        assert!(parse_sell_pct(Some("101%")).is_err());
+    }
+
+    #[test]
+    fn parse_sell_pct_negative_is_err() {
+        assert!(parse_sell_pct(Some("-1%")).is_err());
+    }
+
+    #[test]
+    fn parse_sell_pct_missing_percent_suffix_is_err() {
+        assert!(parse_sell_pct(Some("50")).is_err());
+    }
+
+    #[test]
+    fn parse_sell_pct_non_numeric_is_err() {
+        assert!(parse_sell_pct(Some("abc%")).is_err());
+    }
 }
