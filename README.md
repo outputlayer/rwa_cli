@@ -1,6 +1,6 @@
 # rwa — Trade Tokenized Stocks on Solana
 
-> **⚠️ Warning:** This project is pre-v1 (early alpha) and should be considered unstable. Breaking changes may be introduced without warning. This is not financial advice — use at your own risk. Always verify transactions before confirming.
+> **⚠️ Warning:** This project is pre-v1 (beta) and may still introduce breaking changes. This is not financial advice — use at your own risk. Always verify transactions before confirming.
 
 CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https://ondo.finance/)) on Solana via Jupiter.
 
@@ -21,7 +21,7 @@ Pre-built binaries for Linux, macOS, and Windows are published on [GitHub Releas
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | RWA_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | RWA_VERSION=v0.2.0 sh
 ```
 
 ## Agent Skills
