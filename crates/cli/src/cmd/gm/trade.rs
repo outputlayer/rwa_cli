@@ -264,9 +264,20 @@ pub async fn close_all(
         } else {
             tb.balance
         };
-        let (price, _) = api::market_snapshot_for_symbol(&tb.symbol, &assets)
-            .map_err(|e| eyre::eyre!("Invalid market data for {}: {}", tb.symbol, e))?;
-        let est_value = sell_balance * price;
+        let est_value = match api::market_snapshot_for_symbol(&tb.symbol, &assets) {
+            Ok((price, _)) => sell_balance * price,
+            Err(_) => {
+                if !json {
+                    eprintln!("  Skipping {} — market data unavailable", tb.symbol);
+                }
+                skipped.push(CloseSkipJson {
+                    token: tb.symbol.clone(),
+                    estimated_usd: 0.0,
+                    reason: "market data unavailable",
+                });
+                continue;
+            }
+        };
 
         if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set)
         {
@@ -455,4 +466,22 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
         println!("  Tx: https://solscan.io/tx/{sig}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verify the JSON shape of a market-data-unavailable skip entry that close_all produces.
+    #[test]
+    fn close_skip_json_market_data_unavailable_has_correct_shape() {
+        let skip = CloseSkipJson {
+            token: "TSLAon".to_string(),
+            estimated_usd: 0.0,
+            reason: "market data unavailable",
+        };
+        let json = serde_json::to_value(&skip).unwrap();
+        assert_eq!(json.pointer("/token"), Some(&serde_json::Value::from("TSLAon")));
+        assert_eq!(json.pointer("/reason"), Some(&serde_json::Value::from("market data unavailable")));
+    }
 }

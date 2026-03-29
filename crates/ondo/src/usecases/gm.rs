@@ -58,6 +58,8 @@ pub const DEFAULT_SLIPPAGE_BPS: u32 = 100;
 const MIN_USDC_AMOUNT: f64 = 1.0;
 /// Minimum sell value in USD (Jupiter MM rejects tiny orders).
 pub const MIN_SELL_VALUE_USD: f64 = 1.5;
+/// Minimum SOL balance required to cover transaction fees (rent + priority).
+const MIN_SOL_FOR_FEES: f64 = 0.002;
 
 pub struct SwapPlan {
     pub symbol: Symbol,
@@ -489,7 +491,12 @@ async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<
         return Err(eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
     }
 
-    let (_, balance_raw) = solana::get_usdc_balance_raw(pubkey, rpc_url).await?;
+    let (usdc_res, sol_raw_res) = tokio::join!(
+        solana::get_usdc_balance_raw(pubkey, rpc_url),
+        solana::get_sol_balance_raw(pubkey, rpc_url),
+    );
+
+    let (_, balance_raw) = usdc_res?;
     let balance: u128 = balance_raw.parse().map_err(|_| eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
     if balance < requested {
         return Err(eyre!(
@@ -498,6 +505,16 @@ async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<
             requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
         ));
     }
+
+    let sol_raw = sol_raw_res?;
+    let sol_lamports: u64 = sol_raw.parse().map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
+    let sol = sol_lamports as f64 / 1_000_000_000.0;
+    if sol < MIN_SOL_FOR_FEES {
+        return Err(eyre!(
+            "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
+        ));
+    }
+
     Ok(())
 }
 
@@ -530,7 +547,7 @@ async fn execute_with_retry(
                 }
                 if !json {
                     eprintln!(
-                        "Transient error (attempt {}/{}), retrying in 3s...",
+                        "Transient error (attempt {}/{}): {e}, retrying in 3s...",
                         attempt + 1,
                         MAX_SWAP_RETRIES
                     );
@@ -630,5 +647,27 @@ mod tests {
         let err = GmTradeError::new(GmTradeErrorKind::MarketClosed, "closed");
         assert_eq!(err.kind, GmTradeErrorKind::MarketClosed);
         assert!(err.to_string().contains("market_closed"));
+    }
+
+    #[test]
+    fn min_sol_for_fees_constant_is_reasonable() {
+        // 0.002 SOL = 2_000_000 lamports — covers rent-exempt + typical priority fee
+        let lamports = (MIN_SOL_FOR_FEES * 1_000_000_000.0) as u64;
+        assert_eq!(lamports, 2_000_000);
+        assert!(lamports > 0);
+    }
+
+    #[test]
+    fn execute_failure_display_includes_error_text() {
+        use crate::jupiter::{ExecuteFailure, ExecuteFailureKind};
+        let err = ExecuteFailure {
+            kind: ExecuteFailureKind::FailedToLand,
+            code: Some(-1000),
+            message: "landing failure".to_string(),
+        };
+        let msg = err.to_string();
+        // Verify the error Display includes enough context for a retry log line.
+        assert!(msg.contains("landing failure"));
+        assert!(msg.contains("-1000"));
     }
 }

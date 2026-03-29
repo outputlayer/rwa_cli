@@ -555,6 +555,18 @@ mod tests {
     }
 
     #[test]
+    fn close_skip_json_market_data_unavailable_has_correct_shape() {
+        let skip = CloseSkipJson {
+            token: "TSLAon".to_string(),
+            estimated_usd: 0.0,
+            reason: "market data unavailable",
+        };
+        let json = serde_json::to_value(&skip).unwrap();
+        assert_eq!(json.pointer("/token"), Some(&serde_json::Value::from("TSLAon")));
+        assert_eq!(json.pointer("/reason"), Some(&serde_json::Value::from("market data unavailable")));
+    }
+
+    #[test]
     fn close_all_json_serializes_skipped_when_present() {
         let json = serde_json::to_value(CloseAllResultJson {
             status: "dry_run",
