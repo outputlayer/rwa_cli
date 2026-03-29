@@ -9,8 +9,7 @@ CLI for buying & selling tokenized stocks and ETFs ([Ondo Global Markets](https:
 ## Install
 
 ```bash
-# Recommended: install script (downloads pre-built binary from GitHub Releases,
-# falls back to building from source if needed)
+# Recommended: binary-first install script
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 
 # Or directly via cargo:
@@ -27,13 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 
 ## Agent Skills
 
-For agents, the best workflow is:
+For agents:
 
 ```bash
-# 1. Install the CLI
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
-
-# 2. Install the skills
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 npx skills add outputlayer/rwa_skills -g -y
 ```
 
@@ -61,16 +57,6 @@ Recommended agent behavior:
 - Never run buy/sell/send commands in parallel for the same wallet
 - For multi-token liquidation, use `rwa gm close-all` instead of manual loops
 
-Install the skills for AI agents via [Agent Skills](https://agentskills.io/):
-
-```bash
-# Install the CLI first (required)
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | bash
-
-# Then install skills for your AI agent
-npx skills add outputlayer/rwa_skills -g -y
-```
-
 Or see [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills) for manual install (Cursor, Claude Code, OpenCode, etc.).
 
 ## Quick Start
@@ -88,7 +74,7 @@ rwa gm sell TSLA 50% --dry-run  # Validate + preview sell
 rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
 rwa gm close-all -y             # Sell ALL positions (sequential)
 rwa gm close-all 50% -y         # Sell 50% of every position
-rwa gm portfolio                # View holdings + P&L
+rwa gm portfolio                # View GM holdings + cash balances
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 rwa gm reclaim                  # Close empty accounts, reclaim SOL rent
 ```
@@ -109,7 +95,7 @@ Fund your wallet with SOL (gas) and USDC (trading) before your first trade.
 | `rwa gm sell <SYM> <AMT> -y` | Sell for USDC (exact, `50%`, or `all`) |
 | `rwa gm close-all -y` | Sell ALL positions sequentially |
 | `rwa gm close-all <PCT> -y` | Sell percentage of every position (e.g. `10%`, `50%`) |
-| `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
+| `rwa gm portfolio [WALLET]` | GM holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
 | `rwa gm reclaim` | Close empty token accounts, reclaim SOL rent |
@@ -149,6 +135,8 @@ rwa --json gm close-all -y
 rwa --json gm close-all 50% -y
 rwa --json gm send USDC all <ADDR> -y
 ```
+
+`portfolio` returns `sol` and `usdc` separately. Current `total_value_usd`, `change_24h_usd`, `change_24h_pct`, and `positions[].alloc_pct` describe GM positions only, not wallet cash plus positions combined.
 
 ## About Ondo GM Tokens
 
@@ -195,6 +183,8 @@ RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs
 bin/rwa/              → Binary entry point
 crates/cli/           → CLI parsing (clap v4), output formatting
 crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
+  src/amounts.rs      → Exact amount parsing, formatting, percent math
+  src/usecases/gm.rs  → Buy/sell/close-all application flows
   src/solana/
     rpc.rs            → RPC retry + URL rotation
     fee.rs            → Priority fees + rent estimation
@@ -206,7 +196,7 @@ crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
   src/wallet.rs       → Ed25519 wallet (SLIP-10, BIP39)
 ```
 
-~5,500 lines of Rust, ~3 MB binary, 120 tests. Pure Rust — no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), fully cross-platform.
+~5,500 lines of Rust, ~3 MB binary, 100+ tests. Pure Rust, no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), and exact amount conversion helpers shared across trade and transfer flows.
 
 ## Development
 
@@ -219,8 +209,8 @@ cargo install --path bin/rwa # Install locally
 
 ## Cross-Platform
 
-- **macOS + Linux**: fully supported
-- **Windows**: works via WSL 2 or Git Bash
+- **macOS + Linux**: supported
+- **Windows**: release artifacts are targeted; if no matching binary is available yet, the install script falls back to source install
 
 ## License
 
