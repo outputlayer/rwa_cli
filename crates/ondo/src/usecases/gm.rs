@@ -465,14 +465,12 @@ async fn execute_with_retry(
         match jupiter::execute_order(wallet, ord).await {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                let msg = e.to_string();
-                let needs_new_order = msg.contains("code -1)")
-                    || msg.contains("code -2003")
-                    || msg.contains("code -2004")
-                    || msg.contains("code -2005");
-                let retry_same = msg.contains("code -1000") || msg.contains("code -2000");
+                let retry_action = e
+                    .downcast_ref::<jupiter::ExecuteFailure>()
+                    .map(|failure| failure.kind.retry_action())
+                    .unwrap_or(jupiter::ExecuteRetryAction::None);
 
-                if (!needs_new_order && !retry_same) || attempt == MAX_SWAP_RETRIES {
+                if retry_action == jupiter::ExecuteRetryAction::None || attempt == MAX_SWAP_RETRIES {
                     return Err(e);
                 }
                 if !json {
@@ -483,7 +481,7 @@ async fn execute_with_retry(
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                if needs_new_order {
+                if retry_action == jupiter::ExecuteRetryAction::RefreshOrder {
                     current_order_owned = Some(
                         jupiter::get_order(
                             params.input_mint,

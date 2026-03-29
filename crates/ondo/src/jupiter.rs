@@ -76,6 +76,105 @@ pub struct ExecuteResponse {
     pub output_amount_result: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecuteRetryAction {
+    None,
+    RetrySameOrder,
+    RefreshOrder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecuteFailureKind {
+    MissingCachedOrder,
+    InvalidSignedTransaction,
+    InvalidMessageBytes,
+    FailedToLand,
+    UnknownAggregatorError,
+    RfqFailedToLand,
+    UnknownRfqError,
+    InvalidPayload,
+    QuoteExpired,
+    SwapRejected,
+    InternalError,
+    Unknown,
+}
+
+impl ExecuteFailureKind {
+    #[must_use]
+    pub fn from_code(code: Option<i32>) -> Self {
+        match code {
+            Some(-1) => Self::MissingCachedOrder,
+            Some(-2) => Self::InvalidSignedTransaction,
+            Some(-3) => Self::InvalidMessageBytes,
+            Some(-1000) => Self::FailedToLand,
+            Some(-1001) => Self::UnknownAggregatorError,
+            Some(-2000) => Self::RfqFailedToLand,
+            Some(-2001) => Self::UnknownRfqError,
+            Some(-2002) => Self::InvalidPayload,
+            Some(-2003) => Self::QuoteExpired,
+            Some(-2004) => Self::SwapRejected,
+            Some(-2005) => Self::InternalError,
+            _ => Self::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub fn retry_action(self) -> ExecuteRetryAction {
+        match self {
+            Self::MissingCachedOrder | Self::QuoteExpired | Self::SwapRejected | Self::InternalError => ExecuteRetryAction::RefreshOrder,
+            Self::FailedToLand | Self::RfqFailedToLand => ExecuteRetryAction::RetrySameOrder,
+            Self::InvalidSignedTransaction
+            | Self::InvalidMessageBytes
+            | Self::UnknownAggregatorError
+            | Self::UnknownRfqError
+            | Self::InvalidPayload
+            | Self::Unknown => ExecuteRetryAction::None,
+        }
+    }
+
+    #[must_use]
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::MissingCachedOrder => "missing cached order — retry",
+            Self::InvalidSignedTransaction => "invalid signed transaction",
+            Self::InvalidMessageBytes => "invalid message bytes",
+            Self::FailedToLand => "failed to land — retry",
+            Self::UnknownAggregatorError => "unknown aggregator error",
+            Self::RfqFailedToLand => "RFQ failed to land — retry",
+            Self::UnknownRfqError => "unknown RFQ error",
+            Self::InvalidPayload => "invalid payload",
+            Self::QuoteExpired => "quote expired — retry",
+            Self::SwapRejected => "swap rejected",
+            Self::InternalError => "internal error — retry",
+            Self::Unknown => "",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecuteFailure {
+    pub kind: ExecuteFailureKind,
+    pub code: Option<i32>,
+    pub message: String,
+}
+
+impl std::fmt::Display for ExecuteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = self
+            .code
+            .map(|c| format!(" (code {c})"))
+            .unwrap_or_default();
+        let hint = self.kind.hint();
+        if hint.is_empty() {
+            write!(f, "Swap failed{code}: {}", self.message)
+        } else {
+            write!(f, "Swap failed{code}: {} ({hint})", self.message)
+        }
+    }
+}
+
+impl std::error::Error for ExecuteFailure {}
+
 // ── Public functions ───────────────────────────────────────────────────
 
 /// Get a swap quote from Jupiter Swap V2 API.
@@ -203,33 +302,17 @@ pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<Exe
 fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
     if let Some(status) = &resp.status {
         if status == "Failed" {
-            let raw_msg = resp
+            let message = resp
                 .error_message
                 .as_deref()
                 .or(resp.error.as_deref())
                 .unwrap_or("Unknown execution error");
-            let hint = resp
-                .code
-                .map(|c| match c {
-                    -1 => " (missing cached order — retry)",
-                    -2 => " (invalid signed transaction)",
-                    -3 => " (invalid message bytes)",
-                    -1000 => " (failed to land — retry)",
-                    -1001 => " (unknown aggregator error)",
-                    -2000 => " (RFQ failed to land — retry)",
-                    -2001 => " (unknown RFQ error)",
-                    -2002 => " (invalid payload)",
-                    -2003 => " (quote expired — retry)",
-                    -2004 => " (swap rejected)",
-                    -2005 => " (internal error — retry)",
-                    _ => "",
-                })
-                .unwrap_or("");
-            let code = resp
-                .code
-                .map(|c| format!(" (code {c})"))
-                .unwrap_or_default();
-            return Err(eyre!("Swap failed{code}: {raw_msg}{hint}"));
+            return Err(ExecuteFailure {
+                kind: ExecuteFailureKind::from_code(resp.code),
+                code: resp.code,
+                message: message.to_string(),
+            }
+            .into());
         }
     }
 
@@ -242,6 +325,56 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
         return Err(eyre!("Swap failed: {msg}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execute_failure_kind_maps_codes_to_retry_actions() {
+        assert_eq!(
+            ExecuteFailureKind::from_code(Some(-2003)).retry_action(),
+            ExecuteRetryAction::RefreshOrder
+        );
+        assert_eq!(
+            ExecuteFailureKind::from_code(Some(-1000)).retry_action(),
+            ExecuteRetryAction::RetrySameOrder
+        );
+        assert_eq!(
+            ExecuteFailureKind::from_code(Some(-2)).retry_action(),
+            ExecuteRetryAction::None
+        );
+    }
+
+    #[test]
+    fn failed_execute_response_preserves_structured_kind() {
+        let resp = ExecuteResponse {
+            status: Some("Failed".to_string()),
+            signature: None,
+            code: Some(-2003),
+            error: Some("Quote expired".to_string()),
+            error_message: None,
+            input_amount_result: None,
+            output_amount_result: None,
+        };
+        let err = check_execute_result(&resp).unwrap_err();
+        let failure = err.downcast_ref::<ExecuteFailure>().expect("structured execute failure");
+        assert_eq!(failure.kind, ExecuteFailureKind::QuoteExpired);
+        assert_eq!(failure.code, Some(-2003));
+    }
+
+    #[test]
+    fn execute_failure_display_includes_hint() {
+        let failure = ExecuteFailure {
+            kind: ExecuteFailureKind::FailedToLand,
+            code: Some(-1000),
+            message: "landing failure".to_string(),
+        };
+        let msg = failure.to_string();
+        assert!(msg.contains("code -1000"));
+        assert!(msg.contains("failed to land"));
+    }
 }
 
 /// Convert a human-readable USDC amount (e.g. "100.50") to on-chain units (6 decimals).
