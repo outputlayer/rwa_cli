@@ -292,7 +292,7 @@ pub async fn close_all(
             continue;
         }
 
-        let sell_display = jupiter::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
+        let sell_display = amounts::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
 
         if dry_run {
             if !json {

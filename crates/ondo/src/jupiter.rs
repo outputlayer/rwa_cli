@@ -377,18 +377,3 @@ mod tests {
     }
 }
 
-/// Convert a human-readable USDC amount (e.g. "100.50") to on-chain units (6 decimals).
-pub fn usdc_to_raw(amount: &str) -> Result<String> {
-    amounts::token_to_raw(amount, USDC_DECIMALS)
-}
-
-/// Convert a human-readable token amount to on-chain units with specified decimals.
-pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
-    amounts::token_to_raw(amount, decimals)
-}
-
-/// Format on-chain amount to human-readable with given decimals.
-#[must_use]
-pub fn format_amount(raw: &str, decimals: u8) -> String {
-    amounts::format_amount(raw, decimals)
-}

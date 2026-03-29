@@ -172,7 +172,7 @@ pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result
 #[derive(Debug, Clone)]
 pub struct SolanaTokenBalance {
     pub symbol: String,
-    pub mint: String,
+    pub mint: Mint,
     pub balance: f64,
     /// Raw on-chain amount as string (no float precision loss).
     pub raw_amount: String,
@@ -213,7 +213,7 @@ fn parse_gm_balances(accounts: &[TokenAccountInfo], mint_map: &std::collections:
         if let Some(entry) = mint_map.get(info.mint.as_str()) {
             let balance = balances.entry(entry.symbol.to_string()).or_insert_with(|| SolanaTokenBalance {
                 symbol: entry.symbol.to_string(),
-                mint: info.mint.clone(),
+                mint: Mint::from(info.mint.as_str()),
                 balance: 0.0,
                 raw_amount: "0".to_string(),
             });
@@ -289,7 +289,7 @@ pub async fn get_balance(
     }
     Ok(SolanaTokenBalance {
         symbol: String::new(),
-        mint: mint.to_string(),
+        mint: mint.clone(),
         balance,
         raw_amount,
     })
@@ -579,5 +579,18 @@ mod tests {
         })).unwrap();
 
         assert_eq!(account.token_ui_amount(), Some(4.2));
+    }
+
+    #[test]
+    fn solana_token_balance_mint_is_mint_newtype() {
+        // This test only compiles once mint: Mint (not String).
+        // Also verifies Deref coercion to &str still works.
+        let b = SolanaTokenBalance {
+            symbol: String::new(),
+            mint: Mint::from("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+            balance: 0.0,
+            raw_amount: "0".to_string(),
+        };
+        assert_eq!(&*b.mint, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
     }
 }
