@@ -6,7 +6,7 @@ mod transfer;
 use eyre::{Result, eyre};
 use serde::Deserialize;
 
-use crate::token_list::GmTokenEntry;
+use crate::{amounts, token_list::GmTokenEntry};
 use rpc::{rpc_call_simple, rpc_batch_with_retry, rpc_urls, RpcRequest, RpcResponse};
 use transfer::{derive_ata, TOKEN_PROGRAM};
 
@@ -87,6 +87,7 @@ struct TokenInfo {
 struct TokenAmount {
     ui_amount: Option<f64>,
     amount: String,
+    decimals: u8,
 }
 
 #[derive(Deserialize)]
@@ -112,11 +113,18 @@ struct MultiAccountInfo {
 impl MultiAccountInfo {
     /// Try to extract token amount from parsed SPL token data.
     fn token_ui_amount(&self) -> Option<f64> {
-        self.data.get("parsed")
+        let token_amount = self.data
+            .get("parsed")
             .and_then(|p| p.get("info"))
-            .and_then(|i| i.get("tokenAmount"))
-            .and_then(|t| t.get("uiAmount"))
+            .and_then(|i| i.get("tokenAmount"))?;
+
+        token_amount.get("uiAmount")
             .and_then(|v| v.as_f64())
+            .or_else(|| {
+                let raw = token_amount.get("amount")?.as_str()?;
+                let decimals = token_amount.get("decimals")?.as_u64()?;
+                raw_amount_to_f64(raw, decimals as u8).ok()
+            })
     }
 }
 
@@ -169,6 +177,12 @@ pub struct SolanaTokenBalance {
     pub raw_amount: String,
 }
 
+fn raw_amount_to_f64(raw: &str, decimals: u8) -> Result<f64> {
+    amounts::format_amount(raw, decimals)
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain amount: {raw}"))
+}
+
 /// Build a mint → token entry lookup from a token list.
 fn build_mint_map(tokens: &[GmTokenEntry]) -> std::collections::HashMap<&str, &GmTokenEntry> {
     tokens.iter()
@@ -181,22 +195,31 @@ fn parse_gm_balances(accounts: &[TokenAccountInfo], mint_map: &std::collections:
     let mut balances: std::collections::BTreeMap<String, SolanaTokenBalance> = std::collections::BTreeMap::new();
     for acc in accounts {
         let info = &acc.account.data.parsed.info;
-        let amount = info.token_amount.ui_amount.unwrap_or(0.0);
-        if amount <= 0.0 {
+        let raw_amount: u128 = match info.token_amount.amount.parse() {
+            Ok(raw) => raw,
+            Err(_) => continue,
+        };
+        if raw_amount == 0 {
             continue;
         }
-        if let Some(entry) = mint_map.get(info.mint.as_str()) {
-            let raw_amount: u128 = match info.token_amount.amount.parse() {
-                Ok(raw) => raw,
+        let amount = match info.token_amount.ui_amount {
+            Some(amount) => amount,
+            None => match raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals) {
+                Ok(amount) => amount,
                 Err(_) => continue,
-            };
+            },
+        };
+        if let Some(entry) = mint_map.get(info.mint.as_str()) {
             let balance = balances.entry(entry.symbol.to_string()).or_insert_with(|| SolanaTokenBalance {
                 symbol: entry.symbol.to_string(),
                 mint: info.mint.clone(),
                 balance: 0.0,
                 raw_amount: "0".to_string(),
             });
-            let current_raw: u128 = balance.raw_amount.parse().unwrap_or(0);
+            let current_raw: u128 = match balance.raw_amount.parse() {
+                Ok(raw) => raw,
+                Err(_) => continue,
+            };
             balance.balance += amount;
             balance.raw_amount = current_raw.saturating_add(raw_amount).to_string();
         }
@@ -213,9 +236,16 @@ fn sum_matching_raw_amounts(accounts: &[TokenAccountInfo], mint: &str) -> Result
         if info.mint != mint {
             continue;
         }
-        ui_total += info.token_amount.ui_amount.unwrap_or(0.0);
         let raw: u128 = info.token_amount.amount.parse()
             .map_err(|_| eyre!("Invalid on-chain amount for mint {mint}: {}", info.token_amount.amount))?;
+        if raw == 0 {
+            continue;
+        }
+        let ui = match info.token_amount.ui_amount {
+            Some(ui) => ui,
+            None => raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals)?,
+        };
+        ui_total += ui;
         raw_total = raw_total
             .checked_add(raw)
             .ok_or_else(|| eyre!("On-chain amount overflow while summing balances for mint {mint}"))?;
@@ -397,7 +427,7 @@ mod tests {
                             "parsed": {
                                 "info": {
                                     "mint": "Mint11111111111111111111111111111111111111",
-                                    "tokenAmount": { "uiAmount": 1.25, "amount": "1250000000" }
+                                    "tokenAmount": { "uiAmount": 1.25, "amount": "1250000000", "decimals": 9 }
                                 }
                             }
                         }
@@ -411,7 +441,7 @@ mod tests {
                             "parsed": {
                                 "info": {
                                     "mint": "Mint11111111111111111111111111111111111111",
-                                    "tokenAmount": { "uiAmount": 0.75, "amount": "750000000" }
+                                    "tokenAmount": { "uiAmount": 0.75, "amount": "750000000", "decimals": 9 }
                                 }
                             }
                         }
@@ -444,7 +474,7 @@ mod tests {
                             "parsed": {
                                 "info": {
                                     "mint": USDC_MINT,
-                                    "tokenAmount": { "uiAmount": 1.5, "amount": "1500000" }
+                                    "tokenAmount": { "uiAmount": 1.5, "amount": "1500000", "decimals": 6 }
                                 }
                             }
                         }
@@ -458,7 +488,7 @@ mod tests {
                             "parsed": {
                                 "info": {
                                     "mint": USDC_MINT,
-                                    "tokenAmount": { "uiAmount": 2.25, "amount": "2250000" }
+                                    "tokenAmount": { "uiAmount": 2.25, "amount": "2250000", "decimals": 6 }
                                 }
                             }
                         }
@@ -470,5 +500,83 @@ mod tests {
         let (ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
         assert!((ui - 3.75).abs() < 1e-9);
         assert_eq!(raw, "3750000");
+    }
+
+    #[test]
+    fn parse_gm_balances_derives_ui_amount_when_rpc_omits_it() {
+        let accounts: GetTokenAccountsResult = serde_json::from_value(serde_json::json!({
+            "value": [
+                {
+                    "pubkey": "Account1111111111111111111111111111111111111",
+                    "account": {
+                        "lamports": 1,
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "Mint11111111111111111111111111111111111111",
+                                    "tokenAmount": { "uiAmount": null, "amount": "1250000000", "decimals": 9 }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        })).unwrap();
+        let entry = GmTokenEntry {
+            symbol: "TESTon",
+            solana_address: Some("Mint11111111111111111111111111111111111111"),
+        };
+        let mint_map = std::collections::HashMap::from([("Mint11111111111111111111111111111111111111", &entry)]);
+
+        let balances = parse_gm_balances(&accounts.accounts(), &mint_map);
+        assert_eq!(balances.len(), 1);
+        assert!((balances[0].balance - 1.25).abs() < 1e-9);
+        assert_eq!(balances[0].raw_amount, "1250000000");
+    }
+
+    #[test]
+    fn sum_matching_raw_amounts_derives_ui_amount_when_rpc_omits_it() {
+        let accounts: GetTokenAccountsResult = serde_json::from_value(serde_json::json!({
+            "value": [
+                {
+                    "pubkey": "Account1111111111111111111111111111111111111",
+                    "account": {
+                        "lamports": 1,
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": USDC_MINT,
+                                    "tokenAmount": { "uiAmount": null, "amount": "1500000", "decimals": 6 }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        })).unwrap();
+
+        let (ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
+        assert!((ui - 1.5).abs() < 1e-9);
+        assert_eq!(raw, "1500000");
+    }
+
+    #[test]
+    fn multi_account_info_derives_ui_amount_when_missing() {
+        let account: MultiAccountInfo = serde_json::from_value(serde_json::json!({
+            "lamports": 0,
+            "data": {
+                "parsed": {
+                    "info": {
+                        "tokenAmount": {
+                            "uiAmount": null,
+                            "amount": "4200000",
+                            "decimals": 6
+                        }
+                    }
+                }
+            }
+        })).unwrap();
+
+        assert_eq!(account.token_ui_amount(), Some(4.2));
     }
 }
