@@ -5,6 +5,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha512;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 type HmacSha512 = Hmac<Sha512>;
 
@@ -34,12 +35,12 @@ impl Wallet {
 
     /// Parse from a JSON byte-array string (solana-keygen format).
     fn from_json(json: &str) -> Result<Self> {
-        let bytes: Vec<u8> = serde_json::from_str(json)?;
+        let bytes = Zeroizing::new(serde_json::from_str::<Vec<u8>>(json)?);
         if bytes.len() != 64 {
             return Err(eyre!("Invalid key file: expected 64 bytes, got {}", bytes.len()));
         }
-        let secret: [u8; 32] = bytes[..32].try_into()
-            .map_err(|_| eyre!("Failed to extract secret key from file"))?;
+        let secret = Zeroizing::new(bytes[..32].try_into()
+            .map_err(|_| eyre!("Failed to extract secret key from file"))?);
         Ok(Self { signing_key: SigningKey::from_bytes(&secret) })
     }
 
@@ -48,10 +49,10 @@ impl Wallet {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut key_bytes = Vec::with_capacity(64);
+        let mut key_bytes = Zeroizing::new(Vec::with_capacity(64));
         key_bytes.extend_from_slice(self.signing_key.as_bytes());
         key_bytes.extend_from_slice(self.verifying_key().as_bytes());
-        let json = serde_json::to_string(&key_bytes)?;
+        let json = Zeroizing::new(serde_json::to_string(&*key_bytes)?);
 
         let encryptor = age::Encryptor::with_user_passphrase(Secret::new(passphrase.to_string()));
         let mut encrypted = vec![];
@@ -80,13 +81,13 @@ impl Wallet {
             age::Decryptor::Passphrase(d) => d,
             _ => return Err(eyre!("Wallet is not passphrase-encrypted")),
         };
-        let mut decrypted = vec![];
+        let mut decrypted = Zeroizing::new(vec![]);
         let mut reader = decryptor
             .decrypt(&Secret::new(passphrase.to_string()), None)
             .map_err(|_| eyre!("Wrong passphrase"))?;
         reader.read_to_end(&mut decrypted)
             .map_err(|e| eyre!("Failed to decrypt wallet: {e}"))?;
-        let json = std::str::from_utf8(&decrypted)
+        let json = std::str::from_utf8(decrypted.as_slice())
             .map_err(|e| eyre!("Invalid wallet data after decryption: {e}"))?;
         Self::from_json(json)
     }
@@ -116,7 +117,7 @@ impl Wallet {
     /// Accepts 32-byte (secret only) or 64-byte (keypair) inputs.
     pub fn from_private_key(key_str: &str) -> Result<Self> {
         let trimmed = key_str.trim();
-        let bytes = if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let bytes = Zeroizing::new(if trimmed.starts_with('[') && trimmed.ends_with(']') {
             // JSON byte array: [1,2,3,...,64]
             serde_json::from_str::<Vec<u8>>(trimmed)
                 .map_err(|e| eyre!("Invalid JSON byte array: {e}"))?
@@ -147,15 +148,15 @@ impl Wallet {
                 bs58::decode(trimmed).into_vec()
                     .map_err(|e| eyre!("Invalid base58 private key: {e}"))?
             }
-        };
+        });
 
-        let secret: [u8; 32] = match bytes.len() {
+        let secret = Zeroizing::new(match bytes.len() {
             64 => bytes[..32].try_into()
                 .map_err(|_| eyre!("Failed to extract secret key"))?,
-            32 => bytes.try_into()
+            32 => bytes.as_slice().try_into()
                 .map_err(|_| eyre!("Failed to convert to secret key"))?,
             n => return Err(eyre!("Invalid key length: expected 32 or 64 bytes, got {n}")),
-        };
+        });
         let signing_key = SigningKey::from_bytes(&secret);
         Ok(Self { signing_key })
     }
@@ -165,15 +166,15 @@ impl Wallet {
     pub fn from_mnemonic(phrase: &str) -> Result<Self> {
         let mnemonic: bip39::Mnemonic = phrase.parse()
             .map_err(|e| eyre!("Invalid mnemonic: {e}"))?;
-        let seed = mnemonic.to_seed("");
+        let seed = Zeroizing::new(mnemonic.to_seed(""));
 
         // SLIP-10 master key generation
         let mut mac = HmacSha512::new_from_slice(SLIP10_ED25519_SEED)
             .map_err(|e| eyre!("HMAC init failed: {e}"))?;
-        mac.update(&seed);
-        let result = mac.finalize().into_bytes();
-        let mut secret = result[..32].to_vec();
-        let mut chain_code = result[32..].to_vec();
+        mac.update(seed.as_slice());
+        let result = Zeroizing::new(mac.finalize().into_bytes().to_vec());
+        let mut secret = Zeroizing::new(result[..32].to_vec());
+        let mut chain_code = Zeroizing::new(result[32..].to_vec());
 
         // Derive hardened child keys for m/44'/501'/0'/0'
         for &index in SOLANA_DERIVATION_PATH {
@@ -183,13 +184,13 @@ impl Wallet {
             mac.update(&[0x00]);
             mac.update(&secret);
             mac.update(&hardened.to_be_bytes());
-            let result = mac.finalize().into_bytes();
-            secret = result[..32].to_vec();
-            chain_code = result[32..].to_vec();
+            let result = Zeroizing::new(mac.finalize().into_bytes().to_vec());
+            secret = Zeroizing::new(result[..32].to_vec());
+            chain_code = Zeroizing::new(result[32..].to_vec());
         }
 
-        let secret_bytes: [u8; 32] = secret.try_into()
-            .map_err(|_| eyre!("SLIP-10 derivation produced invalid key length"))?;
+        let secret_bytes = Zeroizing::new(secret.as_slice().try_into()
+            .map_err(|_| eyre!("SLIP-10 derivation produced invalid key length"))?);
         let signing_key = SigningKey::from_bytes(&secret_bytes);
         Ok(Self { signing_key })
     }
@@ -210,12 +211,12 @@ impl Wallet {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut bytes = Vec::with_capacity(64);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         bytes.extend_from_slice(self.signing_key.as_bytes());
         bytes.extend_from_slice(self.verifying_key().as_bytes());
-        let json = serde_json::to_string(&bytes)?;
+        let json = Zeroizing::new(serde_json::to_string(&*bytes)?);
         // Set restrictive permissions before writing
-        std::fs::write(path, &json)?;
+        std::fs::write(path, json.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

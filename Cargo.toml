@@ -59,6 +59,7 @@ rpassword = "7"
 # Dev / test only
 httpmock = "0.7"
 proptest = "1"
+zeroize = "1"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
