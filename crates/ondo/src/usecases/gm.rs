@@ -423,10 +423,11 @@ async fn get_order_checked(
             }
         }
         let slippage_pct = slip;
-        if let Some(s) = slippage_pct {
-            if s < -1.0 && !json {
-                eprintln!("Warning: slippage {s:.2}%");
-            }
+        if let Some(s) = slippage_pct
+            && s < -1.0
+            && !json
+        {
+            eprintln!("Warning: slippage {s:.2}%");
         }
         return Ok((order, slippage_pct));
     }

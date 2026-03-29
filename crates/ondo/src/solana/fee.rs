@@ -96,10 +96,10 @@ pub async fn estimate_gas_needed(needs_ata: bool, is_token_2022: bool, rpc_url: 
 
 /// Get cached priority fee, refreshing from RPC if stale.
 async fn get_priority_fee_cached(rpc_url: Option<&str>) -> u64 {
-    if let Ok(cache) = FEE_CACHE.lock() {
-        if cache.1.elapsed() < FEE_CACHE_TTL {
-            return cache.0;
-        }
+    if let Ok(cache) = FEE_CACHE.lock()
+        && cache.1.elapsed() < FEE_CACHE_TTL
+    {
+        return cache.0;
     }
     let fee = fetch_priority_fee(&[], rpc_url).await.unwrap_or(0);
     if let Ok(mut cache) = FEE_CACHE.lock() {
@@ -117,12 +117,12 @@ pub(super) async fn get_priority_fee_for_accounts(accounts: &[&str], rpc_url: Op
 /// Caches the result for 5 minutes. Falls back to known values if RPC fails.
 async fn get_rent_exempt_cached(data_size: u64, rpc_url: Option<&str>) -> u64 {
     // Check cache first
-    if let Ok(cache) = RENT_CACHE.lock() {
-        if let (Some(lamports), ts) = &*cache {
-            if ts.elapsed() < RENT_CACHE_TTL && data_size == SPL_TOKEN_ACCOUNT_SIZE {
-                return *lamports;
-            }
-        }
+    if let Ok(cache) = RENT_CACHE.lock()
+        && let (Some(lamports), ts) = &*cache
+        && ts.elapsed() < RENT_CACHE_TTL
+        && data_size == SPL_TOKEN_ACCOUNT_SIZE
+    {
+        return *lamports;
     }
 
     // Fetch from RPC
@@ -131,10 +131,10 @@ async fn get_rent_exempt_cached(data_size: u64, rpc_url: Option<&str>) -> u64 {
         serde_json::json!([data_size]),
         rpc_url,
     ).await {
-        if data_size == SPL_TOKEN_ACCOUNT_SIZE {
-            if let Ok(mut cache) = RENT_CACHE.lock() {
-                *cache = (Some(lamports), Instant::now());
-            }
+        if data_size == SPL_TOKEN_ACCOUNT_SIZE
+            && let Ok(mut cache) = RENT_CACHE.lock()
+        {
+            *cache = (Some(lamports), Instant::now());
         }
         return lamports;
     }

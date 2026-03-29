@@ -300,20 +300,20 @@ pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<Exe
 }
 
 fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
-    if let Some(status) = &resp.status {
-        if status == "Failed" {
-            let message = resp
-                .error_message
-                .as_deref()
-                .or(resp.error.as_deref())
-                .unwrap_or("Unknown execution error");
-            return Err(ExecuteFailure {
-                kind: ExecuteFailureKind::from_code(resp.code),
-                code: resp.code,
-                message: message.to_string(),
-            }
-            .into());
+    if let Some(status) = &resp.status
+        && status == "Failed"
+    {
+        let message = resp
+            .error_message
+            .as_deref()
+            .or(resp.error.as_deref())
+            .unwrap_or("Unknown execution error");
+        return Err(ExecuteFailure {
+            kind: ExecuteFailureKind::from_code(resp.code),
+            code: resp.code,
+            message: message.to_string(),
         }
+        .into());
     }
 
     if resp.signature.is_none() {

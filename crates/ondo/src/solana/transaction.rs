@@ -234,34 +234,33 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
             "getSignatureStatuses",
             serde_json::json!([[signature], { "searchTransactionHistory": false }]),
             rpc_url,
-        ).await {
-            if let Some(status) = result.get("value")
+        ).await
+            && let Some(status) = result
+                .get("value")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.first())
-            {
-                if !status.is_null() {
-                    // Check confirmationStatus is at least "confirmed"
-                    let is_confirmed = status.get("confirmationStatus")
-                        .and_then(|s| s.as_str())
-                        .map(|s| s == "confirmed" || s == "finalized")
-                        .unwrap_or(true); // if no status field, assume confirmed
-                    if !is_confirmed {
-                        // Still "processed" — wait for confirmed
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                    if let Some(err) = status.get("err") {
-                        if !err.is_null() {
-                            return Err(TransactionError::new(
-                                TransactionErrorKind::OnChainFailure,
-                                err.to_string(),
-                            )
-                            .into());
-                        }
-                    }
-                    return Ok(()); // confirmed, no error
-                }
+            && !status.is_null()
+        {
+            // Check confirmationStatus is at least "confirmed"
+            let is_confirmed = status.get("confirmationStatus")
+                .and_then(|s| s.as_str())
+                .map(|s| s == "confirmed" || s == "finalized")
+                .unwrap_or(true); // if no status field, assume confirmed
+            if !is_confirmed {
+                // Still "processed" — wait for confirmed
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
             }
+            if let Some(err) = status.get("err")
+                && !err.is_null()
+            {
+                return Err(TransactionError::new(
+                    TransactionErrorKind::OnChainFailure,
+                    err.to_string(),
+                )
+                .into());
+            }
+            return Ok(()); // confirmed, no error
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -333,24 +332,24 @@ async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
     ).await?;
 
     // Check for simulation error
-    if let Some(err) = result.get("value").and_then(|v| v.get("err")) {
-        if !err.is_null() {
-            let logs = result.get("value")
-                .and_then(|v| v.get("logs"))
-                .and_then(|l| l.as_array())
-                .map(|logs| {
-                    logs.iter()
-                        .filter_map(|l| l.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n  ")
-                })
-                .unwrap_or_default();
-            return Err(TransactionError::new(
-                TransactionErrorKind::SimulationFailure,
-                format!("{err}\n  Logs:\n  {logs}"),
-            )
-            .into());
-        }
+    if let Some(err) = result.get("value").and_then(|v| v.get("err"))
+        && !err.is_null()
+    {
+        let logs = result.get("value")
+            .and_then(|v| v.get("logs"))
+            .and_then(|l| l.as_array())
+            .map(|logs| {
+                logs.iter()
+                    .filter_map(|l| l.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            })
+            .unwrap_or_default();
+        return Err(TransactionError::new(
+            TransactionErrorKind::SimulationFailure,
+            format!("{err}\n  Logs:\n  {logs}"),
+        )
+        .into());
     }
 
     let units = result.get("value")
