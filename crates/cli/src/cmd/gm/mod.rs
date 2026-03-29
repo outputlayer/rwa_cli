@@ -5,7 +5,7 @@ mod trade;
 
 use clap::Subcommand;
 use eyre::Result;
-use rwa_ondo::{gm, token_list, usecases, wallet};
+use rwa_ondo::{gm, token_list, types::{Mint, Symbol}, usecases, wallet};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -388,12 +388,12 @@ fn load_wallet() -> Result<wallet::Wallet> {
     })
 }
 
-fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
+fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
     let entry = gm::resolve_token(symbol, tokens)?;
     let mint = entry
         .solana_address
         .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
-    Ok((entry.symbol.to_string(), mint.to_string()))
+    Ok((Symbol::from(entry.symbol), Mint::from(mint)))
 }
 
 fn clean_name(name: &str) -> String {

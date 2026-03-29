@@ -4,8 +4,11 @@ pub mod gm;
 pub mod jupiter;
 pub mod solana;
 pub mod token_list;
+pub mod types;
 pub mod usecases;
 pub mod wallet;
+
+pub use types::{Mint, Symbol};
 
 /// USDC mint address on Solana.
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

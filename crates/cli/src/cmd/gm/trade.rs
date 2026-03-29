@@ -1,5 +1,6 @@
 use eyre::Result;
 use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
+use rwa_ondo::types::Symbol;
 
 use super::*;
 
@@ -13,7 +14,8 @@ pub async fn buy(
     slippage: Option<u32>,
 ) -> Result<()> {
     let w = load_wallet()?;
-    let plan = usecases::gm::prepare_buy(&w, symbol, amount, rpc_url, slippage, json).await?;
+    let symbol = Symbol::from(symbol);
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json).await?;
 
     if !json {
         println!(
@@ -28,7 +30,7 @@ pub async fn buy(
             return json_out(&TradeJson {
                 status: "dry_run",
                 amount: plan.amount,
-                token: plan.symbol,
+                token: plan.symbol.to_string(),
                 counter_amount: plan.counter_amount,
                 counter_token: "USDC",
                 tx: String::new(),
@@ -62,7 +64,7 @@ pub async fn buy(
         return json_out(&TradeJson {
             status: "success",
             amount: result.output_amount,
-            token: plan.symbol,
+            token: plan.symbol.to_string(),
             counter_amount: plan.counter_amount,
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", result.signature),
@@ -91,7 +93,8 @@ pub async fn sell(
     slippage: Option<u32>,
 ) -> Result<()> {
     let w = load_wallet()?;
-    let plan = usecases::gm::prepare_sell(&w, symbol, amount, rpc_url, slippage, json).await?;
+    let symbol = Symbol::from(symbol);
+    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json).await?;
 
     if !json {
         println!(
@@ -106,7 +109,7 @@ pub async fn sell(
             return json_out(&TradeJson {
                 status: "dry_run",
                 amount: plan.amount,
-                token: plan.symbol,
+                token: plan.symbol.to_string(),
                 counter_amount: plan.counter_amount,
                 counter_token: "USDC",
                 tx: String::new(),
@@ -140,7 +143,7 @@ pub async fn sell(
         return json_out(&TradeJson {
             status: "success",
             amount: plan.amount,
-            token: plan.symbol,
+            token: plan.symbol.to_string(),
             counter_amount: result.output_amount,
             counter_token: "USDC",
             tx: format!("https://solscan.io/tx/{}", result.signature),

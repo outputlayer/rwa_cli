@@ -1,6 +1,7 @@
 use eyre::{Result, eyre};
 
 use crate::{amounts, api, gm, jupiter, solana, token_list, wallet};
+use crate::types::{Mint, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmTradeErrorKind {
@@ -59,7 +60,7 @@ const MIN_USDC_AMOUNT: f64 = 1.0;
 pub const MIN_SELL_VALUE_USD: f64 = 1.5;
 
 pub struct SwapPlan {
-    pub symbol: String,
+    pub symbol: Symbol,
     pub amount: String,
     pub counter_amount: String,
     pub order: jupiter::OrderResponse,
@@ -80,16 +81,16 @@ pub struct CloseSkip {
 }
 
 pub struct SwapParamsOwned {
-    input_mint: String,
-    output_mint: String,
+    input_mint: Mint,
+    output_mint: Mint,
     raw_amount: String,
     taker: String,
     slippage_bps: Option<u32>,
 }
 
 struct SwapParams<'a> {
-    input_mint: &'a str,
-    output_mint: &'a str,
+    input_mint: &'a Mint,
+    output_mint: &'a Mint,
     raw_amount: &'a str,
     taker: &'a str,
     slippage_bps: Option<u32>,
@@ -97,7 +98,7 @@ struct SwapParams<'a> {
 
 pub async fn prepare_buy(
     wallet: &wallet::Wallet,
-    symbol: &str,
+    symbol: &Symbol,
     amount: &str,
     rpc_url: Option<&str>,
     slippage_bps: Option<u32>,
@@ -142,7 +143,7 @@ pub async fn prepare_buy(
         order,
         slippage_pct,
         swap: SwapParamsOwned {
-            input_mint: jupiter::USDC_MINT.to_string(),
+            input_mint: Mint::from(jupiter::USDC_MINT),
             output_mint: gm_mint,
             raw_amount: raw_usdc,
             taker,
@@ -154,7 +155,7 @@ pub async fn prepare_buy(
 
 pub async fn prepare_sell(
     wallet: &wallet::Wallet,
-    symbol: &str,
+    symbol: &Symbol,
     amount: &str,
     rpc_url: Option<&str>,
     slippage_bps: Option<u32>,
@@ -237,7 +238,7 @@ pub async fn prepare_sell(
         slippage_pct,
         swap: SwapParamsOwned {
             input_mint: gm_mint,
-            output_mint: jupiter::USDC_MINT.to_string(),
+            output_mint: Mint::from(jupiter::USDC_MINT),
             raw_amount: raw_gm,
             taker,
             slippage_bps,
@@ -248,8 +249,8 @@ pub async fn prepare_sell(
 
 pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) -> Result<SwapExecution> {
     let params = SwapParams {
-        input_mint: &plan.swap.input_mint,
-        output_mint: &plan.swap.output_mint,
+        input_mint: &plan.swap.input_mint,   // &Mint
+        output_mint: &plan.swap.output_mint, // &Mint
         raw_amount: &plan.swap.raw_amount,
         taker: &plan.swap.taker,
         slippage_bps: plan.swap.slippage_bps,
@@ -281,9 +282,11 @@ pub async fn execute_sell_raw(
         json,
     )
     .await?;
+    let input_mint = Mint::from(mint);
+    let output_mint = Mint::from(jupiter::USDC_MINT);
     let params = SwapParams {
-        input_mint: mint,
-        output_mint: jupiter::USDC_MINT,
+        input_mint: &input_mint,
+        output_mint: &output_mint,
         raw_amount,
         taker,
         slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
@@ -352,12 +355,12 @@ pub fn ensure_trading_open() -> Result<()> {
     check_trading_hours()
 }
 
-fn resolve_gm_mint(symbol: &str, tokens: &[token_list::GmTokenEntry]) -> Result<(String, String)> {
+fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
     let entry = gm::resolve_token(symbol, tokens)?;
     let mint = entry
         .solana_address
         .ok_or_else(|| eyre!("No Solana address for {}", entry.symbol))?;
-    Ok((entry.symbol.to_string(), mint.to_string()))
+    Ok((Symbol::from(entry.symbol), Mint::from(mint)))
 }
 
 /// Compute `value * pct / 100` using integer math to avoid f64 precision loss.

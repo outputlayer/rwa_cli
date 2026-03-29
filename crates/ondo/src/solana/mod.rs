@@ -7,6 +7,7 @@ use eyre::{Result, eyre};
 use serde::Deserialize;
 
 use crate::{amounts, token_list::GmTokenEntry};
+use crate::types::Mint;
 use rpc::{rpc_call_simple, rpc_batch_with_retry, rpc_urls, RpcRequest, RpcResponse};
 use transfer::{derive_ata, TOKEN_PROGRAM};
 
@@ -272,12 +273,12 @@ pub async fn get_all_balances(
 /// Fetch balance for a specific GM token on Solana.
 pub async fn get_balance(
     wallet: &str,
-    mint: &str,
+    mint: &Mint,
     rpc_url: Option<&str>,
 ) -> Result<SolanaTokenBalance> {
     let accounts: GetTokenAccountsResult = rpc_call_simple(
         "getTokenAccountsByOwner",
-        serde_json::json!([wallet, { "mint": mint }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        serde_json::json!([wallet, { "mint": mint.as_ref() }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         rpc_url,
     ).await?;
 

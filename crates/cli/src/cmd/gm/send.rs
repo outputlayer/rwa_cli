@@ -220,7 +220,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         if json {
             return json_out(&SendJson {
                 status: "dry_run",
-                token: sym.clone(),
+                token: sym.to_string(),
                 amount: token_display.clone(),
                 recipient: to.into(),
                 tx: String::new(),
@@ -240,7 +240,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     if json {
         return json_out(&SendJson {
             status: if result.confirmed { "success" } else { "sent" },
-            token: sym.clone(),
+            token: sym.to_string(),
             amount: token_display.clone(),
             recipient: to.into(),
             tx: format!("https://solscan.io/tx/{sig}"),
