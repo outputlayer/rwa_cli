@@ -119,6 +119,19 @@ rwa keys show
 - Use `hours --tradable` only when the user wants the full currently tradable set
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 
+## Anti-Overengineering Checklist
+
+- Add a new layer only if it clearly reduces bugs, duplication, or agent ambiguity
+- Prefer improving an existing module over creating a new crate, trait, or abstraction
+- Do not add multiple ways to do the same user task; keep one canonical path
+- Optimize for stable JSON/output contracts before optimizing architecture aesthetics
+- Prefer typed errors at external boundaries over broad internal framework refactors
+- Do not add config, flags, or modes unless they remove a real user or agent pain point
+- Keep user-facing behavior simpler than internal implementation
+- If a change does not make money movement safer or agent behavior clearer, question it
+- Avoid future-proofing abstractions unless there is current pressure from real code
+- When in doubt, choose the smaller change with the clearer behavior
+
 ## What not to do
 
 - Do not add EVM code or dependencies
