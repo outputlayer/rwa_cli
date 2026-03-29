@@ -52,6 +52,16 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm history <SYM>` — price history (default `1M`)
 - `rwa --json gm history <SYM> -r 1D` — 1D/1W/1M/3M/1Y/ALL
 
+`portfolio` uses a stable nested JSON contract:
+- `cash.sol`
+- `cash.usdc`
+- `gm_positions.positions[]`
+- `gm_positions.value_usd`
+- `gm_positions.change_24h_usd`
+- `gm_positions.change_24h_pct`
+
+Do not rely on legacy flat `portfolio` fields.
+
 ### Transfers
 - `rwa --json gm send SOL <AMT> <TO> --dry-run` — preview SOL transfer
 - `rwa --json gm send SOL all <TO> -y` — drain SOL (auto-reserves tx fee)
@@ -114,8 +124,10 @@ rwa --json gm send SOL all <ADDR> -y
 
 With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
 
-- `not tradable in current session` → skip token or check `list --search <SYM>`
-- `market is closed` → tell user when trading reopens
+- `not_tradable` → skip token or check `list --search <SYM>`
+- `market_closed` → tell user when trading reopens
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
-- `Slippage too high` → reduce size or skip token
+- `slippage_too_high` → reduce size or skip token
+- `confirmation_timeout` → tx may still land; check Solscan before retrying
+- `on_chain_failure` → treat as real chain failure, not a preview issue
 - `Solana RPC unavailable` → wait 5s, retry; after repeated failures suggest `RWA_RPC_URL`

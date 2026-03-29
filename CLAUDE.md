@@ -47,6 +47,8 @@ cargo install --path bin/rwa
 - `send` and `sell` are different actions
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `close-all` is the canonical path for selling many positions
+- `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
+- Legacy flat `portfolio` fields should be treated as obsolete
 
 ## Commands
 
@@ -97,6 +99,7 @@ rwa keys show
 - Quotes with >1% slippage are refreshed up to 3 times
 - Swaps with >3% slippage are blocked
 - CLI auto-retries transient swap failures; agents should not retry manually
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, and `on_chain_failure`
 
 ## Wallet behavior
 
@@ -111,6 +114,7 @@ rwa keys show
 - Use `-y` only for real execution
 - Use `--dry-run` for large or uncertain actions
 - Never run wallet-changing commands in parallel
+- Treat JSON output as a stable contract for scripts and agents
 - Use `list --search <SYM>` to check one token
 - Use `hours --tradable` only when the user wants the full currently tradable set
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
