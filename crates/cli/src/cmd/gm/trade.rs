@@ -43,10 +43,10 @@ pub async fn buy(
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
-        println!("  Would buy: ~{} {}", plan.amount, plan.symbol);
-        println!("  Would spend: {} USDC", plan.counter_amount);
-        if let Some(pi) = plan.order.price_impact {
-            println!("  Price impact: {pi:.4}%");
+        println!("  Would buy:   ~{} {}", plan.amount, plan.symbol);
+        println!("  Would spend:  {} USDC", plan.counter_amount);
+        if let Some(s) = plan.slippage_pct {
+            println!("  Spread/cost:  {s:.4}%");
         }
         return Ok(());
     }
@@ -81,6 +81,9 @@ pub async fn buy(
     println!("\nSwap successful!");
     println!("  Bought:    {} {}", result.output_amount, plan.symbol);
     println!("  Spent:     {} USDC", plan.counter_amount);
+    if let Some(s) = plan.slippage_pct.filter(|s| s.abs() > 0.05) {
+        println!("  Spread:    {s:.4}%");
+    }
     println!("  Tx:        https://solscan.io/tx/{}", result.signature);
     Ok(())
 }
@@ -124,10 +127,10 @@ pub async fn sell(
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
-        println!("  Would sell: {} {}", plan.amount, plan.symbol);
+        println!("  Would sell:    {} {}", plan.amount, plan.symbol);
         println!("  Would receive: ~{} USDC", plan.counter_amount);
-        if let Some(pi) = plan.order.price_impact {
-            println!("  Price impact: {pi:.4}%");
+        if let Some(s) = plan.slippage_pct {
+            println!("  Spread/cost:   {s:.4}%");
         }
         return Ok(());
     }
@@ -162,6 +165,9 @@ pub async fn sell(
     println!("\nSwap successful!");
     println!("  Sold:      {} {}", plan.amount, plan.symbol);
     println!("  Received:  {} USDC", result.output_amount);
+    if let Some(s) = plan.slippage_pct.filter(|s| s.abs() > 0.05) {
+        println!("  Spread:    {s:.4}%");
+    }
     println!("  Tx:        https://solscan.io/tx/{}", result.signature);
     Ok(())
 }
