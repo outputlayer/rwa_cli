@@ -102,6 +102,9 @@ pub enum GmAction {
         /// Show what would be sold without executing
         #[arg(long)]
         dry_run: bool,
+        /// Fetch all orders and execute all swaps in parallel (faster for many positions)
+        #[arg(long)]
+        parallel: bool,
     },
 
     /// Close empty token accounts and reclaim SOL rent
@@ -109,6 +112,25 @@ pub enum GmAction {
         /// Only reclaim for a specific token (symbol or mint address)
         #[arg(long)]
         token: Option<String>,
+    },
+
+    /// Buy multiple GM tokens with USDC in one go (basket buy)
+    BuyBasket {
+        /// Token symbols to buy (e.g. AAPL TSLA NVDA)
+        #[arg(required = true)]
+        symbols: Vec<String>,
+        /// USDC to spend per token (e.g. 50)
+        #[arg(long, short = 'u')]
+        usdc_each: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+        /// Show quotes without executing
+        #[arg(long)]
+        dry_run: bool,
+        /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
+        #[arg(long)]
+        parallel: bool,
     },
 }
 
@@ -167,8 +189,11 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             amount,
             yes,
             dry_run,
-        } => trade::close_all(amount.as_deref(), yes, dry_run, json, rpc_url).await,
+            parallel,
+        } => trade::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url).await,
         GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
+        GmAction::BuyBasket { symbols, usdc_each, yes, dry_run, parallel } =>
+            trade::buy_basket(&symbols, &usdc_each, yes, dry_run, parallel, json, rpc_url).await,
     }
 }
 
@@ -355,6 +380,26 @@ pub(super) struct ReclaimJson {
     pub accounts_closed: usize,
     pub sol_reclaimed: String,
     pub signatures: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct BuyBasketResultJson {
+    pub status: &'static str,
+    pub bought: Vec<BuyBasketItemJson>,
+    pub failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<CloseSkipJson>,
+    pub total_usdc_spent: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct BuyBasketItemJson {
+    pub token: String,
+    pub received: String,
+    pub usdc: String,
+    pub tx: String,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub slippage_pct: Option<f64>,
 }
 
 // ── Shared helpers ─────────────────────────────────────────

@@ -21,8 +21,9 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 
 ## Critical agent rules
 
-- NEVER run `rwa` wallet-changing commands in parallel
-- Run trades/transfers sequentially with `sleep 3` between commands
+- NEVER run `rwa` wallet-changing commands in parallel processes or with `&`
+- For multi-token trading WITHIN a single call, use `--parallel` flag — safe and fast
+- Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
 - Use `-y` only for real execution, not for `--dry-run`
 - There is no `quote` command; use `buy/sell --dry-run`
@@ -44,7 +45,11 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
 - `rwa --json gm close-all --dry-run` — preview liquidation
 - `rwa --json gm close-all -y` — sell all positions sequentially
+- `rwa --json gm close-all --parallel -y` — sell all positions in parallel (~4–11x faster for 4+ tokens)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
+- `rwa --json gm buy-basket <SYM...> --usdc-each <N> --dry-run` — preview basket buy quotes
+- `rwa --json gm buy-basket <SYM...> --usdc-each <N> -y` — buy multiple tokens sequentially
+- `rwa --json gm buy-basket <SYM...> --usdc-each <N> --parallel -y` — buy multiple tokens in parallel
 
 ### Portfolio & history
 - `rwa --json gm portfolio` — own wallet holdings
@@ -101,7 +106,13 @@ Not all tokens are tradable in every session. Use `list --search <SYM>` for one 
 
 ## Bulk workflows
 
-Bulk buy:
+Basket buy (parallel — all tokens simultaneously, ~22s flat):
+
+```bash
+rwa --json gm buy-basket TSLA AAPL NVDA --usdc-each 100 --parallel -y
+```
+
+Basket buy (sequential — old manual approach, use only if parallel isn’t available):
 
 ```bash
 rwa --json gm buy TSLA 100 -y
@@ -114,11 +125,22 @@ rwa --json gm buy NVDA 200 -y
 Full exit:
 
 ```bash
-rwa --json gm close-all -y
+rwa --json gm close-all --parallel -y   # parallel: all swaps at once (~22s)
+# or: rwa --json gm close-all -y         # sequential if needed
 rwa --json gm reclaim
 rwa --json gm send USDC all <ADDR> -y
 rwa --json gm send SOL all <ADDR> -y
 ```
+
+## Parallel vs sequential
+
+| Tokens | Sequential | Parallel | Speedup |
+|--------|-----------|---------|--------|
+| 4 | ~97s | ~22s | 4.4× |
+| 6 | ~147s | ~22s | 6.7× |
+| 10 | ~247s | ~22s | 11× |
+
+Parallel is safe for different tokens — no MM cooldown penalty. Only same-token rapid roundtrips trigger the -10% penalty.
 
 ## Error handling
 

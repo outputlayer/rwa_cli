@@ -88,6 +88,16 @@ pub struct CloseSkip {
     pub reason: &'static str,
 }
 
+/// Pre-fetched sell order ready for parallel execution (phase 1 result).
+pub struct SellOrderReady {
+    pub symbol: String,
+    pub mint: String,
+    pub raw_amount: String,
+    pub display_amount: String,
+    pub order: jupiter::OrderResponse,
+    pub slippage_pct: Option<f64>,
+}
+
 pub struct SwapParamsOwned {
     input_mint: Mint,
     output_mint: Mint,
@@ -327,9 +337,177 @@ pub async fn execute_sell_raw(
     })
 }
 
+/// Phase 1 for parallel close-all: fetch + validate a sell order without executing.
+pub async fn fetch_sell_order(
+    symbol: &str,
+    mint: &str,
+    raw_amount: &str,
+    taker: &str,
+    json: bool,
+) -> Result<SellOrderReady> {
+    let display_amount = amounts::format_amount(raw_amount, jupiter::GM_SOL_DECIMALS);
+    let (order, slippage_pct) = get_order_checked(
+        mint,
+        jupiter::USDC_MINT,
+        raw_amount,
+        taker,
+        Some(DEFAULT_SLIPPAGE_BPS),
+        json,
+        None,
+    )
+    .await?;
+    Ok(SellOrderReady {
+        symbol: symbol.to_string(),
+        mint: mint.to_string(),
+        raw_amount: raw_amount.to_string(),
+        display_amount,
+        order,
+        slippage_pct,
+    })
+}
+
+/// Phase 2 for parallel close-all: execute a pre-fetched sell order.
+pub async fn execute_sell_from_order(
+    wallet: &wallet::Wallet,
+    ready: SellOrderReady,
+    json: bool,
+) -> Result<SwapExecution> {
+    let input_mint = Mint::from(ready.mint.as_str());
+    let output_mint = Mint::from(jupiter::USDC_MINT);
+    // taker is encoded in the signed tx; for RefreshOrder retry we need it separately
+    // We grab it from the wallet since SellOrderReady is always for our own wallet.
+    let taker = wallet.pubkey();
+    let params = SwapParams {
+        input_mint: &input_mint,
+        output_mint: &output_mint,
+        raw_amount: &ready.raw_amount,
+        taker: &taker,
+        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+    };
+    let result = execute_with_retry(wallet, &ready.order, json, &params).await?;
+    let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
+    Ok(SwapExecution {
+        output_amount: result
+            .output_amount_result
+            .as_deref()
+            .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
+            .unwrap_or_else(|| amounts::format_amount(&ready.order.out_amount, jupiter::USDC_DECIMALS)),
+        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
+        actual_slippage_pct,
+    })
+}
+
+/// Pre-fetched buy order ready for parallel/sequential basket execution.
+pub struct BuyOrderReady {
+    pub symbol: String,
+    pub gm_mint: Mint,
+    pub usdc_raw: String,
+    pub usdc_display: String,
+    pub order: jupiter::OrderResponse,
+    pub slippage_pct: Option<f64>,
+}
+
+/// Preflight for basket buy: verify trading is open, total USDC coverage, and SOL for fees.
+pub async fn preflight_basket_buy(
+    pubkey: &str,
+    total_usdc_raw: u128,
+    rpc_url: Option<&str>,
+) -> Result<()> {
+    check_trading_hours()?;
+    let (usdc_res, sol_raw_res) = tokio::join!(
+        solana::get_usdc_balance_raw(pubkey, rpc_url),
+        solana::get_sol_balance_raw(pubkey, rpc_url),
+    );
+    let (_, balance_raw) = usdc_res?;
+    let balance: u128 = balance_raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
+    if balance < total_usdc_raw {
+        return Err(eyre!(
+            "Insufficient USDC: {:.2} available, need {:.2} total\n  Fund wallet: {pubkey}",
+            balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+            total_usdc_raw as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+        ));
+    }
+    let sol_raw = sol_raw_res?;
+    let sol_lamports: u64 = sol_raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
+    let sol = sol_lamports as f64 / 1_000_000_000.0;
+    if sol < MIN_SOL_FOR_FEES {
+        return Err(eyre!(
+            "Insufficient SOL for fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
+        ));
+    }
+    Ok(())
+}
+
+/// Phase 1 for basket buy: resolve mint, check tradable, fetch + validate buy order.
+pub async fn fetch_buy_order(
+    symbol: &str,
+    usdc_raw: &str,
+    taker: &str,
+    json: bool,
+) -> Result<BuyOrderReady> {
+    let tokens = token_list::get_token_list();
+    let sym = Symbol::from(symbol);
+    let (sym, gm_mint) = resolve_gm_mint(&sym, tokens)?;
+    check_tradable(&sym, None).await?;
+    let usdc_display = amounts::format_amount(usdc_raw, jupiter::USDC_DECIMALS);
+    let (order, slippage_pct) = get_order_checked(
+        jupiter::USDC_MINT,
+        &gm_mint,
+        usdc_raw,
+        taker,
+        Some(DEFAULT_SLIPPAGE_BPS),
+        json,
+        None,
+    )
+    .await?;
+    Ok(BuyOrderReady {
+        symbol: sym.to_string(),
+        gm_mint,
+        usdc_raw: usdc_raw.to_string(),
+        usdc_display,
+        order,
+        slippage_pct,
+    })
+}
+
+/// Phase 2 for basket buy: execute a pre-fetched buy order.
+pub async fn execute_buy_from_order(
+    wallet: &wallet::Wallet,
+    ready: BuyOrderReady,
+    json: bool,
+) -> Result<SwapExecution> {
+    let input_mint = Mint::from(jupiter::USDC_MINT);
+    let output_mint = ready.gm_mint;
+    let taker = wallet.pubkey();
+    let params = SwapParams {
+        input_mint: &input_mint,
+        output_mint: &output_mint,
+        raw_amount: &ready.usdc_raw,
+        taker: &taker,
+        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+    };
+    let result = execute_with_retry(wallet, &ready.order, json, &params).await?;
+    let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
+    Ok(SwapExecution {
+        output_amount: result
+            .output_amount_result
+            .as_deref()
+            .map(|r| amounts::format_amount(r, jupiter::GM_SOL_DECIMALS))
+            .unwrap_or_else(|| {
+                amounts::format_amount(&ready.order.out_amount, jupiter::GM_SOL_DECIMALS)
+            }),
+        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
+        actual_slippage_pct,
+    })
+}
+
 pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
-    let Some(s) = amount else { return Ok(100.0) };
-    let s = s.trim();
+    let Some(raw) = amount else { return Ok(100.0); };
+    let s = raw.trim();
     let pct_str = s
         .strip_suffix('%')
         .ok_or_else(|| eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;

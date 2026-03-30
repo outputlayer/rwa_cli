@@ -73,8 +73,11 @@ rwa gm buy TSLA 100 --dry-run   # Validate + preview buy
 rwa gm buy TSLA 100 -y          # Execute buy
 rwa gm sell TSLA 50% --dry-run  # Validate + preview sell
 rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
-rwa gm close-all -y             # Sell ALL positions (sequential)
-rwa gm close-all 50% -y         # Sell 50% of every position
+rwa gm close-all -y                          # Sell ALL positions (sequential)
+rwa gm close-all --parallel -y               # Sell ALL positions in parallel (~4x faster)
+rwa gm close-all 50% -y                      # Sell 50% of every position
+rwa gm buy-basket TSLA AAPL NVDA --usdc-each 50 -y          # Buy multiple tokens sequentially
+rwa gm buy-basket TSLA AAPL NVDA --usdc-each 50 --parallel -y # Buy multiple tokens in parallel
 rwa gm portfolio                # View GM holdings + cash balances
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 rwa gm reclaim                  # Close empty accounts, reclaim SOL rent
@@ -102,8 +105,22 @@ Preview then exit everything:
 
 ```bash
 rwa --json gm close-all --dry-run
-rwa --json gm close-all -y
+rwa --json gm close-all -y                   # sequential: 3s gap between swaps
+rwa --json gm close-all --parallel -y        # parallel: all swaps at once (~4–11x faster)
 rwa --json gm reclaim
+```
+
+Buy a basket of tokens:
+
+```bash
+# Preview all quotes at once
+rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 --dry-run
+
+# Execute in parallel (all swaps simultaneous)
+rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 --parallel -y
+
+# Execute sequentially (safer, 3s delay between swaps)
+rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 -y
 ```
 
 Withdraw after liquidation:
@@ -126,7 +143,10 @@ rwa --json gm send SOL all <ADDR> -y
 | `rwa gm sell <SYM> <AMT> --dry-run` | Validate + preview sell quote without executing |
 | `rwa gm sell <SYM> <AMT> -y` | Sell for USDC (exact, `50%`, or `all`) |
 | `rwa gm close-all -y` | Sell ALL positions sequentially |
+| `rwa gm close-all --parallel -y` | Sell ALL positions in parallel (much faster for 4+ tokens) |
 | `rwa gm close-all <PCT> -y` | Sell percentage of every position (e.g. `10%`, `50%`) |
+| `rwa gm buy-basket <SYM...> --usdc-each <N> -y` | Buy multiple tokens sequentially |
+| `rwa gm buy-basket <SYM...> --usdc-each <N> --parallel -y` | Buy multiple tokens in parallel |
 | `rwa gm portfolio [WALLET]` | GM holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
@@ -143,6 +163,7 @@ rwa --json gm send SOL all <ADDR> -y
 - `--slippage <BPS>` — Max slippage in basis points (e.g. `50` = 0.5%). Default: 1% (100 bps)
 - `--rpc-url <URL>` — Custom Solana RPC (or set `RWA_RPC_URL`)
 - `--dry-run` — Validate and preview a trade/transfer without executing it
+- `--parallel` — On `close-all` and `buy-basket`: fetch all orders then execute all swaps simultaneously instead of sequentially
 
 For agents and scripts:
 
@@ -214,10 +235,11 @@ Common surfaced trade/runtime error kinds now map more cleanly to the real failu
 
 Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or the `tradable` field in `--json` output to check.
 
-### Close-All Limits
+### Close-All and Buy-Basket Limits
 
 - Positions worth less than **$1.50** are automatically skipped during `close-all` (Jupiter market makers reject small swaps)
 - Skipped tokens are reported separately in both text and JSON output
+- `buy-basket` validates total USDC balance before any swap begins
 
 ## Performance
 
@@ -230,7 +252,23 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 | `gm buy --dry-run` | 0.8s | Jupiter quote + validation |
 | `gm portfolio` | 1.0s | RPC + Ondo (parallel) |
 | `gm list` | 1.3s | Ondo API (264 tokens) |
-| `gm buy/sell` | 2–4s | Preflight + Jupiter execute |
+| `gm buy/sell` | ~22s | Jupiter swap confirmation |
+| `gm close-all` (N tokens, sequential) | N×22s + (N-1)×3s | e.g. 6 tokens ≈ 147s |
+| `gm close-all --parallel` (N tokens) | ~22s flat | All swaps concurrent |
+| `gm buy-basket` (N tokens, sequential) | N×22s + (N-1)×3s | Same as close-all |
+| `gm buy-basket --parallel` (N tokens) | ~22s flat | All swaps concurrent |
+
+### Parallel Speedup (empirical)
+
+| Tokens | Sequential | Parallel | Saved | Speedup |
+|--------|-----------|---------|-------|---------|
+| 2 | ~47s | ~22s | 25s | 2.1× |
+| 4 | ~97s | ~22s | 75s | 4.4× |
+| 6 | ~147s | ~22s | 125s | 6.7× |
+| 8 | ~197s | ~22s | 175s | 9.0× |
+| 10 | ~247s | ~22s | 225s | 11.2× |
+
+**No slippage penalty**: parallel trades of *different* tokens from the same wallet do not trigger the Jupiter market-maker cooldown. The ~10% penalty only activates after 3+ rapid roundtrips of the *same* token. Live-tested: 4-token parallel buy → immediate parallel sell → all 8 swaps at normal spread (0.2–0.7%).
 
 RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs with fast failover. Set `RWA_RPC_URL` to a private RPC for even faster responses.
 
