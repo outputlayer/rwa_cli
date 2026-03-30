@@ -490,9 +490,9 @@ pub(super) async fn rpc_batch_with_retry(
 }
 
 /// Backoff with jitter to avoid thundering herd on rate-limited endpoints.
-/// Returns base delay (attempt × 1s) plus random jitter (0–500ms).
+/// Exponential: 1s, 2s, 4s (capped at 10s) plus random jitter (0–500ms).
 pub(super) fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
-    let base_ms = 1000u64 * attempt as u64;
+    let base_ms = (1000u64 << attempt.saturating_sub(1)).min(10_000);
     let jitter_ms = rand::random::<u64>() % 500;
     std::time::Duration::from_millis(base_ms + jitter_ms)
 }
@@ -517,11 +517,25 @@ mod tests {
     }
 
     #[test]
-    fn backoff_with_jitter_increases_with_attempt() {
+    fn backoff_with_jitter_is_exponential() {
         let d1 = backoff_with_jitter(1);
+        let d2 = backoff_with_jitter(2);
         let d3 = backoff_with_jitter(3);
-        assert!(d1.as_millis() >= 1000 && d1.as_millis() < 1500);
-        assert!(d3.as_millis() >= 3000 && d3.as_millis() < 3500);
+        // attempt=1: base=1000ms, jitter 0-499ms → 1000..1499
+        assert!(d1.as_millis() >= 1000 && d1.as_millis() < 1500, "d1={}", d1.as_millis());
+        // attempt=2: base=2000ms, jitter 0-499ms → 2000..2499
+        assert!(d2.as_millis() >= 2000 && d2.as_millis() < 2500, "d2={}", d2.as_millis());
+        // attempt=3: base=4000ms, jitter 0-499ms → 4000..4499
+        assert!(d3.as_millis() >= 4000 && d3.as_millis() < 4500, "d3={}", d3.as_millis());
+    }
+
+    #[test]
+    fn backoff_with_jitter_caps_at_10s() {
+        // attempt=4: base=8000ms; attempt=5: base=16000 → capped to 10000
+        let d4 = backoff_with_jitter(4);
+        let d5 = backoff_with_jitter(5);
+        assert!(d4.as_millis() < 8500, "d4={}", d4.as_millis());
+        assert!(d5.as_millis() < 10_500, "d5={}", d5.as_millis());
     }
 
     #[test]
