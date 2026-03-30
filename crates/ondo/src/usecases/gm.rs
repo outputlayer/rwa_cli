@@ -74,6 +74,9 @@ pub struct SwapPlan {
 pub struct SwapExecution {
     pub output_amount: String,
     pub signature: String,
+    /// Actual slippage computed from execute response vs order quote.
+    /// `None` when the execute response omits amount fields.
+    pub actual_slippage_pct: Option<f64>,
 }
 
 pub struct CloseSkip {
@@ -260,6 +263,17 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
         slippage_bps: plan.swap.slippage_bps,
     };
     let result = execute_with_retry(wallet, &plan.order, json, &params).await?;
+    let actual_slippage_pct = calc_actual_slippage(&plan.order, &result);
+    if let Some(actual) = actual_slippage_pct {
+        if let Some(quoted) = plan.slippage_pct {
+            let drift = actual - quoted;
+            if drift.abs() > 1.0 && !json {
+                eprintln!(
+                    "Warning: actual slippage {actual:.2}% differs from quoted {quoted:.2}% (drift {drift:+.2}%)"
+                );
+            }
+        }
+    }
     Ok(SwapExecution {
         output_amount: result
             .output_amount_result
@@ -267,6 +281,7 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
             .map(|r| amounts::format_amount(r, plan.output_decimals))
             .unwrap_or_else(|| amounts::format_amount(&plan.order.out_amount, plan.output_decimals)),
         signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
+        actual_slippage_pct,
     })
 }
 
@@ -297,6 +312,7 @@ pub async fn execute_sell_raw(
         slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
     };
     let result = execute_with_retry(wallet, &order, json, &params).await?;
+    let actual_slippage_pct = calc_actual_slippage(&order, &result);
     Ok(SwapExecution {
         output_amount: result
             .output_amount_result
@@ -304,6 +320,7 @@ pub async fn execute_sell_raw(
             .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
             .unwrap_or_else(|| amounts::format_amount(&order.out_amount, jupiter::USDC_DECIMALS)),
         signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
+        actual_slippage_pct,
     })
 }
 
@@ -396,6 +413,27 @@ fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f
         }
     }
     Ok(slip)
+}
+
+/// Compute actual slippage from execute response amounts vs order quote.
+/// Returns `None` if the execute response omits the result amounts.
+fn calc_actual_slippage(
+    order: &jupiter::OrderResponse,
+    exec: &jupiter::ExecuteResponse,
+) -> Option<f64> {
+    let actual_in: u128 = exec.input_amount_result.as_deref()?.parse().ok()?;
+    let actual_out: u128 = exec.output_amount_result.as_deref()?.parse().ok()?;
+    let quoted_in: u128 = order.in_amount.parse().ok()?;
+    let quoted_out: u128 = order.out_amount.parse().ok()?;
+    if quoted_in == 0 || quoted_out == 0 {
+        return None;
+    }
+    // actual_ratio = actual_out / actual_in
+    // quoted_ratio = quoted_out / quoted_in
+    // slippage = (actual_ratio / quoted_ratio - 1) * 100
+    let actual_ratio = actual_out as f64 / actual_in as f64;
+    let quoted_ratio = quoted_out as f64 / quoted_in as f64;
+    Some((actual_ratio / quoted_ratio - 1.0) * 100.0)
 }
 
 async fn get_order_checked(

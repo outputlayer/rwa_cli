@@ -221,6 +221,11 @@ pub(super) struct TradeJson {
         skip_serializing_if = "Option::is_none",
         serialize_with = "ser_opt_f64_4"
     )]
+    pub actual_slippage_pct: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
     pub price_impact_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_bps: Option<u32>,
@@ -495,6 +500,7 @@ mod tests {
             counter_token: "USDC",
             tx: "https://solscan.io/tx/abc".into(),
             slippage_pct: Some(0.51234),
+            actual_slippage_pct: Some(-0.6789),
             price_impact_pct: Some(-0.12345),
             fee_bps: Some(5),
             gasless: Some(false),
@@ -504,6 +510,7 @@ mod tests {
 
         assert_eq!(json.pointer("/status"), Some(&Value::from("success")));
         assert_eq!(json.pointer("/slippage_pct"), Some(&Value::from(0.5123)));
+        assert_eq!(json.pointer("/actual_slippage_pct"), Some(&Value::from(-0.6789)));
         assert_eq!(json.pointer("/price_impact_pct"), Some(&Value::from(-0.1235)));
         assert_eq!(json.pointer("/fee_bps"), Some(&Value::from(5)));
         assert_eq!(json.pointer("/gasless"), Some(&Value::from(false)));
