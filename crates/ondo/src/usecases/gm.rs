@@ -709,9 +709,11 @@ async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
         Err(_) => return Ok(()),
     };
     let sym_upper = symbol.to_uppercase();
-    let is_tradable = limits
+    let limit = limits
         .iter()
-        .any(|l| l.symbol.to_uppercase() == sym_upper && l.is_tradable(session));
+        .find(|l| l.symbol.to_uppercase() == sym_upper);
+
+    let is_tradable = limit.map(|l| l.is_tradable(session)).unwrap_or(false);
     if !is_tradable {
         return Err(GmTradeError::new(
             GmTradeErrorKind::NotTradable,
@@ -722,6 +724,22 @@ async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
         )
         .into());
     }
+
+    // If max notional is explicitly 0 for this session, the token is marked tradable
+    // but has no active liquidity — skip before even calling Jupiter (avoids MM cooldown).
+    if let Some(max) = limit.and_then(|l| l.max_notional(session)) {
+        if max <= 0.0 {
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::NotTradable,
+                format!(
+                    "{symbol} has no active notional limit for the current session ({}) — likely illiquid. Try during Regular Market hours (9:30 AM – 4 PM ET).",
+                    session.label()
+                ),
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }
 
@@ -1002,5 +1020,46 @@ mod tests {
     fn should_skip_symbol_in_tradable_set_does_not_skip() {
         let tradable: std::collections::HashSet<String> = ["TSLAON".to_string()].into();
         assert!(should_skip_position("TSLAon", 2.0, &tradable).is_none());
+    }
+
+    // ── SessionLimits max_notional zero check ─────────────────
+
+    #[test]
+    fn session_limits_zero_notional_is_not_tradable_for_liquidity() {
+        use crate::api::{Session, SessionInfo, SessionLimits};
+        let limits = SessionLimits {
+            symbol: "AMGNon".to_string(),
+            premarket: None,
+            regular: None,
+            postmarket: None,
+            overnight: Some(SessionInfo {
+                tradable: true, // marked tradable, but notional = 0
+                max_attestation_count: None,
+                max_active_notional_value: Some("0".to_string()),
+            }),
+        };
+        // is_tradable returns true (Ondo says yes)...
+        assert!(limits.is_tradable(Session::Overnight));
+        // ...but max_notional is 0.0, so our check would catch it
+        let max = limits.max_notional(Session::Overnight);
+        assert_eq!(max, Some(0.0));
+    }
+
+    #[test]
+    fn session_limits_normal_notional_passes_liquidity_check() {
+        use crate::api::{Session, SessionInfo, SessionLimits};
+        let limits = SessionLimits {
+            symbol: "LLYon".to_string(),
+            premarket: None,
+            regular: None,
+            postmarket: None,
+            overnight: Some(SessionInfo {
+                tradable: true,
+                max_attestation_count: None,
+                max_active_notional_value: Some("100000".to_string()),
+            }),
+        };
+        let max = limits.max_notional(Session::Overnight);
+        assert!(max.unwrap_or(0.0) > 0.0);
     }
 }
