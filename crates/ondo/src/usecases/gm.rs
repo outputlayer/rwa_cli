@@ -50,6 +50,9 @@ const MAX_SLIPPAGE_PCT: f64 = 3.0;
 const SLIPPAGE_RETRY_PCT: f64 = 1.0;
 /// Maximum retries when slippage exceeds the retry threshold.
 const MAX_SLIPPAGE_RETRIES: u32 = 3;
+/// Slippage level that indicates a market-maker cooldown penalty rather than normal spread.
+/// jupiterz returns ~-10% penalty quotes for ~90s after high-frequency trading of a token.
+const PENALTY_SLIPPAGE_PCT: f64 = 5.0;
 /// Maximum retries for transient swap execution failures.
 const MAX_SWAP_RETRIES: u32 = 2;
 /// Default slippage limit in basis points (100 = 1%).
@@ -396,15 +399,29 @@ fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     }
 }
 
+fn slippage_block_hint(s: f64, order: &jupiter::OrderResponse) -> String {
+    let router = order.router.as_deref().unwrap_or("unknown");
+    if s < -PENALTY_SLIPPAGE_PCT {
+        format!(
+            "slippage {s:.2}% via {router} exceeds -{MAX_SLIPPAGE_PCT:.0}%. \
+             Market maker cooldown — wait ~60s and retry \
+             (usually triggered by a recent sell of this token)."
+        )
+    } else {
+        format!(
+            "slippage {s:.2}% via {router} exceeds -{MAX_SLIPPAGE_PCT:.0}%. \
+             Try a smaller amount or wait for better liquidity."
+        )
+    }
+}
+
 fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f64>> {
     let slip = calc_slippage(order);
     if let Some(s) = slip {
         if s < -MAX_SLIPPAGE_PCT {
             return Err(GmTradeError::new(
                 GmTradeErrorKind::SlippageTooHigh,
-                format!(
-                    "slippage {s:.2}% exceeds -{MAX_SLIPPAGE_PCT:.0}%. Try a smaller amount or wait for better liquidity."
-                ),
+                slippage_block_hint(s, order),
             )
             .into());
         }
@@ -446,19 +463,24 @@ async fn get_order_checked(
     jupiter_url: Option<&str>,
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
     let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
+    let mut prev_slip: Option<f64> = None;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
         if let Some(s) = slip {
             if s < -MAX_SLIPPAGE_PCT {
                 return Err(GmTradeError::new(
                     GmTradeErrorKind::SlippageTooHigh,
-                    format!(
-                        "slippage {s:.2}% exceeds -{MAX_SLIPPAGE_PCT:.0}%. Try a smaller amount or wait for better liquidity."
-                    ),
+                    slippage_block_hint(s, &order),
                 )
                 .into());
             }
-            if s < -SLIPPAGE_RETRY_PCT && attempt <= MAX_SLIPPAGE_RETRIES {
+            if s < -SLIPPAGE_RETRY_PCT {
+                // If slippage is stable across attempts it's a fixed MM spread, not stochastic.
+                // Stop retrying early to avoid wasting time on tokens like AMGN.
+                if prev_slip.is_some_and(|prev| (prev - s).abs() < 0.05) {
+                    break;
+                }
+                prev_slip = Some(s);
                 if !json {
                     eprintln!(
                         "Slippage {s:.2}% exceeds -{SLIPPAGE_RETRY_PCT:.0}% — refreshing quote ({attempt}/{MAX_SLIPPAGE_RETRIES})..."
