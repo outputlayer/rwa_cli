@@ -76,8 +76,10 @@ rwa gm sell TSLA 50% -y         # Sell 50% of TSLA position
 rwa gm close-all -y                          # Sell ALL positions (sequential)
 rwa gm close-all --parallel -y               # Sell ALL positions in parallel (~4x faster)
 rwa gm close-all 50% -y                      # Sell 50% of every position
-rwa gm buy-basket TSLA AAPL NVDA --usdc-each 50 -y          # Buy multiple tokens sequentially
-rwa gm buy-basket TSLA AAPL NVDA --usdc-each 50 --parallel -y # Buy multiple tokens in parallel
+rwa gm buy-basket AAPL 50 TSLA 50 NVDA 50 -y              # Buy multiple tokens sequentially
+rwa gm buy-basket AAPL 50 TSLA 50 NVDA 50 --parallel -y   # Buy multiple tokens in parallel
+rwa gm sell-basket AAPL 2 TSLA 1 NVDA all -y              # Sell multiple tokens sequentially
+rwa gm sell-basket AAPL 2 TSLA 1 NVDA all --parallel -y   # Sell multiple tokens in parallel
 rwa gm portfolio                # View GM holdings + cash balances
 rwa gm send USDC 100 <ADDR> -y  # Send USDC to another wallet
 rwa gm reclaim                  # Close empty accounts, reclaim SOL rent
@@ -114,13 +116,29 @@ Buy a basket of tokens:
 
 ```bash
 # Preview all quotes at once
-rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 --dry-run
+rwa --json gm buy-basket AAPL 25 TSLA 25 NVDA 25 SPY 25 --dry-run
 
 # Execute in parallel (all swaps simultaneous)
-rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 --parallel -y
+rwa --json gm buy-basket AAPL 25 TSLA 25 NVDA 25 SPY 25 --parallel -y
 
-# Execute sequentially (safer, 3s delay between swaps)
-rwa --json gm buy-basket AAPL TSLA NVDA SPY --usdc-each 25 -y
+# Execute sequentially
+rwa --json gm buy-basket AAPL 25 TSLA 25 NVDA 25 SPY 25 -y
+
+# Different amount per token
+rwa --json gm buy-basket AAPL 100 TSLA 50 NVDA 25 --parallel -y
+```
+
+Sell a basket of specific tokens:
+
+```bash
+# Preview
+rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all --dry-run
+
+# Execute in parallel
+rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all --parallel -y
+
+# Sell % of each
+rwa --json gm sell-basket SPY 50% TSLA 50% --parallel -y
 ```
 
 Withdraw after liquidation:
@@ -145,8 +163,10 @@ rwa --json gm send SOL all <ADDR> -y
 | `rwa gm close-all -y` | Sell ALL positions sequentially |
 | `rwa gm close-all --parallel -y` | Sell ALL positions in parallel (much faster for 4+ tokens) |
 | `rwa gm close-all <PCT> -y` | Sell percentage of every position (e.g. `10%`, `50%`) |
-| `rwa gm buy-basket <SYM...> --usdc-each <N> -y` | Buy multiple tokens sequentially |
-| `rwa gm buy-basket <SYM...> --usdc-each <N> --parallel -y` | Buy multiple tokens in parallel |
+| `rwa gm buy-basket <SYM AMT ...> -y` | Buy multiple tokens (per-token amounts) sequentially |
+| `rwa gm buy-basket <SYM AMT ...> --parallel -y` | Buy multiple tokens in parallel |
+| `rwa gm sell-basket <SYM AMT ...> -y` | Sell multiple tokens (per-token amounts) sequentially |
+| `rwa gm sell-basket <SYM AMT ...> --parallel -y` | Sell multiple tokens in parallel |
 | `rwa gm portfolio [WALLET]` | GM holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> -y` | Send SOL/USDC/tokens to another wallet |
@@ -257,6 +277,8 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 | `gm close-all --parallel` (N tokens) | ~22s flat | All swaps concurrent |
 | `gm buy-basket` (N tokens, sequential) | N×22s + (N-1)×3s | Same as close-all |
 | `gm buy-basket --parallel` (N tokens) | ~22s flat | All swaps concurrent |
+| `gm sell-basket` (N tokens, sequential) | N×22s + (N-1)×3s | Per-token sell amounts |
+| `gm sell-basket --parallel` (N tokens) | ~22s flat | All swaps concurrent |
 
 ### Parallel Speedup (empirical)
 

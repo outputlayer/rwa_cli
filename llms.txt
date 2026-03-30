@@ -47,9 +47,12 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm close-all -y` — sell all positions sequentially
 - `rwa --json gm close-all --parallel -y` — sell all positions in parallel (~4–11x faster for 4+ tokens)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
-- `rwa --json gm buy-basket <SYM...> --usdc-each <N> --dry-run` — preview basket buy quotes
-- `rwa --json gm buy-basket <SYM...> --usdc-each <N> -y` — buy multiple tokens sequentially
-- `rwa --json gm buy-basket <SYM...> --usdc-each <N> --parallel -y` — buy multiple tokens in parallel
+- `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
+- `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens sequentially
+- `rwa --json gm buy-basket <SYM AMT ...> --parallel -y` — buy multiple tokens in parallel
+- `rwa --json gm sell-basket <SYM AMT ...> --dry-run` — preview basket sell quotes
+- `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens sequentially
+- `rwa --json gm sell-basket <SYM AMT ...> --parallel -y` — sell multiple tokens in parallel
 
 ### Portfolio & history
 - `rwa --json gm portfolio` — own wallet holdings
@@ -106,20 +109,21 @@ Not all tokens are tradable in every session. Use `list --search <SYM>` for one 
 
 ## Bulk workflows
 
-Basket buy (parallel — all tokens simultaneously, ~22s flat):
+Check tradable + buy basket in 2 commands (most efficient):
 
 ```bash
-rwa --json gm buy-basket TSLA AAPL NVDA --usdc-each 100 --parallel -y
+# 1. Get all tradable tokens in one call — filter with python
+rwa --json gm list | python3 -c "import sys,json; tokens=[t for t in json.load(sys.stdin) if t.get('sector')=='Healthcare' and t['tradable']]; [print(t['symbol']) for t in tokens]"
+
+# 2. Buy all tradable tokens at once — one command, parallel
+rwa --json gm buy-basket JNJ 25 LLY 25 PFE 25 ABBV 25 --parallel -y
 ```
 
-Basket buy (sequential — old manual approach, use only if parallel isn’t available):
+Syntax for buy-basket and sell-basket: interleaved `SYMBOL AMOUNT` pairs. Each token gets its own amount:
 
 ```bash
-rwa --json gm buy TSLA 100 -y
-sleep 3
-rwa --json gm buy AAPL 150 -y
-sleep 3
-rwa --json gm buy NVDA 200 -y
+rwa --json gm buy-basket TSLA 100 AAPL 50 NVDA 25 --parallel -y   # different amounts
+rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all --parallel -y     # partial sells
 ```
 
 Full exit:
