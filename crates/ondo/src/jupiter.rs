@@ -1,7 +1,6 @@
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::amounts;
 use crate::wallet::Wallet;
 use crate::HTTP;
 
