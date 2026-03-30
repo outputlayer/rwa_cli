@@ -267,14 +267,14 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
     };
     let result = execute_with_retry(wallet, &plan.order, json, &params).await?;
     let actual_slippage_pct = calc_actual_slippage(&plan.order, &result);
-    if let Some(actual) = actual_slippage_pct {
-        if let Some(quoted) = plan.slippage_pct {
-            let drift = actual - quoted;
-            if drift.abs() > 1.0 && !json {
-                eprintln!(
-                    "Warning: actual slippage {actual:.2}% differs from quoted {quoted:.2}% (drift {drift:+.2}%)"
-                );
-            }
+    if let Some(actual) = actual_slippage_pct
+        && let Some(quoted) = plan.slippage_pct
+    {
+        let drift = actual - quoted;
+        if drift.abs() > 1.0 && !json {
+            eprintln!(
+                "Warning: actual slippage {actual:.2}% differs from quoted {quoted:.2}% (drift {drift:+.2}%)"
+            );
         }
     }
     Ok(SwapExecution {
