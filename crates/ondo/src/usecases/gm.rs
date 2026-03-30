@@ -781,17 +781,15 @@ async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
 
     // If max notional is explicitly 0 for this session, the token is marked tradable
     // but has no active liquidity — skip before even calling Jupiter (avoids MM cooldown).
-    if let Some(max) = limit.and_then(|l| l.max_notional(session)) {
-        if max <= 0.0 {
-            return Err(GmTradeError::new(
-                GmTradeErrorKind::NotTradable,
-                format!(
-                    "{symbol} has no active notional limit for the current session ({}) — likely illiquid. Try during Regular Market hours (9:30 AM – 4 PM ET).",
-                    session.label()
-                ),
-            )
-            .into());
-        }
+    if let Some(max) = limit.and_then(|l| l.max_notional(session)) && max <= 0.0 {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::NotTradable,
+            format!(
+                "{symbol} has no active notional limit for the current session ({}) — likely illiquid. Try during Regular Market hours (9:30 AM – 4 PM ET).",
+                session.label()
+            ),
+        )
+        .into());
     }
 
     Ok(())

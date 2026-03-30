@@ -553,7 +553,7 @@ async fn close_all_parallel(
 /// Parse alternating ["AAPL", "4", "TSLA", "3"] into [("AAPL","4"), ("TSLA","3")].
 /// Returns Err if the list is odd-length or any amount is not parseable as a number/pct/all.
 fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> {
-    if tokens.len() % 2 != 0 {
+    if !tokens.len().is_multiple_of(2) {
         return Err(eyre!(
             "Expected alternating SYMBOL AMOUNT pairs (e.g. AAPL 4 TSLA 3), got {} token(s)",
             tokens.len()
