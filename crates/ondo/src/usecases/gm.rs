@@ -397,6 +397,60 @@ pub async fn execute_sell_from_order(
     })
 }
 
+/// High-level phase 1 for sell-basket: resolve symbol, compute raw amount from user input
+/// (exact token amount, "50%", or "all"), check tradable, fetch + validate sell order.
+pub async fn fetch_sell_order_by_symbol(
+    symbol_str: &str,
+    amount_str: &str,
+    taker: &str,
+    json: bool,
+    rpc_url: Option<&str>,
+) -> Result<SellOrderReady> {
+    let tokens = token_list::get_token_list();
+    let sym = Symbol::from(symbol_str);
+    let (sym, gm_mint) = resolve_gm_mint(&sym, tokens)?;
+    check_tradable(&sym, None).await?;
+
+    let gm_dec = jupiter::GM_SOL_DECIMALS;
+    let bal = solana::get_balance(taker, &gm_mint, rpc_url).await?;
+    if bal.balance <= 0.0 {
+        return Err(eyre!("Balance is 0 for {sym} — nothing to sell"));
+    }
+
+    let is_all = amount_str.trim().eq_ignore_ascii_case("all");
+    let is_pct = amount_str.trim().ends_with('%');
+    let (display_amount, raw_amount) = if is_all {
+        (
+            amounts::format_amount(&bal.raw_amount, gm_dec),
+            bal.raw_amount.clone(),
+        )
+    } else if is_pct {
+        let pct_str = amount_str.trim().strip_suffix('%').unwrap_or("0");
+        let pct: f64 = pct_str
+            .parse()
+            .map_err(|_| eyre!("Invalid percentage: {amount_str}"))?;
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(eyre!("Percentage must be 0–100, got {amount_str}"));
+        }
+        let raw: u128 = bal.raw_amount.parse().map_err(|_| eyre!("Invalid balance"))?;
+        let scaled = ((raw as f64) * pct / 100.0).round() as u128;
+        (
+            amounts::format_amount(&scaled.to_string(), gm_dec),
+            scaled.to_string(),
+        )
+    } else {
+        let raw = amounts::token_to_raw(amount_str, gm_dec)
+            .map_err(|e| eyre!("Invalid amount '{amount_str}' for {sym}: {e}"))?;
+        (amounts::format_amount(&raw, gm_dec), raw)
+    };
+
+    let mint_str = gm_mint.to_string();
+    fetch_sell_order(&sym, &mint_str, &raw_amount, taker, json).await.map(|mut r| {
+        r.display_amount = display_amount;
+        r
+    })
+}
+
 /// Pre-fetched buy order ready for parallel/sequential basket execution.
 pub struct BuyOrderReady {
     pub symbol: String,

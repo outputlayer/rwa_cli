@@ -114,14 +114,29 @@ pub enum GmAction {
         token: Option<String>,
     },
 
-    /// Buy multiple GM tokens with USDC in one go (basket buy)
+    /// Buy multiple GM tokens with USDC in one go (basket buy).
+    /// Syntax: SYMBOL AMOUNT [SYMBOL AMOUNT ...], e.g. AAPL 4 TSLA 3 NVDA 5
     BuyBasket {
-        /// Token symbols to buy (e.g. AAPL TSLA NVDA)
-        #[arg(required = true)]
-        symbols: Vec<String>,
-        /// USDC to spend per token (e.g. 50)
-        #[arg(long, short = 'u')]
-        usdc_each: String,
+        /// Alternating symbol/amount pairs: AAPL 4 TSLA 3 NVDA 5
+        #[arg(required = true, num_args = 2..)]
+        tokens: Vec<String>,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+        /// Show quotes without executing
+        #[arg(long)]
+        dry_run: bool,
+        /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
+        #[arg(long)]
+        parallel: bool,
+    },
+
+    /// Sell multiple GM tokens for USDC in one go (basket sell).
+    /// Syntax: SYMBOL AMOUNT [SYMBOL AMOUNT ...], e.g. SPY 5 TSLA 3 NVDA all
+    SellBasket {
+        /// Alternating symbol/amount pairs: SPY 5 TSLA 3 NVDA all
+        #[arg(required = true, num_args = 2..)]
+        tokens: Vec<String>,
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
@@ -192,8 +207,10 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             parallel,
         } => trade::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url).await,
         GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
-        GmAction::BuyBasket { symbols, usdc_each, yes, dry_run, parallel } =>
-            trade::buy_basket(&symbols, &usdc_each, yes, dry_run, parallel, json, rpc_url).await,
+        GmAction::BuyBasket { tokens, yes, dry_run, parallel } =>
+            trade::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url).await,
+        GmAction::SellBasket { tokens, yes, dry_run, parallel } =>
+            trade::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url).await,
     }
 }
 
@@ -396,6 +413,26 @@ pub(super) struct BuyBasketResultJson {
 pub(super) struct BuyBasketItemJson {
     pub token: String,
     pub received: String,
+    pub usdc: String,
+    pub tx: String,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub slippage_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub(super) struct SellBasketResultJson {
+    pub status: &'static str,
+    pub sold: Vec<SellBasketItemJson>,
+    pub failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<CloseSkipJson>,
+    pub total_usdc_received: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct SellBasketItemJson {
+    pub token: String,
+    pub amount: String,
     pub usdc: String,
     pub tx: String,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
