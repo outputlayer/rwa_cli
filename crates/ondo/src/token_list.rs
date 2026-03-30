@@ -385,4 +385,28 @@ mod tests {
         sorted.sort();
         assert_eq!(symbols, sorted, "token list is not sorted alphabetically");
     }
+
+    /// Canary test: verifies exact mint addresses for high-value tokens.
+    /// If any of these fail, the static list was accididentally mutated.
+    /// Update this test whenever Ondo updates a token's Solana address.
+    #[test]
+    fn known_mint_addresses_are_exact() {
+        let tokens = get_token_list();
+        let cases: &[(&str, &str)] = &[
+            ("TSLAon", "KeGv7bsfR4MheC1CkmnAVceoApjrkvBhHYjWb67ondo"),
+            ("AAPLon", "123mYEnRLM2LLYsJW3K6oyYh8uP1fngj732iG638ondo"),
+            ("SPYon",  "k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
+            ("NVDAon", "gEGtLTPNQ7jcg25zTetkbmF7teoDLcrfTnQfmn2ondo"),
+            ("AMZNon", "14Tqdo8V1FhzKsE3W2pFsZCzYPQxxupXRcqw9jv6ondo"),
+        ];
+        for (sym, expected_mint) in cases {
+            let token = tokens.iter().find(|t| t.symbol == *sym)
+                .unwrap_or_else(|| panic!("{sym} not found in token list"));
+            assert_eq!(
+                token.solana_address,
+                Some(*expected_mint),
+                "{sym} mint address changed — update this test AND verify the address is correct"
+            );
+        }
+    }
 }
