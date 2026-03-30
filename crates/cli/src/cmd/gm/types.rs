@@ -1,0 +1,235 @@
+use serde::Serialize;
+
+// ── Rounded float serializers for token-efficient JSON ─────
+
+/// Round to 2 decimal places (prices, USD values).
+pub fn ser_f64_2<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((v * 100.0).round() / 100.0)
+}
+/// Round to 4 decimal places (percentages, slippage).
+pub fn ser_f64_4<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((v * 10000.0).round() / 10000.0)
+}
+pub fn ser_opt_f64_4<S: serde::Serializer>(
+    v: &Option<f64>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(val) => s.serialize_some(&((val * 10000.0).round() / 10000.0)),
+        None => s.serialize_none(),
+    }
+}
+
+// ── JSON output types ──────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct HoursJson {
+    pub status: &'static str,
+    pub session: &'static str,
+    pub session_hours: &'static str,
+    pub now: String,
+    pub countdown: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tradable_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tradable: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct TradeJson {
+    pub status: &'static str,
+    pub amount: String,
+    pub token: String,
+    pub counter_amount: String,
+    pub counter_token: &'static str,
+    pub tx: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
+    pub slippage_pct: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
+    pub actual_slippage_pct: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
+    pub price_impact_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_bps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gasless: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PositionJson {
+    pub token: String,
+    #[serde(serialize_with = "ser_f64_4")]
+    pub balance: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub price: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub gm_alloc_pct: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub change_pct_24h: f64,
+}
+
+#[derive(Serialize)]
+pub struct PortfolioCashJson {
+    #[serde(serialize_with = "ser_f64_4")]
+    pub sol: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub usdc: f64,
+}
+
+#[derive(Serialize)]
+pub struct PortfolioGmPositionsJson {
+    pub positions: Vec<PositionJson>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub change_24h_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub change_24h_pct: f64,
+}
+
+#[derive(Serialize)]
+pub struct PortfolioJson {
+    pub wallet: String,
+    pub cash: PortfolioCashJson,
+    pub gm_positions: PortfolioGmPositionsJson,
+}
+
+#[derive(Serialize)]
+pub struct HistoryJson {
+    pub symbol: String,
+    pub range: String,
+    pub candles: usize,
+    pub first: HistoryCandleJson,
+    pub last: HistoryCandleJson,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub high: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub low: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub change_pct: f64,
+}
+
+#[derive(Serialize)]
+pub struct HistoryCandleJson {
+    pub timestamp: u64,
+    pub price: f64,
+}
+
+#[derive(Serialize)]
+pub struct ListItemJson {
+    pub symbol: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sector: Option<String>,
+    pub tradable: bool,
+}
+
+#[derive(Serialize)]
+pub struct SendJson {
+    pub status: &'static str,
+    pub token: String,
+    pub amount: String,
+    pub recipient: String,
+    pub tx: String,
+}
+
+#[derive(Serialize)]
+pub struct CloseAllResultJson {
+    pub status: &'static str,
+    pub sold: Vec<CloseItemJson>,
+    pub failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<CloseSkipJson>,
+    pub total_usdc: String,
+}
+
+#[derive(Serialize)]
+pub struct CloseSkipJson {
+    pub token: String,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub estimated_usd: f64,
+    pub reason: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct CloseItemJson {
+    pub token: String,
+    pub amount: String,
+    pub usdc: String,
+    pub tx: String,
+}
+
+#[derive(Serialize)]
+pub struct CloseFailJson {
+    pub token: String,
+    pub error: String,
+}
+
+#[derive(Serialize)]
+pub struct ReclaimJson {
+    pub status: &'static str,
+    pub accounts_closed: usize,
+    pub sol_reclaimed: String,
+    pub signatures: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct BuyBasketResultJson {
+    pub status: &'static str,
+    pub bought: Vec<BuyBasketItemJson>,
+    pub failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<CloseSkipJson>,
+    pub total_usdc_spent: String,
+}
+
+#[derive(Serialize)]
+pub struct BuyBasketItemJson {
+    pub token: String,
+    pub received: String,
+    pub usdc: String,
+    pub tx: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
+    pub slippage_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct SellBasketResultJson {
+    pub status: &'static str,
+    pub sold: Vec<SellBasketItemJson>,
+    pub failed: Vec<CloseFailJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<CloseSkipJson>,
+    pub total_usdc_received: String,
+}
+
+#[derive(Serialize)]
+pub struct SellBasketItemJson {
+    pub token: String,
+    pub amount: String,
+    pub usdc: String,
+    pub tx: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_f64_4"
+    )]
+    pub slippage_pct: Option<f64>,
+}
