@@ -63,7 +63,7 @@ struct ExecuteRequest {
     signed_transaction: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResponse {
     pub status: Option<String>,

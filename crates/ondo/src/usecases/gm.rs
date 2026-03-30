@@ -1114,4 +1114,109 @@ mod tests {
         let max = limits.max_notional(Session::Overnight);
         assert!(max.unwrap_or(0.0) > 0.0);
     }
+
+    // ── calc_actual_slippage ──────────────────────────────────
+
+    #[test]
+    fn calc_actual_slippage_zero_when_exact_match() {
+        let order = jupiter::OrderResponse {
+            in_amount: "1000".into(),
+            out_amount: "2000".into(),
+            ..Default::default()
+        };
+        let exec = jupiter::ExecuteResponse {
+            input_amount_result: Some("1000".into()),
+            output_amount_result: Some("2000".into()),
+            ..Default::default()
+        };
+        let slip = calc_actual_slippage(&order, &exec);
+        assert!(slip.is_some());
+        assert!((slip.unwrap()).abs() < 0.001);
+    }
+
+    #[test]
+    fn calc_actual_slippage_negative_when_got_less() {
+        let order = jupiter::OrderResponse {
+            in_amount: "1000".into(),
+            out_amount: "1000".into(),
+            ..Default::default()
+        };
+        // Got 990 out instead of 1000 → -1% slippage
+        let exec = jupiter::ExecuteResponse {
+            input_amount_result: Some("1000".into()),
+            output_amount_result: Some("990".into()),
+            ..Default::default()
+        };
+        let slip = calc_actual_slippage(&order, &exec).unwrap();
+        assert!((slip - (-1.0)).abs() < 0.01, "got {slip}");
+    }
+
+    #[test]
+    fn calc_actual_slippage_none_when_exec_missing_amounts() {
+        let order = jupiter::OrderResponse {
+            in_amount: "1000".into(),
+            out_amount: "1000".into(),
+            ..Default::default()
+        };
+        let exec = jupiter::ExecuteResponse {
+            input_amount_result: None,
+            output_amount_result: None,
+            ..Default::default()
+        };
+        assert!(calc_actual_slippage(&order, &exec).is_none());
+    }
+
+    #[test]
+    fn calc_actual_slippage_none_when_zero_quoted_in() {
+        let order = jupiter::OrderResponse {
+            in_amount: "0".into(),
+            out_amount: "1000".into(),
+            ..Default::default()
+        };
+        let exec = jupiter::ExecuteResponse {
+            input_amount_result: Some("0".into()),
+            output_amount_result: Some("1000".into()),
+            ..Default::default()
+        };
+        assert!(calc_actual_slippage(&order, &exec).is_none());
+    }
+
+    // ── slippage_block_hint ───────────────────────────────────
+
+    #[test]
+    fn slippage_block_hint_cooldown_message_for_extreme_slippage() {
+        let order = jupiter::OrderResponse {
+            router: Some("jupiterz".into()),
+            ..Default::default()
+        };
+        // -6% triggers the "market maker cooldown" hint (below -PENALTY_SLIPPAGE_PCT=-5%)
+        let hint = slippage_block_hint(-6.0, &order);
+        assert!(hint.contains("cooldown"), "hint: {hint}");
+        assert!(hint.contains("jupiterz"), "hint: {hint}");
+    }
+
+    #[test]
+    fn slippage_block_hint_liquidity_message_for_moderate_excess() {
+        let order = jupiter::OrderResponse {
+            router: Some("jupiter".into()),
+            ..Default::default()
+        };
+        // -4% is above -5% so should give the liquidity hint
+        let hint = slippage_block_hint(-4.0, &order);
+        assert!(hint.contains("liquidity") || hint.contains("smaller"), "hint: {hint}");
+    }
+
+    // ── parse_sell_pct edge cases ─────────────────────────────
+
+    #[test]
+    fn parse_sell_pct_fractional_near_zero() {
+        let pct = parse_sell_pct(Some("0.01%")).unwrap();
+        assert!((pct - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_sell_pct_exactly_100_percent() {
+        let pct = parse_sell_pct(Some("100%")).unwrap();
+        assert_eq!(pct, 100.0);
+    }
 }
