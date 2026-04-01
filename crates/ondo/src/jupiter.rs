@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::wallet::Wallet;
 use crate::HTTP;
 
-const SWAP_API_BASE: &str = "https://lite-api.jup.ag/swap/v2";
+const SWAP_API_BASE: &str = "https://ultra-api.jup.ag";
 pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -176,8 +176,8 @@ impl std::error::Error for ExecuteFailure {}
 
 // ── Public functions ───────────────────────────────────────────────────
 
-/// Get a swap quote from Jupiter Swap V2 API.
-/// Uses lite-api.jup.ag/swap/v2 — no API key required.
+/// Get a swap quote from Jupiter Ultra API.
+/// Uses ultra-api.jup.ag — no API key required, supports GM tokens.
 /// Flow: /order → wallet.sign → /execute
 /// Maximum retries for transient network errors on /order.
 const ORDER_MAX_RETRIES: u32 = 2;
