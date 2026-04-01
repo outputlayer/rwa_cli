@@ -1,10 +1,16 @@
 use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 use crate::wallet::Wallet;
 use crate::HTTP;
 
 const SWAP_API_BASE: &str = "https://ultra-api.jup.ag";
+
+/// Global concurrency limit for Jupiter API requests.
+/// Jupiter Ultra free tier allows ~5 RPS; cap at 3 concurrent to leave headroom
+/// for slippage retries that spawn additional requests within the same permit.
+static JUPITER_SEMAPHORE: Semaphore = Semaphore::const_new(3);
 pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -190,6 +196,19 @@ pub async fn get_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
+    let _permit = JUPITER_SEMAPHORE.acquire().await
+        .map_err(|_| eyre!("Jupiter rate-limit semaphore closed"))?;
+    get_order_inner(base_url, input_mint, output_mint, amount, taker, slippage_bps).await
+}
+
+async fn get_order_inner(
+    base_url: Option<&str>,
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+) -> Result<OrderResponse> {
     let mut last_err = eyre!("Jupiter /order failed");
     let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
 
@@ -232,7 +251,7 @@ pub async fn get_order(
 
         if !status.is_success() {
             if status.as_u16() == 400 && body.contains("Failed to get quotes") {
-                return Err(eyre!("No swap route found. Do not run quotes in parallel — Jupiter rejects concurrent requests from the same wallet."));
+                return Err(eyre!("No swap route found — token may not have liquidity on Jupiter."));
             }
             return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
         }
@@ -268,6 +287,12 @@ fn is_transient(e: &reqwest::Error) -> bool {
 
 /// Sign and execute a swap via Jupiter Swap V2 API.
 pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+    let _permit = JUPITER_SEMAPHORE.acquire().await
+        .map_err(|_| eyre!("Jupiter rate-limit semaphore closed"))?;
+    execute_order_inner(wallet, order).await
+}
+
+async fn execute_order_inner(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
         .as_deref()
