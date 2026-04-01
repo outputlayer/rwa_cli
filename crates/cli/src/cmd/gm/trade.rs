@@ -449,71 +449,37 @@ async fn close_all_parallel(
         return Ok(());
     }
 
-    // ── Phase 1: fetch all orders in parallel ──
+    // ── Pipeline: fetch→execute per token in parallel ──
+    // Each task fetches its order and immediately executes, keeping the number
+    // of pending (unfulfilled) orders at the market maker low.
     if !json {
-        println!("Fetching {} orders in parallel...", items.len());
-    }
-
-    let mut order_set: JoinSet<(String, Result<usecases::gm::SellOrderReady>)> = JoinSet::new();
-    for (symbol, mint, raw) in items {
-        let taker = taker.clone();
-        order_set.spawn(async move {
-            let sym_clone = symbol.clone();
-            let result = usecases::gm::fetch_sell_order(&symbol, &mint, &raw, &taker, json).await;
-            (sym_clone, result)
-        });
-    }
-
-    let mut ready_orders: Vec<usecases::gm::SellOrderReady> = Vec::new();
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-
-    while let Some(res) = order_set.join_next().await {
-        match res {
-            Ok((sym, Ok(order))) => {
-                if !json { println!("  ✓ order: {} (slip {:.2}%)", sym, order.slippage_pct.unwrap_or(0.0)); }
-                ready_orders.push(order);
-            }
-            Ok((sym, Err(e))) => {
-                if !json { eprintln!("  ✗ order failed {}: {}", sym, e); }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
-            }
-            Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
-            }
-        }
-    }
-
-    if ready_orders.is_empty() {
-        if json {
-            return json_out(&CloseAllResultJson { status: "success", sold: vec![], failed, skipped, total_usdc: "0".to_string() });
-        }
-        println!("All orders failed.");
-        return Ok(());
-    }
-
-    // ── Phase 2: execute all in parallel ──
-    if !json {
-        println!("\nExecuting {} swaps in parallel...", ready_orders.len());
+        println!("Processing {} positions in parallel...", items.len());
     }
 
     use std::sync::Arc;
     let wallet_arc = Arc::new(w);
+    let mut failed: Vec<CloseFailJson> = Vec::new();
 
-    let mut exec_set: JoinSet<(String, String, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
-    for order in ready_orders {
+    let mut pipeline: JoinSet<(String, String, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
+    for (symbol, mint, raw) in items {
+        let taker = taker.clone();
         let w2 = wallet_arc.clone();
-        let sym = order.symbol.clone();
-        let display = order.display_amount.clone();
-        exec_set.spawn(async move {
+        pipeline.spawn(async move {
+            let sym_clone = symbol.clone();
+            let order = match usecases::gm::fetch_sell_order(&symbol, &mint, &raw, &taker, json).await {
+                Ok(o) => o,
+                Err(e) => return (sym_clone, String::new(), Err(e)),
+            };
+            let display = order.display_amount.clone();
             let result = usecases::gm::execute_sell_from_order(&w2, order, json).await;
-            (sym, display, result)
+            (sym_clone, display, result)
         });
     }
 
     let mut sold: Vec<CloseItemJson> = Vec::new();
     let mut total_usdc: f64 = 0.0;
 
-    while let Some(res) = exec_set.join_next().await {
+    while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, display, Ok(exec))) => {
                 let usdc_f: f64 = exec.output_amount.parse().unwrap_or(0.0);
@@ -712,53 +678,55 @@ async fn buy_basket_parallel(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
+    use std::sync::Arc;
     use tokio::task::JoinSet;
 
-    // ── Phase 1: fetch all orders in parallel ──
     if !json {
-        println!("Fetching {} buy orders in parallel...", symbol_raw.len());
+        println!("Processing {} buy orders in parallel...", symbol_raw.len());
     }
 
-    let mut order_set: JoinSet<(String, String, Result<usecases::gm::BuyOrderReady>)> = JoinSet::new();
-    for (sym, raw) in symbol_raw {
-        let sym = sym.clone();
-        let taker = taker.clone();
-        let raw = raw.clone();
-        order_set.spawn(async move {
-            let sym_copy = sym.clone();
-            let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await;
-            (sym_copy, raw, result)
-        });
-    }
-
-    let mut ready_orders: Vec<usecases::gm::BuyOrderReady> = Vec::new();
+    let wallet_arc = Arc::new(w);
     let mut failed: Vec<CloseFailJson> = Vec::new();
 
-    while let Some(res) = order_set.join_next().await {
-        match res {
-            Ok((sym, _, Ok(order))) => {
-                if !json {
-                    println!(
-                        "  ✓ {} — ~{} {} (spread {:.2}%)",
-                        sym,
-                        amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
-                        sym,
-                        order.slippage_pct.unwrap_or(0.0)
-                    );
+    if dry_run {
+        // ── Dry-run: fetch-only (no execution to consume orders) ──
+        let mut order_set: JoinSet<(String, Result<usecases::gm::BuyOrderReady>)> = JoinSet::new();
+        for (sym, raw) in symbol_raw {
+            let sym = sym.clone();
+            let taker = taker.clone();
+            let raw = raw.clone();
+            order_set.spawn(async move {
+                let sym_copy = sym.clone();
+                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await;
+                (sym_copy, result)
+            });
+        }
+
+        let mut ready_orders: Vec<usecases::gm::BuyOrderReady> = Vec::new();
+        while let Some(res) = order_set.join_next().await {
+            match res {
+                Ok((sym, Ok(order))) => {
+                    if !json {
+                        println!(
+                            "  ✓ {} — ~{} {} (spread {:.2}%)",
+                            sym,
+                            amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
+                            sym,
+                            order.slippage_pct.unwrap_or(0.0)
+                        );
+                    }
+                    ready_orders.push(order);
                 }
-                ready_orders.push(order);
-            }
-            Ok((sym, _, Err(e))) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
-            }
-            Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
+                Ok((sym, Err(e))) => {
+                    if !json { eprintln!("  ✗ {} — {}", sym, e); }
+                    failed.push(CloseFailJson { token: sym, error: e.to_string() });
+                }
+                Err(e) => {
+                    if !json { eprintln!("  ✗ join error: {}", e); }
+                }
             }
         }
-    }
 
-    if dry_run {
         if json {
             let preview: Vec<BuyBasketItemJson> = ready_orders
                 .iter()
@@ -790,47 +758,34 @@ async fn buy_basket_parallel(
         return Ok(());
     }
 
-    if ready_orders.is_empty() {
-        if json {
-            return json_out(&BuyBasketResultJson {
-                status: "success",
-                bought: vec![],
-                failed,
-                skipped: vec![],
-                total_usdc_spent: "0".to_string(),
-            });
-        }
-        println!("All orders failed.");
-        return Ok(());
-    }
-
-    // ── Phase 2: execute all in parallel ──
-    if !json {
-        println!("\nExecuting {} buys in parallel...", ready_orders.len());
-    }
-
-    use std::sync::Arc;
-    let wallet_arc = Arc::new(w);
-
-    let mut exec_set: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
-    for order in ready_orders {
+    // ── Real execution: pipeline fetch→execute per token ──
+    // Each task fetches the order and immediately executes it, so pending
+    // orders at the market maker stay low (bounded by ORDER_SEMAPHORE).
+    let mut pipeline: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
+    for (sym, raw) in symbol_raw {
+        let sym = sym.clone();
+        let raw = raw.clone();
+        let taker = taker.clone();
         let w2 = wallet_arc.clone();
-        let sym = order.symbol.clone();
-        let disp = order.usdc_display.clone();
-        let slip = order.slippage_pct;
-        exec_set.spawn(async move {
+        pipeline.spawn(async move {
+            let sym_copy = sym.clone();
+            let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await {
+                Ok(o) => o,
+                Err(e) => return (sym_copy, raw, None, Err(e)),
+            };
+            let usdc_disp = order.usdc_display.clone();
+            let slip = order.slippage_pct;
             let result = usecases::gm::execute_buy_from_order(&w2, order, json).await;
-            (sym, disp, slip, result)
+            (sym_copy, usdc_disp, slip, result)
         });
     }
 
     let mut bought: Vec<BuyBasketItemJson> = Vec::new();
     let mut total_usdc_spent: f64 = 0.0;
 
-    while let Some(res) = exec_set.join_next().await {
+    while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, usdc_disp, slip, Ok(exec))) => {
-                // parse display amount back to float for total
                 let usdc_f: f64 = usdc_disp.parse().unwrap_or(0.0);
                 total_usdc_spent += usdc_f;
                 let tx = format!("https://solscan.io/tx/{}", exec.signature);
@@ -983,51 +938,55 @@ async fn sell_basket_parallel(
     json: bool,
     rpc_url: Option<&str>,
 ) -> Result<()> {
+    use std::sync::Arc;
     use tokio::task::JoinSet;
 
     if !json {
-        println!("Fetching {} sell orders in parallel...", pairs.len());
+        println!("Processing {} sell orders in parallel...", pairs.len());
     }
 
-    let mut order_set: JoinSet<(String, String, Result<usecases::gm::SellOrderReady>)> = JoinSet::new();
-    for (sym, amt) in pairs {
-        let sym = sym.clone();
-        let amt = amt.clone();
-        let taker = taker.clone();
-        let rpc = rpc_url.map(str::to_string);
-        order_set.spawn(async move {
-            let result = usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await;
-            (sym, amt, result)
-        });
-    }
-
-    let mut ready_orders: Vec<usecases::gm::SellOrderReady> = Vec::new();
+    let wallet_arc = Arc::new(w);
     let mut failed: Vec<CloseFailJson> = Vec::new();
 
-    while let Some(res) = order_set.join_next().await {
-        match res {
-            Ok((sym, _, Ok(order))) => {
-                if !json {
-                    println!(
-                        "  ✓ {} — ~{} USDC (spread {:.2}%)",
-                        sym,
-                        amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
-                        order.slippage_pct.unwrap_or(0.0)
-                    );
+    if dry_run {
+        // ── Dry-run: fetch-only ──
+        let mut order_set: JoinSet<(String, Result<usecases::gm::SellOrderReady>)> = JoinSet::new();
+        for (sym, amt) in pairs {
+            let sym = sym.clone();
+            let amt = amt.clone();
+            let taker = taker.clone();
+            let rpc = rpc_url.map(str::to_string);
+            order_set.spawn(async move {
+                let sym_copy = sym.clone();
+                let result = usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await;
+                (sym_copy, result)
+            });
+        }
+
+        let mut ready_orders: Vec<usecases::gm::SellOrderReady> = Vec::new();
+        while let Some(res) = order_set.join_next().await {
+            match res {
+                Ok((sym, Ok(order))) => {
+                    if !json {
+                        println!(
+                            "  ✓ {} — ~{} USDC (spread {:.2}%)",
+                            sym,
+                            amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
+                            order.slippage_pct.unwrap_or(0.0)
+                        );
+                    }
+                    ready_orders.push(order);
                 }
-                ready_orders.push(order);
-            }
-            Ok((sym, _, Err(e))) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
-            }
-            Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
+                Ok((sym, Err(e))) => {
+                    if !json { eprintln!("  ✗ {} — {}", sym, e); }
+                    failed.push(CloseFailJson { token: sym, error: e.to_string() });
+                }
+                Err(e) => {
+                    if !json { eprintln!("  ✗ join error: {}", e); }
+                }
             }
         }
-    }
 
-    if dry_run {
         if json {
             let preview: Vec<SellBasketItemJson> = ready_orders
                 .iter()
@@ -1059,44 +1018,31 @@ async fn sell_basket_parallel(
         return Ok(());
     }
 
-    if ready_orders.is_empty() {
-        if json {
-            return json_out(&SellBasketResultJson {
-                status: "success",
-                sold: vec![],
-                failed,
-                skipped: vec![],
-                total_usdc_received: "0".to_string(),
-            });
-        }
-        println!("All orders failed.");
-        return Ok(());
-    }
-
-    // ── Phase 2: execute all in parallel ──
-    if !json {
-        println!("\nExecuting {} sells in parallel...", ready_orders.len());
-    }
-
-    use std::sync::Arc;
-    let wallet_arc = Arc::new(w);
-
-    let mut exec_set: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
-    for order in ready_orders {
+    // ── Real execution: pipeline fetch→execute per token ──
+    let mut pipeline: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
+    for (sym, amt) in pairs {
+        let sym = sym.clone();
+        let amt = amt.clone();
+        let taker = taker.clone();
+        let rpc = rpc_url.map(str::to_string);
         let w2 = wallet_arc.clone();
-        let sym = order.symbol.clone();
-        let disp = order.display_amount.clone();
-        let slip = order.slippage_pct;
-        exec_set.spawn(async move {
+        pipeline.spawn(async move {
+            let sym_copy = sym.clone();
+            let order = match usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await {
+                Ok(o) => o,
+                Err(e) => return (sym_copy, String::new(), None, Err(e)),
+            };
+            let disp = order.display_amount.clone();
+            let slip = order.slippage_pct;
             let result = usecases::gm::execute_sell_from_order(&w2, order, json).await;
-            (sym, disp, slip, result)
+            (sym_copy, disp, slip, result)
         });
     }
 
     let mut sold: Vec<SellBasketItemJson> = Vec::new();
     let mut total_usdc: f64 = 0.0;
 
-    while let Some(res) = exec_set.join_next().await {
+    while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, amt_disp, slip, Ok(exec))) => {
                 let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);

@@ -7,10 +7,15 @@ use crate::HTTP;
 
 const SWAP_API_BASE: &str = "https://ultra-api.jup.ag";
 
-/// Global concurrency limit for Jupiter API requests.
-/// Jupiter Ultra free tier allows ~5 RPS; cap at 2 concurrent to leave headroom
-/// for slippage retries that spawn additional requests from the same task.
-static JUPITER_SEMAPHORE: Semaphore = Semaphore::const_new(2);
+/// Concurrency limit for `/order` (quote) requests.
+/// Jupiter routes orders per-wallet; too many concurrent `/order` calls from the
+/// same taker wallet cause rejections (not rate-limit 429, but routing conflicts).
+/// Tested: 4 concurrent fails, 2 concurrent reliable across 20-token baskets.
+static ORDER_SEMAPHORE: Semaphore = Semaphore::const_new(2);
+
+/// Concurrency limit for `/execute` (signed-tx submission) requests.
+/// Execute uses pre-cached orders so wallet contention is lower.
+static EXECUTE_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -185,8 +190,8 @@ impl std::error::Error for ExecuteFailure {}
 /// Get a swap quote from Jupiter Ultra API.
 /// Uses ultra-api.jup.ag — no API key required, supports GM tokens.
 /// Flow: /order → wallet.sign → /execute
-/// Maximum retries for transient network errors on /order.
-const ORDER_MAX_RETRIES: u32 = 3;
+/// Maximum retries for transient errors on /order.
+const ORDER_MAX_RETRIES: u32 = 4;
 
 pub async fn get_order(
     base_url: Option<&str>,
@@ -196,98 +201,111 @@ pub async fn get_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let _permit = JUPITER_SEMAPHORE.acquire().await
-        .map_err(|_| eyre!("Jupiter rate-limit semaphore closed"))?;
-    get_order_inner(base_url, input_mint, output_mint, amount, taker, slippage_bps).await
+    let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
+    let mut last_err = eyre!("Jupiter /order failed");
+
+    for attempt in 0..=ORDER_MAX_RETRIES {
+        // Acquire semaphore only for the actual HTTP call, release before any sleep.
+        let result = {
+            let _permit = ORDER_SEMAPHORE.acquire().await
+                .map_err(|_| eyre!("Jupiter order semaphore closed"))?;
+            get_order_inner(&order_url, input_mint, output_mint, amount, taker, slippage_bps).await
+        }; // permit released here
+
+        match result {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                let msg = format!("{e}");
+                if attempt < ORDER_MAX_RETRIES && is_retryable_order_error(&msg) {
+                    let backoff = std::time::Duration::from_millis(800 * 2u64.pow(attempt));
+                    tokio::time::sleep(backoff).await;
+                    last_err = e;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
+/// Single /order attempt — no retries, no semaphore.
 async fn get_order_inner(
-    base_url: Option<&str>,
+    order_url: &str,
     input_mint: &str,
     output_mint: &str,
     amount: &str,
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let mut last_err = eyre!("Jupiter /order failed");
-    let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
+    let mut request = HTTP.get(order_url).query(&[
+        ("inputMint", input_mint),
+        ("outputMint", output_mint),
+        ("amount", amount),
+        ("taker", taker),
+    ]);
 
-    for attempt in 0..=ORDER_MAX_RETRIES {
-        let mut request = HTTP.get(&order_url).query(&[
-            ("inputMint", input_mint),
-            ("outputMint", output_mint),
-            ("amount", amount),
-            ("taker", taker),
-        ]);
-
-        if let Some(bps) = slippage_bps {
-            request = request.query(&[("slippageBps", bps.to_string())]);
-        }
-
-        let response = match request.send().await {
-            Ok(r) => r,
-            Err(e) if is_transient(&e) && attempt < ORDER_MAX_RETRIES => {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                last_err = eyre!("Jupiter /order network error: {e}");
-                continue;
-            }
-            Err(e) => return Err(eyre!("Jupiter /order network error: {e}")),
-        };
-
-        let status = response.status();
-
-        // 429 / 5xx → retry with exponential backoff
-        if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-            && attempt < ORDER_MAX_RETRIES
-        {
-            let backoff = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
-            tokio::time::sleep(backoff).await;
-            last_err = eyre!("Jupiter /order HTTP {status}");
-            continue;
-        }
-
-        let body = response.text().await?;
-
-        if !status.is_success() {
-            if status.as_u16() == 400 && body.contains("Failed to get quotes") {
-                return Err(eyre!("No swap route found — token may not have liquidity on Jupiter."));
-            }
-            return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
-        }
-
-        let resp: OrderResponse = serde_json::from_str(&body)
-            .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
-
-        if let Some(err) = &resp.error {
-            let msg = resp.error_message.as_deref().unwrap_or(err);
-            return Err(eyre!("Jupiter API error: {msg}"));
-        }
-
-        let tx = resp.transaction.as_deref().unwrap_or("");
-        if tx.is_empty() {
-            let detail = resp
-                .error_message
-                .as_deref()
-                .or(resp.error.as_deref())
-                .unwrap_or("route may not exist");
-            return Err(eyre!("Jupiter returned empty transaction — {detail}"));
-        }
-
-        return Ok(resp);
+    if let Some(bps) = slippage_bps {
+        request = request.query(&[("slippageBps", bps.to_string())]);
     }
 
-    Err(last_err)
+    let response = request.send().await
+        .map_err(|e| eyre!("Jupiter /order network error: {e}"))?;
+
+    let status = response.status();
+    let body = response.text().await?;
+
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(eyre!("Jupiter /order rate limited (429)"));
+    }
+    if status.is_server_error() {
+        return Err(eyre!("Jupiter /order server error ({status})"));
+    }
+    if !status.is_success() {
+        if status.as_u16() == 400 && body.contains("Failed to get quotes") {
+            return Err(eyre!("No swap route found — token may not have liquidity on Jupiter."));
+        }
+        return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
+    }
+
+    let resp: OrderResponse = serde_json::from_str(&body)
+        .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
+
+    if let Some(err) = &resp.error {
+        let msg = resp.error_message.as_deref().unwrap_or(err);
+        return Err(eyre!("Jupiter API error: {msg}"));
+    }
+
+    let tx = resp.transaction.as_deref().unwrap_or("");
+    if tx.is_empty() {
+        let detail = resp
+            .error_message
+            .as_deref()
+            .or(resp.error.as_deref())
+            .unwrap_or("route may not exist");
+        return Err(eyre!("Jupiter returned empty transaction — {detail}"));
+    }
+
+    Ok(resp)
 }
 
-/// Check if a reqwest error is transient (timeout, connection, DNS).
-fn is_transient(e: &reqwest::Error) -> bool {
-    e.is_timeout() || e.is_connect() || e.is_request()
+/// Errors from Jupiter /order that should be retried with backoff.
+/// Covers transient MM unavailability, rate limits, server errors, and
+/// network issues.
+fn is_retryable_order_error(msg: &str) -> bool {
+    msg.contains("not available from market maker")
+        || msg.contains("Something unexpected occurred")
+        || msg.contains("Winning quote has no transaction")
+        || msg.contains("/order network error")
+        || msg.contains("/order rate limited")
+        || msg.contains("/order server error")
 }
 
 /// Sign and execute a swap via Jupiter Swap V2 API.
 pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
-    let _permit = JUPITER_SEMAPHORE.acquire().await
-        .map_err(|_| eyre!("Jupiter rate-limit semaphore closed"))?;
+    let _permit = EXECUTE_SEMAPHORE.acquire().await
+        .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
     execute_order_inner(wallet, order).await
 }
 
