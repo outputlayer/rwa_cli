@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 
 use crate::wallet::Wallet;
@@ -272,7 +272,8 @@ pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<Exe
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
-    let signed_tx = wallet.sign_transaction(tx_b64)?;
+    let signed_tx = wallet.sign_transaction(tx_b64)
+        .wrap_err("failed to sign swap transaction")?;
 
     let req = ExecuteRequest {
         request_id: order.request_id.clone(),
@@ -284,10 +285,12 @@ pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<Exe
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
-        .await?;
+        .await
+        .wrap_err("Jupiter /execute request failed")?;
 
     let status = response.status();
-    let body = response.text().await?;
+    let body = response.text().await
+        .wrap_err("failed to read Jupiter /execute response")?;
 
     if !status.is_success() {
         return Err(eyre!("Jupiter execute error (HTTP {status}): {body}"));

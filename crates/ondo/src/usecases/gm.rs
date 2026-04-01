@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, api, gm, jupiter, solana, token_list, wallet};
 use crate::types::{Mint, Symbol};
@@ -275,7 +275,8 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
         taker: &plan.swap.taker,
         slippage_bps: plan.swap.slippage_bps,
     };
-    let result = execute_with_retry(wallet, &plan.order, json, &params).await?;
+    let result = execute_with_retry(wallet, &plan.order, json, &params).await
+        .wrap_err("swap execution failed")?;
     let actual_slippage_pct = calc_actual_slippage(&plan.order, &result);
     if let Some(actual) = actual_slippage_pct
         && let Some(quoted) = plan.slippage_pct
@@ -412,7 +413,8 @@ pub async fn fetch_sell_order_by_symbol(
     check_tradable(&sym, None).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let bal = solana::get_balance(taker, &gm_mint, rpc_url).await?;
+    let bal = solana::get_balance(taker, &gm_mint, rpc_url).await
+        .wrap_err_with(|| format!("failed to fetch {sym} balance"))?;
     if bal.balance <= 0.0 {
         return Err(eyre!("Balance is 0 for {sym} — nothing to sell"));
     }
@@ -694,7 +696,8 @@ async fn get_order_checked(
     json: bool,
     jupiter_url: Option<&str>,
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
-    let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
+    let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
+        .wrap_err("failed to get Jupiter quote")?;
     let mut prev_slip: Option<f64> = None;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
@@ -719,7 +722,8 @@ async fn get_order_checked(
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
+                order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
+                    .wrap_err("failed to refresh Jupiter quote")?;
                 continue;
             }
         }
@@ -875,7 +879,8 @@ async fn execute_with_retry(
                             params.taker,
                             params.slippage_bps,
                         )
-                        .await?,
+                        .await
+                        .wrap_err("failed to refresh quote after transient error")?,
                     );
                 }
                 last_err = Some(e);
