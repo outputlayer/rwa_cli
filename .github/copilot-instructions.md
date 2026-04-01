@@ -18,7 +18,7 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 - Amounts: exact number (`100`), percentage (`50%`), or `all`
 - Solana RPC: use `tokio::join!` for 2-3 independent calls, avoid excessive concurrency
 - `rpc_call_with_retry` handles rate limit retries with backoff
-- Wallet stored as JSON keypair in `~/.config/rwa/id.json`
+- Wallet stored as JSON keypair in `~/.config/rwa/key.json`
 - Solana RPC transport: `crates/ondo/src/solana/rpc.rs`
 - Solana operations: `crates/ondo/src/solana/mod.rs`
 - Ondo API: `crates/ondo/src/api.rs`
@@ -37,15 +37,18 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 ```
 rwa gm hours                       # Market status
 rwa gm list                        # All 264 tokens
-rwa gm quote <SYM> <AMT>           # Swap quote
+rwa gm buy <SYM> <AMT> --dry-run   # Preview trade (no separate quote command)
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
 rwa gm close-all -y                # Sell ALL positions (sequential, skips <$1.50)
 rwa gm close-all 50% -y            # Sell 50% of every position
+rwa gm buy-basket SYM AMT ... -y   # Buy multiple tokens at once
+rwa gm sell-basket SYM AMT ... -y  # Sell multiple tokens at once
 rwa gm portfolio [WALLET]          # Holdings + P&L
 rwa gm history <SYM> [-r RANGE]    # Price chart data
 rwa gm send <TOKEN> <AMT> <TO> -y  # Transfer tokens
 rwa gm reclaim                     # Close empty token accounts, reclaim SOL rent
 rwa keys generate|import|show      # Wallet management
+rwa keys encrypt|decrypt           # Wallet encryption
 ```
 
 ## Development
