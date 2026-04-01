@@ -44,8 +44,8 @@ impl std::fmt::Display for GmTradeErrorKind {
 
 impl std::error::Error for GmTradeError {}
 
-/// Safety-net slippage — block the trade entirely if ALL MMs return worse than this.
-const MAX_SLIPPAGE_PCT: f64 = 10.0;
+/// Hard block — reject the trade if slippage exceeds this after all retries.
+const MAX_SLIPPAGE_PCT: f64 = 3.0;
 /// Slippage threshold that triggers a fresh quote retry (seek a better MM).
 const SLIPPAGE_RETRY_PCT: f64 = 1.0;
 /// Maximum retries when slippage exceeds the retry threshold.
@@ -906,9 +906,9 @@ mod tests {
     fn check_slippage_blocks_above_max() {
         let order = jupiter::OrderResponse {
             in_amount: "100".into(),
-            out_amount: "88".into(),
+            out_amount: "96".into(),
             in_usd_value: Some(100.0),
-            out_usd_value: Some(88.0),
+            out_usd_value: Some(96.0),
             ..Default::default()
         };
         let result = check_slippage(&order, true);
@@ -1165,9 +1165,9 @@ mod tests {
             router: Some("jupiterz".into()),
             ..Default::default()
         };
-        let hint = slippage_block_hint(-12.0, &order);
+        let hint = slippage_block_hint(-5.0, &order);
         assert!(hint.contains("jupiterz"), "hint: {hint}");
-        assert!(hint.contains("-12.00%"), "hint: {hint}");
+        assert!(hint.contains("-5.00%"), "hint: {hint}");
         assert!(hint.contains("retries"), "hint: {hint}");
     }
 
@@ -1177,7 +1177,7 @@ mod tests {
             router: Some("jupiter".into()),
             ..Default::default()
         };
-        let hint = slippage_block_hint(-11.0, &order);
+        let hint = slippage_block_hint(-4.0, &order);
         assert!(hint.contains("liquidity") || hint.contains("larger"), "hint: {hint}");
     }
 

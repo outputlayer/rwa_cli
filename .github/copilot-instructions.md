@@ -29,7 +29,7 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 
 - Default slippage: 100 bps (1%) sent to Jupiter when `--slippage` not specified
 - Retry: if quote shows >1% slippage, retries up to 5x with fresh quotes (cycles through different MMs)
-- Hard block: >10% slippage blocked as safety net
+- Hard block: >3% slippage blocked after all retries exhausted
 - Close-all skips positions < $1.50 (market makers reject small swaps)
 
 ## Commands

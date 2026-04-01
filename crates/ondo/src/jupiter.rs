@@ -8,9 +8,9 @@ use crate::HTTP;
 const SWAP_API_BASE: &str = "https://ultra-api.jup.ag";
 
 /// Global concurrency limit for Jupiter API requests.
-/// Jupiter Ultra free tier allows ~5 RPS; cap at 3 concurrent to leave headroom
-/// for slippage retries that spawn additional requests within the same permit.
-static JUPITER_SEMAPHORE: Semaphore = Semaphore::const_new(3);
+/// Jupiter Ultra free tier allows ~5 RPS; cap at 2 concurrent to leave headroom
+/// for slippage retries that spawn additional requests from the same task.
+static JUPITER_SEMAPHORE: Semaphore = Semaphore::const_new(2);
 pub use crate::USDC_MINT;
 /// Wrapped SOL on Solana
 pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -186,7 +186,7 @@ impl std::error::Error for ExecuteFailure {}
 /// Uses ultra-api.jup.ag — no API key required, supports GM tokens.
 /// Flow: /order → wallet.sign → /execute
 /// Maximum retries for transient network errors on /order.
-const ORDER_MAX_RETRIES: u32 = 2;
+const ORDER_MAX_RETRIES: u32 = 3;
 
 pub async fn get_order(
     base_url: Option<&str>,
@@ -213,10 +213,6 @@ async fn get_order_inner(
     let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
 
     for attempt in 0..=ORDER_MAX_RETRIES {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-
         let mut request = HTTP.get(&order_url).query(&[
             ("inputMint", input_mint),
             ("outputMint", output_mint),
@@ -231,6 +227,7 @@ async fn get_order_inner(
         let response = match request.send().await {
             Ok(r) => r,
             Err(e) if is_transient(&e) && attempt < ORDER_MAX_RETRIES => {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 last_err = eyre!("Jupiter /order network error: {e}");
                 continue;
             }
@@ -239,10 +236,12 @@ async fn get_order_inner(
 
         let status = response.status();
 
-        // 429 / 5xx → retry
+        // 429 / 5xx → retry with exponential backoff
         if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
             && attempt < ORDER_MAX_RETRIES
         {
+            let backoff = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
+            tokio::time::sleep(backoff).await;
             last_err = eyre!("Jupiter /order HTTP {status}");
             continue;
         }
