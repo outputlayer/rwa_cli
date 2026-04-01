@@ -144,7 +144,7 @@ rwa --json gm send SOL all <ADDR> -y
 | 6 | ~147s | ~22s | 6.7× |
 | 10 | ~247s | ~22s | 11× |
 
-Parallel is safe for different tokens — no MM cooldown penalty. Only same-token rapid roundtrips trigger the -10% penalty.
+Parallel is safe for different tokens. jupiterz routes through multiple MMs internally — if one MM returns a bad quote, the CLI retries to get a better one.
 
 ## Error handling
 

@@ -44,15 +44,14 @@ impl std::fmt::Display for GmTradeErrorKind {
 
 impl std::error::Error for GmTradeError {}
 
-/// Maximum allowed slippage before blocking the trade.
-const MAX_SLIPPAGE_PCT: f64 = 3.0;
-/// Slippage threshold that triggers a fresh quote retry.
+/// Safety-net slippage — block the trade entirely if ALL MMs return worse than this.
+const MAX_SLIPPAGE_PCT: f64 = 10.0;
+/// Slippage threshold that triggers a fresh quote retry (seek a better MM).
 const SLIPPAGE_RETRY_PCT: f64 = 1.0;
 /// Maximum retries when slippage exceeds the retry threshold.
-const MAX_SLIPPAGE_RETRIES: u32 = 3;
-/// Slippage level that indicates a market-maker cooldown penalty rather than normal spread.
-/// jupiterz returns ~-10% penalty quotes for ~90s after high-frequency trading of a token.
-const PENALTY_SLIPPAGE_PCT: f64 = 5.0;
+/// jupiterz routes to multiple MMs — one may quote -10% on small orders.
+/// Retrying cycles through MMs until we get a reasonable fill.
+const MAX_SLIPPAGE_RETRIES: u32 = 5;
 /// Maximum retries for transient swap execution failures.
 const MAX_SWAP_RETRIES: u32 = 2;
 /// Default slippage limit in basis points (100 = 1%).
@@ -635,18 +634,10 @@ fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
 
 fn slippage_block_hint(s: f64, order: &jupiter::OrderResponse) -> String {
     let router = order.router.as_deref().unwrap_or("unknown");
-    if s < -PENALTY_SLIPPAGE_PCT {
-        format!(
-            "slippage {s:.2}% via {router} exceeds -{MAX_SLIPPAGE_PCT:.0}%. \
-             Market maker cooldown — wait ~60s and retry \
-             (usually triggered by a recent sell of this token)."
-        )
-    } else {
-        format!(
-            "slippage {s:.2}% via {router} exceeds -{MAX_SLIPPAGE_PCT:.0}%. \
-             Try a smaller amount or wait for better liquidity."
-        )
-    }
+    format!(
+        "slippage {s:.2}% via {router} exceeds -{MAX_SLIPPAGE_PCT:.0}% after {MAX_SLIPPAGE_RETRIES} retries. \
+         Try a larger amount or wait for better liquidity."
+    )
 }
 
 fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f64>> {
@@ -659,7 +650,7 @@ fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f
             )
             .into());
         }
-        if s < -1.0 && !json {
+        if s < -SLIPPAGE_RETRY_PCT && !json {
             eprintln!("Warning: slippage {s:.2}%");
         }
     }
@@ -698,44 +689,24 @@ async fn get_order_checked(
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
     let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
         .wrap_err("failed to get Jupiter quote")?;
-    let mut prev_slip: Option<f64> = None;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
-        if let Some(s) = slip {
-            if s < -MAX_SLIPPAGE_PCT {
-                return Err(GmTradeError::new(
-                    GmTradeErrorKind::SlippageTooHigh,
-                    slippage_block_hint(s, &order),
-                )
-                .into());
-            }
-            if s < -SLIPPAGE_RETRY_PCT {
-                // If slippage is stable across attempts it's a fixed MM spread, not stochastic.
-                // Stop retrying early to avoid wasting time on tokens like AMGN.
-                if prev_slip.is_some_and(|prev| (prev - s).abs() < 0.05) {
-                    break;
-                }
-                prev_slip = Some(s);
-                if !json {
-                    eprintln!(
-                        "Slippage {s:.2}% exceeds -{SLIPPAGE_RETRY_PCT:.0}% — refreshing quote ({attempt}/{MAX_SLIPPAGE_RETRIES})..."
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
-                    .wrap_err("failed to refresh Jupiter quote")?;
-                continue;
-            }
-        }
-        let slippage_pct = slip;
-        if let Some(s) = slippage_pct
-            && s < -1.0
-            && !json
+        if let Some(s) = slip
+            && s < -SLIPPAGE_RETRY_PCT
         {
-            eprintln!("Warning: slippage {s:.2}%");
+            if !json {
+                eprintln!(
+                    "Slippage {s:.2}% exceeds -{SLIPPAGE_RETRY_PCT:.0}% — refreshing quote ({attempt}/{MAX_SLIPPAGE_RETRIES})..."
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
+                .wrap_err("failed to refresh Jupiter quote")?;
+            continue;
         }
-        return Ok((order, slippage_pct));
+        return Ok((order, slip));
     }
+    // All retries exhausted — apply hard block if still above safety-net threshold.
     let slippage_pct = check_slippage(&order, json)?;
     Ok((order, slippage_pct))
 }
@@ -784,7 +755,7 @@ async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
     }
 
     // If max notional is explicitly 0 for this session, the token is marked tradable
-    // but has no active liquidity — skip before even calling Jupiter (avoids MM cooldown).
+    // but has no active liquidity — skip before even calling Jupiter.
     if let Some(max) = limit.and_then(|l| l.max_notional(session)) && max <= 0.0 {
         return Err(GmTradeError::new(
             GmTradeErrorKind::NotTradable,
@@ -935,9 +906,9 @@ mod tests {
     fn check_slippage_blocks_above_max() {
         let order = jupiter::OrderResponse {
             in_amount: "100".into(),
-            out_amount: "96".into(),
+            out_amount: "88".into(),
             in_usd_value: Some(100.0),
-            out_usd_value: Some(96.0),
+            out_usd_value: Some(88.0),
             ..Default::default()
         };
         let result = check_slippage(&order, true);
@@ -1189,26 +1160,25 @@ mod tests {
     // ── slippage_block_hint ───────────────────────────────────
 
     #[test]
-    fn slippage_block_hint_cooldown_message_for_extreme_slippage() {
+    fn slippage_block_hint_includes_router() {
         let order = jupiter::OrderResponse {
             router: Some("jupiterz".into()),
             ..Default::default()
         };
-        // -6% triggers the "market maker cooldown" hint (below -PENALTY_SLIPPAGE_PCT=-5%)
-        let hint = slippage_block_hint(-6.0, &order);
-        assert!(hint.contains("cooldown"), "hint: {hint}");
+        let hint = slippage_block_hint(-12.0, &order);
         assert!(hint.contains("jupiterz"), "hint: {hint}");
+        assert!(hint.contains("-12.00%"), "hint: {hint}");
+        assert!(hint.contains("retries"), "hint: {hint}");
     }
 
     #[test]
-    fn slippage_block_hint_liquidity_message_for_moderate_excess() {
+    fn slippage_block_hint_liquidity_message() {
         let order = jupiter::OrderResponse {
             router: Some("jupiter".into()),
             ..Default::default()
         };
-        // -4% is above -5% so should give the liquidity hint
-        let hint = slippage_block_hint(-4.0, &order);
-        assert!(hint.contains("liquidity") || hint.contains("smaller"), "hint: {hint}");
+        let hint = slippage_block_hint(-11.0, &order);
+        assert!(hint.contains("liquidity") || hint.contains("larger"), "hint: {hint}");
     }
 
     // ── parse_sell_pct edge cases ─────────────────────────────

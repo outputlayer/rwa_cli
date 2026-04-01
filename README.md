@@ -290,7 +290,7 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 | 8 | ~197s | ~22s | 175s | 9.0× |
 | 10 | ~247s | ~22s | 225s | 11.2× |
 
-**No slippage penalty**: parallel trades of *different* tokens from the same wallet do not trigger the Jupiter market-maker cooldown. The ~10% penalty only activates after 3+ rapid roundtrips of the *same* token. Live-tested: 4-token parallel buy → immediate parallel sell → all 8 swaps at normal spread (0.2–0.7%).
+**Parallel-safe**: parallel trades of *different* tokens from the same wallet work at normal spread. jupiterz routes through multiple market makers internally — if one MM returns a bad quote on small orders, the CLI automatically retries to get a better one. Live-tested: 4-token parallel buy → immediate parallel sell → all 8 swaps at normal spread (0.2–0.7%).
 
 RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs with fast failover. Set `RWA_RPC_URL` to a private RPC for even faster responses.
 
