@@ -9,7 +9,7 @@ use super::transaction::{
     send_legacy_transaction, compute_unit_limit_ix, compute_unit_price_ix,
     COMPUTE_BUDGET_PROGRAM,
 };
-use super::GetTokenAccountsResult;
+use super::balance::GetTokenAccountsResult;
 
 /// System Program ID (for SOL transfers)
 const SYSTEM_PROGRAM: [u8; 32] = [0; 32];
