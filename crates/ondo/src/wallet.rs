@@ -332,6 +332,30 @@ pub fn is_wallet_encrypted() -> bool {
     encrypted_key_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// Decode a compact-u16 from the start of a byte slice.
+/// Returns (value, bytes_consumed).
+fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {
+    if data.is_empty() {
+        return Err(eyre!("Empty data for compact-u16"));
+    }
+    let b0 = data[0] as u16;
+    if b0 < 0x80 {
+        return Ok((b0, 1));
+    }
+    if data.len() < 2 {
+        return Err(eyre!("Truncated compact-u16"));
+    }
+    let b1 = data[1] as u16;
+    if b1 < 0x80 {
+        return Ok(((b0 & 0x7f) | (b1 << 7), 2));
+    }
+    if data.len() < 3 {
+        return Err(eyre!("Truncated compact-u16"));
+    }
+    let b2 = data[2] as u16;
+    Ok(((b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), 3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,28 +551,4 @@ mod tests {
             "decrypting with wrong passphrase must return an error"
         );
     }
-}
-
-/// Decode a compact-u16 from the start of a byte slice.
-/// Returns (value, bytes_consumed).
-fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {
-    if data.is_empty() {
-        return Err(eyre!("Empty data for compact-u16"));
-    }
-    let b0 = data[0] as u16;
-    if b0 < 0x80 {
-        return Ok((b0, 1));
-    }
-    if data.len() < 2 {
-        return Err(eyre!("Truncated compact-u16"));
-    }
-    let b1 = data[1] as u16;
-    if b1 < 0x80 {
-        return Ok(((b0 & 0x7f) | (b1 << 7), 2));
-    }
-    if data.len() < 3 {
-        return Err(eyre!("Truncated compact-u16"));
-    }
-    let b2 = data[2] as u16;
-    Ok(((b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), 3))
 }

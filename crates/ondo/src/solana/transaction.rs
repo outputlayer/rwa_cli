@@ -440,7 +440,7 @@ mod tests {
             let mut buf = Vec::new();
             encode_compact_u16(val, &mut buf);
             // Verify it encodes to 1-3 bytes
-            assert!(buf.len() >= 1 && buf.len() <= 3, "val={val} encoded to {} bytes", buf.len());
+            assert!(!buf.is_empty() && buf.len() <= 3, "val={val} encoded to {} bytes", buf.len());
         }
     }
 
