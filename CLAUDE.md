@@ -27,7 +27,7 @@ cargo install --path bin/rwa
 - `crates/cli/src/cmd/gm/` — trade, list, portfolio, send, shared preflight helpers
 - `crates/ondo/` — protocol layer: Solana RPC, Jupiter, Ondo API, wallet
 - `crates/ondo/src/solana/` — RPC retry, balances, fees, transactions, transfers
-- `crates/ondo/src/jupiter.rs` — Jupiter Swap V2 API
+- `crates/ondo/src/jupiter.rs` — Jupiter public swap backends (Ultra + fallbacks)
 - `crates/ondo/src/api.rs` — Ondo prices, history, session limits
 
 ## Code conventions
@@ -56,7 +56,9 @@ cargo install --path bin/rwa
 rwa gm hours
 rwa gm hours --tradable
 rwa gm list
-rwa gm list --search <keyword>
+rwa gm search --search <keyword>
+rwa gm search --tradable-only --sector <SECTOR>
+rwa gm tradable [SYM ...]
 
 rwa gm buy <SYM> <AMT> --dry-run
 rwa gm buy <SYM> <AMT> -y
@@ -115,7 +117,8 @@ rwa keys show
 - Use `--dry-run` for large or uncertain actions
 - Never run wallet-changing commands in parallel
 - Treat JSON output as a stable contract for scripts and agents
-- Use `list --search <SYM>` to check one token
+- Use `gm tradable <SYM...>` to check one or many symbols
+- Use `gm search --tradable-only ...` for bulk scans without Python
 - Use `hours --tradable` only when the user wants the full currently tradable set
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 

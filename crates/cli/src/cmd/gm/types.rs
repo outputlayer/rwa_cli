@@ -140,6 +140,28 @@ pub struct ListItemJson {
 }
 
 #[derive(Serialize)]
+pub struct TradableResultJson {
+    pub session: &'static str,
+    pub count: usize,
+    pub items: Vec<TradableItemJson>,
+}
+
+#[derive(Serialize)]
+pub struct TradableItemJson {
+    pub input: String,
+    pub found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sector: Option<String>,
+    pub tradable: bool,
+}
+
+#[derive(Serialize)]
 pub struct SendJson {
     pub status: &'static str,
     pub token: String,

@@ -68,7 +68,9 @@ rwa keys generate --encrypt     # Create encrypted wallet
 rwa gm hours                    # Market session + tradable count
 rwa gm hours --tradable         # List all tradable tokens right now
 rwa gm list                     # See all 264 tokens (with tradable status)
-rwa gm list --search biotech    # Search tokens by keyword
+rwa gm search --search biotech  # Search tokens by keyword
+rwa gm tradable TSLA NVDA       # Check tradable status for specific symbols
+rwa gm search --tradable-only --sector Energy   # Bulk tradable filter without Python
 rwa gm buy TSLA 100 --dry-run   # Validate + preview buy
 rwa gm buy TSLA 100 -y          # Execute buy
 rwa gm sell TSLA 50% --dry-run  # Validate + preview sell
@@ -155,7 +157,9 @@ rwa --json gm send SOL all <ADDR> -y
 | `rwa gm hours` | Current session + tradable count |
 | `rwa gm hours --tradable` | List all tradable tokens in current session |
 | `rwa gm list` | All 264 tokens with tradable status |
-| `rwa gm list --search <keyword>` | Search tokens by name/symbol/sector (includes `tradable` field) |
+| `rwa gm search --search <keyword>` | Search tokens by name/symbol/sector |
+| `rwa gm search --tradable-only --sector <SECTOR> --type <stock\|etf> --name-keyword <WORD>` | Bulk filtering without external scripts |
+| `rwa gm tradable [SYM ...]` | Check tradable status for one, many, or all tokens |
 | `rwa gm buy <SYM> <AMT> --dry-run` | Validate + preview buy quote without executing |
 | `rwa gm buy <SYM> <AMT> -y` | Buy with USDC |
 | `rwa gm sell <SYM> <AMT> --dry-run` | Validate + preview sell quote without executing |
@@ -205,7 +209,7 @@ Every command supports `--json` for agent/script integration:
 
 ```bash
 rwa --json gm portfolio
-rwa --json gm list --search biotech
+rwa --json gm search --search biotech
 rwa --json gm hours
 rwa --json gm buy TSLA 100 --dry-run
 rwa --json gm buy TSLA 100 -y
@@ -251,7 +255,7 @@ Common surfaced trade/runtime error kinds now map more cleanly to the real failu
 | Regular | 9:30 AM – 3:59 PM |
 | Post-Market | 4:00 PM – 7:59 PM |
 | Overnight | 8:00 PM – 3:59 AM |
-| Closed | Fri 8 PM – Sun 8 PM |
+| Closed | Weekend / NYSE holidays |
 
 Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or the `tradable` field in `--json` output to check.
 

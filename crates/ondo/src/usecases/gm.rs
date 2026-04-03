@@ -310,7 +310,7 @@ pub async fn execute_sell_raw(
         jupiter::USDC_MINT,
         raw_amount,
         taker,
-        Some(DEFAULT_SLIPPAGE_BPS),
+        None,
         json,
         None,
     )
@@ -322,7 +322,7 @@ pub async fn execute_sell_raw(
         output_mint: &output_mint,
         raw_amount,
         taker,
-        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+        slippage_bps: None,
     };
     let result = execute_with_retry(wallet, &order, json, &params).await?;
     let actual_slippage_pct = calc_actual_slippage(&order, &result);
@@ -351,7 +351,7 @@ pub async fn fetch_sell_order(
         jupiter::USDC_MINT,
         raw_amount,
         taker,
-        Some(DEFAULT_SLIPPAGE_BPS),
+        None,
         json,
         None,
     )
@@ -382,7 +382,7 @@ pub async fn execute_sell_from_order(
         output_mint: &output_mint,
         raw_amount: &ready.raw_amount,
         taker: &taker,
-        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+        slippage_bps: None,
     };
     let result = execute_with_retry(wallet, &ready.order, json, &params).await?;
     let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
@@ -687,8 +687,7 @@ async fn get_order_checked(
     json: bool,
     jupiter_url: Option<&str>,
 ) -> Result<(jupiter::OrderResponse, Option<f64>)> {
-    let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
-        .wrap_err("failed to get Jupiter quote")?;
+    let mut order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
     for attempt in 1..=MAX_SLIPPAGE_RETRIES {
         let slip = calc_slippage(&order);
         if let Some(s) = slip
@@ -700,8 +699,7 @@ async fn get_order_checked(
                 );
             }
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-            order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await
-                .wrap_err("failed to refresh Jupiter quote")?;
+            order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
             continue;
         }
         return Ok((order, slip));

@@ -14,7 +14,7 @@ pub(super) use types::{
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
     PortfolioGmPositionsJson, PortfolioJson, PositionJson, ReclaimJson, SellBasketItemJson,
-    SellBasketResultJson, SendJson, TradeJson,
+    SellBasketResultJson, SendJson, TradeJson, TradableItemJson, TradableResultJson,
 };
 
 // ── Subcommand enum ────────────────────────────────────────
@@ -77,11 +77,33 @@ pub enum GmAction {
         range: String,
     },
 
-    /// List available GM tokens (use --search to filter)
-    List {
-        /// Filter tokens by keyword (searches symbol and name)
+    /// List all available GM tokens with tradable status
+    List,
+
+    /// Search/filter GM tokens in bulk without external scripts
+    Search {
+        /// Filter tokens by keyword (repeatable; searches symbol, name, and sector)
         #[arg(short, long)]
-        search: Option<String>,
+        search: Vec<String>,
+        /// Only include tokens tradable in the current session
+        #[arg(long)]
+        tradable_only: bool,
+        /// Filter by sector (repeatable)
+        #[arg(long = "sector")]
+        sectors: Vec<String>,
+        /// Filter by token type (`stock` or `etf`)
+        #[arg(long = "type")]
+        kind: Option<String>,
+        /// Filter by company-name keyword (repeatable)
+        #[arg(long = "name-keyword")]
+        name_keywords: Vec<String>,
+    },
+
+    /// Check tradable status for one or more symbols, or list all tradable tokens
+    Tradable {
+        /// Symbols to check (e.g. TSLA TSLAon NVDA); omit to list all tradable tokens
+        #[arg(num_args = 0..)]
+        symbols: Vec<String>,
     },
 
     /// Send SOL, USDC, or GM tokens to another wallet
@@ -192,7 +214,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 dry_run,
                 json,
                 rpc_url,
-                Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
+                slippage,
             )
             .await
         }
@@ -200,7 +222,23 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             portfolio::portfolio(wallet.as_deref(), json, rpc_url).await
         }
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
-        GmAction::List { search } => list::list(json, search.as_deref()).await,
+        GmAction::List => list::list(json).await,
+        GmAction::Search {
+            search,
+            tradable_only,
+            sectors,
+            kind,
+            name_keywords,
+        } => list::search(
+            json,
+            &search,
+            tradable_only,
+            &sectors,
+            kind.as_deref(),
+            &name_keywords,
+        )
+        .await,
+        GmAction::Tradable { symbols } => list::tradable(json, &symbols).await,
         GmAction::Send {
             token,
             amount,

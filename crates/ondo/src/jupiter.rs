@@ -2,10 +2,14 @@ use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use crate::solana;
 use crate::wallet::Wallet;
 use crate::HTTP;
 
-const SWAP_API_BASE: &str = "https://ultra-api.jup.ag";
+const ULTRA_API_BASE: &str = "https://ultra-api.jup.ag";
+const ULTRA_LITE_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
+const METIS_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v1";
+const JUPITER_CLIENT_PLATFORM: &str = "jupiter.cli";
 
 /// Concurrency limit for `/order` (quote) requests.
 /// Jupiter routes orders per-wallet; too many concurrent `/order` calls from the
@@ -22,6 +26,25 @@ pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const USDC_DECIMALS: u8 = 6;
 /// Ondo GM tokens on Solana use 9 decimals (Solana standard).
 pub const GM_SOL_DECIMALS: u8 = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OrderBackend {
+    #[default]
+    Ultra,
+    UltraLite,
+    MetisV1Lite,
+}
+
+impl OrderBackend {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ultra => "ultra",
+            Self::UltraLite => "ultra-lite",
+            Self::MetisV1Lite => "metis-v1-lite",
+        }
+    }
+}
 
 // ── API types ──────────────────────────────────────────────────────
 
@@ -44,7 +67,6 @@ pub struct OrderResponse {
     pub transaction: Option<String>,
     pub error: Option<String>,
     pub error_message: Option<String>,
-    // ── Swap V2 fields ─────────────────────────────────────────
     /// Whether this swap is gasless (Jupiter/MM pays gas).
     pub gasless: Option<bool>,
     /// Which router won the quote: iris, jupiterz, dflow, okx.
@@ -65,6 +87,8 @@ pub struct OrderResponse {
     pub mode: Option<String>,
     /// Last valid block height for the transaction.
     pub last_valid_block_height: Option<String>,
+    #[serde(skip)]
+    pub backend: OrderBackend,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,8 +212,7 @@ impl std::error::Error for ExecuteFailure {}
 // ── Public functions ───────────────────────────────────────────────────
 
 /// Get a swap quote from Jupiter Ultra API.
-/// Uses ultra-api.jup.ag — no API key required, supports GM tokens.
-/// Flow: /order → wallet.sign → /execute
+/// Flow: /order -> wallet.sign -> /execute.
 /// Maximum retries for transient errors on /order.
 const ORDER_MAX_RETRIES: u32 = 4;
 
@@ -201,7 +224,73 @@ pub async fn get_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let order_url = format!("{}/order", base_url.unwrap_or(SWAP_API_BASE));
+    if let Some(base_url) = base_url {
+        return get_order_with_retries(
+            base_url,
+            OrderBackend::Ultra,
+            input_mint,
+            output_mint,
+            amount,
+            taker,
+            slippage_bps,
+        )
+        .await;
+    }
+
+    let mut failures = Vec::new();
+    let backends = [
+        (ULTRA_API_BASE, OrderBackend::Ultra),
+        (ULTRA_LITE_API_BASE, OrderBackend::UltraLite),
+    ];
+
+    for (base_url, backend) in backends {
+        match get_order_with_retries(
+            base_url,
+            backend,
+            input_mint,
+            output_mint,
+            amount,
+            taker,
+            slippage_bps,
+        )
+        .await
+        {
+            Ok(order) => return Ok(order),
+            Err(err) => {
+                let msg = err.to_string();
+                failures.push(format!("{}: {msg}", backend.label()));
+                if !is_route_like_order_error(&msg) {
+                    return Err(eyre!(
+                        "Jupiter quote failed via {}: {msg}",
+                        backend.label()
+                    ));
+                }
+            }
+        }
+    }
+
+    match get_metis_order(input_mint, output_mint, amount, taker, slippage_bps).await {
+        Ok(order) => Ok(order),
+        Err(err) => {
+            failures.push(format!("{}: {}", OrderBackend::MetisV1Lite.label(), err));
+            Err(eyre!(
+                "No swap route found across public Jupiter backends: {}",
+                failures.join(" | ")
+            ))
+        }
+    }
+}
+
+async fn get_order_with_retries(
+    base_url: &str,
+    backend: OrderBackend,
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+) -> Result<OrderResponse> {
+    let order_url = format!("{base_url}/order");
     let mut last_err = eyre!("Jupiter /order failed");
 
     for attempt in 0..=ORDER_MAX_RETRIES {
@@ -209,7 +298,16 @@ pub async fn get_order(
         let result = {
             let _permit = ORDER_SEMAPHORE.acquire().await
                 .map_err(|_| eyre!("Jupiter order semaphore closed"))?;
-            get_order_inner(&order_url, input_mint, output_mint, amount, taker, slippage_bps).await
+            get_order_inner(
+                &order_url,
+                backend,
+                input_mint,
+                output_mint,
+                amount,
+                taker,
+                slippage_bps,
+            )
+            .await
         }; // permit released here
 
         match result {
@@ -233,6 +331,7 @@ pub async fn get_order(
 /// Single /order attempt — no retries, no semaphore.
 async fn get_order_inner(
     order_url: &str,
+    backend: OrderBackend,
     input_mint: &str,
     output_mint: &str,
     amount: &str,
@@ -245,6 +344,8 @@ async fn get_order_inner(
         ("amount", amount),
         ("taker", taker),
     ]);
+
+    request = with_jupiter_headers(request);
 
     if let Some(bps) = slippage_bps {
         request = request.query(&[("slippageBps", bps.to_string())]);
@@ -264,13 +365,17 @@ async fn get_order_inner(
     }
     if !status.is_success() {
         if status.as_u16() == 400 && body.contains("Failed to get quotes") {
-            return Err(eyre!("No swap route found — token may not have liquidity on Jupiter."));
+            return Err(eyre!(
+                "No swap route found — {}",
+                compact_error_body(&body)
+            ));
         }
         return Err(eyre!("Jupiter API error (HTTP {status}): {body}"));
     }
 
-    let resp: OrderResponse = serde_json::from_str(&body)
+    let mut resp: OrderResponse = serde_json::from_str(&body)
         .map_err(|e| eyre!("Failed to parse Jupiter response: {e}\nBody: {body}"))?;
+    resp.backend = backend;
 
     if let Some(err) = &resp.error {
         let msg = resp.error_message.as_deref().unwrap_or(err);
@@ -302,14 +407,154 @@ fn is_retryable_order_error(msg: &str) -> bool {
         || msg.contains("/order server error")
 }
 
-/// Sign and execute a swap via Jupiter Swap V2 API.
+fn is_route_like_order_error(msg: &str) -> bool {
+    msg.contains("No swap route found")
+        || msg.contains("Failed to get quotes")
+        || msg.contains("COULD_NOT_FIND_ANY_ROUTE")
+        || msg.contains("TOKEN_NOT_TRADABLE")
+}
+
+fn compact_error_body(body: &str) -> String {
+    let trimmed = body.trim().replace('\n', " ");
+    let compact = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() > 200 {
+        format!("{}...", &compact[..200])
+    } else {
+        compact
+    }
+}
+
+fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request.header("x-client-platform", JUPITER_CLIENT_PLATFORM)
+}
+
+async fn get_metis_order(
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+) -> Result<OrderResponse> {
+    let quote_url = format!("{METIS_LITE_API_BASE}/quote");
+    let mut request = HTTP.get(&quote_url).query(&[
+        ("inputMint", input_mint),
+        ("outputMint", output_mint),
+        ("amount", amount),
+        ("swapMode", "ExactIn"),
+        ("restrictIntermediateTokens", "true"),
+        ("instructionVersion", "V2"),
+    ]);
+    if let Some(bps) = slippage_bps {
+        request = request.query(&[("slippageBps", bps.to_string())]);
+    }
+
+    let quote_response = request
+        .send()
+        .await
+        .map_err(|e| eyre!("Metis /quote network error: {e}"))?;
+    let quote_status = quote_response.status();
+    let quote_body = quote_response.text().await?;
+    if !quote_status.is_success() {
+        return Err(eyre!(
+            "Metis quote error (HTTP {quote_status}): {}",
+            compact_error_body(&quote_body)
+        ));
+    }
+
+    let quote_json: serde_json::Value = serde_json::from_str(&quote_body)
+        .map_err(|e| eyre!("Failed to parse Metis quote response: {e}\nBody: {quote_body}"))?;
+    let in_amount = quote_json["inAmount"]
+        .as_str()
+        .ok_or_else(|| eyre!("Metis quote missing inAmount"))?
+        .to_string();
+    let out_amount = quote_json["outAmount"]
+        .as_str()
+        .ok_or_else(|| eyre!("Metis quote missing outAmount"))?
+        .to_string();
+    let price_impact = quote_json["priceImpactPct"]
+        .as_str()
+        .and_then(|value| value.parse::<f64>().ok());
+    let slippage_bps = quote_json["slippageBps"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or(slippage_bps);
+
+    let swap_url = format!("{METIS_LITE_API_BASE}/swap");
+    let swap_body = serde_json::json!({
+        "userPublicKey": taker,
+        "quoteResponse": quote_json,
+        "dynamicComputeUnitLimit": true,
+        "prioritizationFeeLamports": {
+            "priorityLevelWithMaxLamports": {
+                "priorityLevel": "veryHigh",
+                "maxLamports": 1_000_000u64
+            }
+        }
+    });
+    let swap_response = HTTP
+        .post(&swap_url)
+        .json(&swap_body)
+        .send()
+        .await
+        .map_err(|e| eyre!("Metis /swap network error: {e}"))?;
+    let swap_status = swap_response.status();
+    let swap_body = swap_response.text().await?;
+    if !swap_status.is_success() {
+        return Err(eyre!(
+            "Metis swap build error (HTTP {swap_status}): {}",
+            compact_error_body(&swap_body)
+        ));
+    }
+
+    let swap_json: serde_json::Value = serde_json::from_str(&swap_body)
+        .map_err(|e| eyre!("Failed to parse Metis swap response: {e}\nBody: {swap_body}"))?;
+    let transaction = swap_json["swapTransaction"]
+        .as_str()
+        .ok_or_else(|| eyre!("Metis swap response missing swapTransaction"))?
+        .to_string();
+    let last_valid_block_height = swap_json["lastValidBlockHeight"]
+        .as_u64()
+        .map(|value| value.to_string());
+
+    Ok(OrderResponse {
+        request_id: format!("metis:{}:{}:{}", input_mint, output_mint, amount),
+        in_amount,
+        out_amount,
+        in_usd_value: None,
+        out_usd_value: None,
+        price_impact,
+        price_impact_pct: quote_json["priceImpactPct"].as_str().map(str::to_string),
+        slippage_bps,
+        fee_bps: None,
+        transaction: Some(transaction),
+        error: None,
+        error_message: None,
+        gasless: Some(false),
+        router: Some("metis-v1-lite".to_string()),
+        rent_fee_lamports: None,
+        rent_fee_payer: None,
+        signature_fee_lamports: None,
+        signature_fee_payer: None,
+        prioritization_fee_lamports: swap_json["prioritizationFeeLamports"].as_u64(),
+        prioritization_fee_payer: None,
+        mode: Some("manual".to_string()),
+        last_valid_block_height,
+        backend: OrderBackend::MetisV1Lite,
+    })
+}
+
+/// Sign and execute a swap via Jupiter Ultra API.
 pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
     let _permit = EXECUTE_SEMAPHORE.acquire().await
         .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
-    execute_order_inner(wallet, order).await
+    match order.backend {
+        OrderBackend::Ultra => execute_ultra_order(wallet, order, ULTRA_API_BASE).await,
+        OrderBackend::UltraLite => execute_ultra_order(wallet, order, ULTRA_LITE_API_BASE).await,
+        OrderBackend::MetisV1Lite => execute_metis_order(wallet, order).await,
+    }
 }
 
-async fn execute_order_inner(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+async fn execute_ultra_order(wallet: &Wallet, order: &OrderResponse, base_url: &str) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
         .as_deref()
@@ -322,8 +567,7 @@ async fn execute_order_inner(wallet: &Wallet, order: &OrderResponse) -> Result<E
         signed_transaction: signed_tx,
     };
 
-    let response = HTTP
-        .post(format!("{SWAP_API_BASE}/execute"))
+    let response = with_jupiter_headers(HTTP.post(format!("{base_url}/execute")))
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
@@ -343,6 +587,26 @@ async fn execute_order_inner(wallet: &Wallet, order: &OrderResponse) -> Result<E
 
     check_execute_result(&resp)?;
     Ok(resp)
+}
+
+async fn execute_metis_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+    let tx_b64 = order
+        .transaction
+        .as_deref()
+        .ok_or_else(|| eyre!("No transaction in order"))?;
+    let signed_tx = wallet
+        .sign_transaction(tx_b64)
+        .wrap_err("failed to sign Metis swap transaction")?;
+    let tx = solana::send_signed_transaction(&signed_tx, None).await?;
+    Ok(ExecuteResponse {
+        status: Some("Success".to_string()),
+        signature: Some(tx.signature),
+        code: None,
+        error: None,
+        error_message: None,
+        input_amount_result: None,
+        output_amount_result: None,
+    })
 }
 
 fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {

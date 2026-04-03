@@ -36,7 +36,9 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm hours` — current session + tradable count
 - `rwa --json gm hours --tradable` — all tokens tradable right now
 - `rwa --json gm list` — all tokens with tradable status
-- `rwa --json gm list --search <keyword>` — filter by symbol, name, or sector
+- `rwa --json gm search --search <keyword>` — filter by symbol, name, or sector
+- `rwa --json gm search --tradable-only --sector <SECTOR> --type <stock|etf> --name-keyword <WORD>` — bulk filtering without Python
+- `rwa --json gm tradable [SYM ...]` — tradable lookup for one, many, or all tokens
 
 ### Trading
 - `rwa --json gm buy <SYM> <AMT> --dry-run` — preview buy
@@ -103,17 +105,21 @@ Inputs with too many decimal places are rejected instead of being silently round
 - Regular: 9:30 AM – 3:59 PM
 - Post-Market: 4:00 PM – 7:59 PM
 - Overnight: 8:00 PM – 3:59 AM
-- Closed: Fri 8 PM – Sun 8 PM
+- Closed: Weekend / NYSE holidays
 
-Not all tokens are tradable in every session. Use `list --search <SYM>` for one token or `hours --tradable` for the full set.
+Not all tokens are tradable in every session. Use `gm tradable <SYM...>` for symbol checks, `gm tradable` for the full set, or filtered `gm search --tradable-only ...` for bulk scans.
 
 ## Bulk workflows
 
 Check tradable + buy basket in 2 commands (most efficient):
 
 ```bash
-# 1. Get all tradable tokens in one call — filter with python
-rwa --json gm list | python3 -c "import sys,json; tokens=[t for t in json.load(sys.stdin) if t.get('sector')=='Healthcare' and t['tradable']]; [print(t['symbol']) for t in tokens]"
+# 1. Get all tradable healthcare stocks in one call
+rwa --json gm search --tradable-only --sector Healthcare --type stock
+
+Jupiter API note:
+- The CLI uses public Jupiter backends and falls back across multiple quote paths when liquidity differs by endpoint.
+- Route availability can differ by session, holiday calendar, and MM liquidity.
 
 # 2. Buy all tradable tokens at once — one command, parallel
 rwa --json gm buy-basket JNJ 25 LLY 25 PFE 25 ABBV 25 --parallel -y

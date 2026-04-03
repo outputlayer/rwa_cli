@@ -313,15 +313,30 @@ pub async fn close_all(
         let sell_display = amounts::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
 
         if dry_run {
-            if !json {
-                println!("  [DRY RUN] Would sell {} {}", sell_display, tb.symbol);
+            let mint = tb.mint.to_string();
+            match usecases::gm::fetch_sell_order(&tb.symbol, &mint, &sell_raw, &taker, json).await {
+                Ok(order) => {
+                    let quoted_usdc = amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS);
+                    if !json {
+                        println!("  [DRY RUN] Would sell {} {} -> ~{} USDC", sell_display, tb.symbol, quoted_usdc);
+                    }
+                    sold.push(CloseItemJson {
+                        token: tb.symbol.clone(),
+                        amount: sell_display,
+                        usdc: quoted_usdc,
+                        tx: String::new(),
+                    });
+                }
+                Err(e) => {
+                    if !json {
+                        eprintln!("  [DRY RUN] ✗ {} — {}", tb.symbol, e);
+                    }
+                    failed.push(CloseFailJson {
+                        token: tb.symbol.clone(),
+                        error: e.to_string(),
+                    });
+                }
             }
-            sold.push(CloseItemJson {
-                token: tb.symbol.clone(),
-                amount: sell_display,
-                usdc: String::new(),
-                tx: String::new(),
-            });
             continue;
         }
 

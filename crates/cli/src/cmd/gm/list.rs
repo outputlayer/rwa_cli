@@ -1,55 +1,26 @@
-use chrono::Datelike;
 use eyre::Result;
-use rwa_ondo::{api, token_list};
+use rwa_ondo::{api, gm, token_list};
 
 use super::*;
 
-pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
-    use chrono::Timelike;
-    use chrono_tz::US::Eastern;
+struct ListContext {
+    session: api::Session,
+    items: Vec<ListItemJson>,
+}
 
-    let now = chrono::Utc::now().with_timezone(&Eastern);
-    let wd = now.weekday();
-    let hour = now.hour();
-    let min = now.minute();
+pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
+    let now = api::now_eastern();
 
     let session = api::current_session();
     let closed = session == api::Session::Closed;
 
     let time_str = now.format("%A %I:%M %p ET").to_string();
 
+    let next_session = api::next_session_start();
+    let mins_left = (next_session - now).num_minutes().max(0);
     let countdown = if closed {
-        let days_until_sun: u32 = match wd {
-            chrono::Weekday::Fri => 2,
-            chrono::Weekday::Sat => 1,
-            chrono::Weekday::Sun => 0,
-            _ => 0,
-        };
-        let mins_left = if wd == chrono::Weekday::Sun {
-            (20u32).saturating_sub(hour) * 60 - min
-        } else {
-            let to_midnight = (24 - hour) * 60 - min;
-            let full_days = days_until_sun.saturating_sub(1);
-            to_midnight + full_days * 24 * 60 + 20 * 60
-        };
         format!("opens in {}h {}m", mins_left / 60, mins_left % 60)
     } else {
-        let session_end_hour: u32 = match session {
-            api::Session::PreMarket => 9,
-            api::Session::Regular => 16,
-            api::Session::PostMarket => 20,
-            api::Session::Overnight => 4,
-            _ => 0,
-        };
-        let session_end_min: u32 = if session == api::Session::PreMarket { 30 } else { 0 };
-
-        let mins_left = if session == api::Session::Overnight && hour >= 20 {
-            (24 - hour + 4) * 60 - min
-        } else if session_end_hour > hour || (session_end_hour == hour && session_end_min > min) {
-            (session_end_hour - hour) * 60 + session_end_min - min
-        } else {
-            0
-        };
         format!("next session in {}h {}m", mins_left / 60, mins_left % 60)
     };
 
@@ -97,7 +68,7 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     println!("    Regular:        9:30 AM – 3:59 PM ET");
     println!("    Post-Market:    4:00 PM – 7:59 PM ET");
     println!("    Overnight:      8:00 PM – 3:59 AM ET");
-    println!("    Closed:         Fri 8 PM – Sun 8 PM ET");
+    println!("    Closed:         Weekend / NYSE holidays");
     println!();
     let cd = countdown.trim_start_matches("opens in ").trim_start_matches("next session in ");
     if closed {
@@ -111,45 +82,153 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn list(json: bool, search: Option<&str>) -> Result<()> {
+pub async fn list(json: bool) -> Result<()> {
+    search(json, &[], false, &[], None, &[]).await
+}
+
+pub async fn search(
+    json: bool,
+    search_terms: &[String],
+    tradable_only: bool,
+    sectors: &[String],
+    kind: Option<&str>,
+    name_keywords: &[String],
+) -> Result<()> {
+    let context = fetch_list_context().await?;
+    let filtered: Vec<ListItemJson> = context
+        .items
+        .into_iter()
+        .filter(|item| matches_filters(item, search_terms, tradable_only, sectors, kind, name_keywords))
+        .collect();
+
+    if json {
+        return json_out(&filtered);
+    }
+
+    println!("{} GM tokens{}\n", filtered.len(), describe_filters(search_terms, tradable_only, sectors, kind, name_keywords));
+    for item in &filtered {
+        let sector = item.sector.as_deref().unwrap_or("");
+        let mark = if item.tradable { "✓" } else { "✗" };
+        if sector.is_empty() {
+            println!("  {} {:<12} {}", mark, item.symbol, item.name);
+        } else {
+            println!("  {} {:<12} {:<30} {}", mark, item.symbol, item.name, sector);
+        }
+    }
+    Ok(())
+}
+
+pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
+    let context = fetch_list_context().await?;
+
+    let items = if symbols.is_empty() {
+        context
+            .items
+            .iter()
+            .filter(|item| item.tradable)
+            .map(|item| TradableItemJson {
+                input: item.symbol.clone(),
+                found: true,
+                symbol: Some(item.symbol.clone()),
+                name: Some(item.name.clone()),
+                kind: Some(item.kind.clone()),
+                sector: item.sector.clone(),
+                tradable: true,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let item_map: std::collections::HashMap<String, &ListItemJson> = context
+            .items
+            .iter()
+            .map(|item| (item.symbol.to_uppercase(), item))
+            .collect();
+        let tokens = token_list::get_token_list();
+        symbols
+            .iter()
+            .map(|input| match gm::resolve_token(input, tokens) {
+                Ok(entry) => match item_map.get(&entry.symbol.to_uppercase()) {
+                    Some(item) => TradableItemJson {
+                        input: input.clone(),
+                        found: true,
+                        symbol: Some(item.symbol.clone()),
+                        name: Some(item.name.clone()),
+                        kind: Some(item.kind.clone()),
+                        sector: item.sector.clone(),
+                        tradable: item.tradable,
+                    },
+                    None => TradableItemJson {
+                        input: input.clone(),
+                        found: false,
+                        symbol: None,
+                        name: None,
+                        kind: None,
+                        sector: None,
+                        tradable: false,
+                    },
+                },
+                Err(_) => TradableItemJson {
+                    input: input.clone(),
+                    found: false,
+                    symbol: None,
+                    name: None,
+                    kind: None,
+                    sector: None,
+                    tradable: false,
+                },
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if json {
+        return json_out(&TradableResultJson {
+            session: context.session.label(),
+            count: items.iter().filter(|item| item.tradable).count(),
+            items,
+        });
+    }
+
+    println!("Session: {}", context.session.label());
+    for item in &items {
+        if !item.found {
+            println!("  ? {:<12} not found", item.input);
+            continue;
+        }
+        let status = if item.tradable { "✓" } else { "✗" };
+        println!(
+            "  {} {:<12} {}",
+            status,
+            item.symbol.as_deref().unwrap_or(&item.input),
+            item.name.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+async fn fetch_list_context() -> Result<ListContext> {
     let tokens = token_list::get_token_list();
     let assets = api::fetch_assets().await.unwrap_or_default();
 
     let session = api::current_session();
-    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits(None).await
+    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits(None)
+        .await
         .unwrap_or_default()
         .iter()
         .filter(|l| l.is_tradable(session))
         .map(|l| l.symbol.to_uppercase())
         .collect();
 
-    let asset_map: std::collections::HashMap<String, &api::OndoAsset> = assets.iter()
+    let asset_map: std::collections::HashMap<String, &api::OndoAsset> = assets
+        .iter()
         .map(|a| (a.symbol.to_uppercase(), a))
         .collect();
 
-    let filtered: Vec<_> = match search {
-        Some(q) => {
-            let q = q.to_lowercase();
-            tokens.iter().filter(|t| {
-                let sym_match = t.symbol.to_lowercase().contains(&q);
-                let name_match = asset_map.get(&t.symbol.to_uppercase())
-                    .map(|a| a.asset_name.to_lowercase().contains(&q))
-                    .unwrap_or(false);
-                let sector_match = asset_map.get(&t.symbol.to_uppercase())
-                    .and_then(|a| a.sector())
-                    .map(|s| s.to_lowercase().contains(&q))
-                    .unwrap_or(false);
-                sym_match || name_match || sector_match
-            }).collect()
-        }
-        None => tokens.iter().collect(),
-    };
-
-    if json {
-        let items: Vec<_> = filtered.iter().map(|t| {
+    let items = tokens
+        .iter()
+        .map(|t| {
             let asset = asset_map.get(&t.symbol.to_uppercase());
             let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
-            let kind = asset.and_then(|a| a.instrument_type())
+            let kind = asset
+                .and_then(|a| a.instrument_type())
                 .unwrap_or_else(|| token_type_from_name(&name))
                 .to_lowercase();
             let sector = asset.and_then(|a| a.sector()).map(String::from);
@@ -161,22 +240,146 @@ pub async fn list(json: bool, search: Option<&str>) -> Result<()> {
                 sector,
                 tradable,
             }
-        }).collect();
-        return json_out(&items);
+        })
+        .collect();
+
+    Ok(ListContext { session, items })
+}
+
+fn matches_filters(
+    item: &ListItemJson,
+    search_terms: &[String],
+    tradable_only: bool,
+    sectors: &[String],
+    kind: Option<&str>,
+    name_keywords: &[String],
+) -> bool {
+    if tradable_only && !item.tradable {
+        return false;
     }
 
-    println!("{} GM tokens{}\n", filtered.len(),
-        search.map(|s| format!(" matching '{}'", s)).unwrap_or_default());
-    for t in &filtered {
-        let asset = asset_map.get(&t.symbol.to_uppercase());
-        let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
-        let sector = asset.and_then(|a| a.sector()).unwrap_or("");
-        let mark = if tradable_set.contains(&t.symbol.to_uppercase()) { "✓" } else { "✗" };
-        if sector.is_empty() {
-            println!("  {} {:<12} {}", mark, t.symbol, name);
-        } else {
-            println!("  {} {:<12} {:<30} {}", mark, t.symbol, name, sector);
+    if !search_terms.is_empty() {
+        let symbol = item.symbol.to_lowercase();
+        let name = item.name.to_lowercase();
+        let sector = item.sector.as_deref().unwrap_or("").to_lowercase();
+        let matches_search = search_terms.iter().any(|term| {
+            let term = term.to_lowercase();
+            symbol.contains(&term) || name.contains(&term) || sector.contains(&term)
+        });
+        if !matches_search {
+            return false;
         }
     }
-    Ok(())
+
+    if !sectors.is_empty() {
+        let item_sector = item.sector.as_deref().unwrap_or("");
+        let matches_sector = sectors
+            .iter()
+            .any(|sector| item_sector.eq_ignore_ascii_case(sector));
+        if !matches_sector {
+            return false;
+        }
+    }
+
+    if let Some(kind) = kind
+        && !item.kind.eq_ignore_ascii_case(kind)
+    {
+        return false;
+    }
+
+    if !name_keywords.is_empty() {
+        let name = item.name.to_lowercase();
+        let matches_keyword = name_keywords
+            .iter()
+            .any(|keyword| name.contains(&keyword.to_lowercase()));
+        if !matches_keyword {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn describe_filters(
+    search_terms: &[String],
+    tradable_only: bool,
+    sectors: &[String],
+    kind: Option<&str>,
+    name_keywords: &[String],
+) -> String {
+    let mut parts = Vec::new();
+    if !search_terms.is_empty() {
+        parts.push(format!("search={}", search_terms.join(", ")));
+    }
+    if tradable_only {
+        parts.push("tradable_only".to_string());
+    }
+    if !sectors.is_empty() {
+        parts.push(format!("sector={}", sectors.join(", ")));
+    }
+    if let Some(kind) = kind {
+        parts.push(format!("type={kind}"));
+    }
+    if !name_keywords.is_empty() {
+        parts.push(format!("name_keyword={}", name_keywords.join(", ")));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_item() -> ListItemJson {
+        ListItemJson {
+            symbol: "LMTon".to_string(),
+            name: "Lockheed Martin".to_string(),
+            kind: "stock".to_string(),
+            sector: Some("Industrials".to_string()),
+            tradable: true,
+        }
+    }
+
+    #[test]
+    fn matches_filters_accepts_bulk_name_keyword_and_sector() {
+        let item = sample_item();
+        assert!(matches_filters(
+            &item,
+            &[],
+            true,
+            &["Industrials".to_string()],
+            Some("stock"),
+            &["lockheed".to_string(), "raytheon".to_string()],
+        ));
+    }
+
+    #[test]
+    fn matches_filters_rejects_wrong_sector() {
+        let item = sample_item();
+        assert!(!matches_filters(
+            &item,
+            &[],
+            false,
+            &["Energy".to_string()],
+            None,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn matches_filters_accepts_multi_search() {
+        let item = sample_item();
+        assert!(matches_filters(
+            &item,
+            &["energy".to_string(), "lockheed".to_string()],
+            false,
+            &[],
+            None,
+            &[],
+        ));
+    }
 }

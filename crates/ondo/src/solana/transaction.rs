@@ -267,6 +267,22 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
     }
 }
 
+/// Send an already signed base64 transaction and wait for confirmation.
+pub async fn send_signed_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<TransactionResult> {
+    let sig = send_raw_transaction(tx_base64, false, rpc_url).await?;
+    let confirmed = match confirm_transaction(&sig, rpc_url).await {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
+            false
+        }
+    };
+    Ok(TransactionResult {
+        signature: sig,
+        confirmed,
+    })
+}
+
 /// Get a recent blockhash from Solana RPC.
 /// Uses `confirmed` commitment for ~13s more validity vs `finalized` (per Solana docs).
 /// Returns blockhash + lastValidBlockHeight for expiration tracking.
