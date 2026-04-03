@@ -6,6 +6,7 @@ use crate::solana;
 use crate::wallet::Wallet;
 use crate::HTTP;
 
+const SWAP_V2_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v2";
 const ULTRA_API_BASE: &str = "https://ultra-api.jup.ag";
 const ULTRA_LITE_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
 const METIS_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v1";
@@ -30,6 +31,7 @@ pub const GM_SOL_DECIMALS: u8 = 9;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OrderBackend {
     #[default]
+    SwapV2Lite,
     Ultra,
     UltraLite,
     MetisV1Lite,
@@ -39,6 +41,7 @@ impl OrderBackend {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::SwapV2Lite => "swap-v2-lite",
             Self::Ultra => "ultra",
             Self::UltraLite => "ultra-lite",
             Self::MetisV1Lite => "metis-v1-lite",
@@ -211,7 +214,7 @@ impl std::error::Error for ExecuteFailure {}
 
 // ── Public functions ───────────────────────────────────────────────────
 
-/// Get a swap quote from Jupiter Ultra API.
+/// Get a swap quote from public Jupiter APIs.
 /// Flow: /order -> wallet.sign -> /execute.
 /// Maximum retries for transient errors on /order.
 const ORDER_MAX_RETRIES: u32 = 4;
@@ -225,9 +228,10 @@ pub async fn get_order(
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
     if let Some(base_url) = base_url {
+        let backend = infer_backend_from_base_url(base_url);
         return get_order_with_retries(
             base_url,
-            OrderBackend::Ultra,
+            backend,
             input_mint,
             output_mint,
             amount,
@@ -239,6 +243,7 @@ pub async fn get_order(
 
     let mut failures = Vec::new();
     let backends = [
+        (SWAP_V2_LITE_API_BASE, OrderBackend::SwapV2Lite),
         (ULTRA_API_BASE, OrderBackend::Ultra),
         (ULTRA_LITE_API_BASE, OrderBackend::UltraLite),
     ];
@@ -424,6 +429,18 @@ fn compact_error_body(body: &str) -> String {
     }
 }
 
+fn infer_backend_from_base_url(base_url: &str) -> OrderBackend {
+    if base_url.contains("/swap/v2") {
+        OrderBackend::SwapV2Lite
+    } else if base_url.contains("/swap/v1") {
+        OrderBackend::MetisV1Lite
+    } else if base_url.contains("lite-api.jup.ag/ultra/v1") {
+        OrderBackend::UltraLite
+    } else {
+        OrderBackend::Ultra
+    }
+}
+
 fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     request.header("x-client-platform", JUPITER_CLIENT_PLATFORM)
 }
@@ -543,18 +560,19 @@ async fn get_metis_order(
     })
 }
 
-/// Sign and execute a swap via Jupiter Ultra API.
+/// Sign and execute a swap via the backend that produced the order.
 pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
     let _permit = EXECUTE_SEMAPHORE.acquire().await
         .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
     match order.backend {
-        OrderBackend::Ultra => execute_ultra_order(wallet, order, ULTRA_API_BASE).await,
-        OrderBackend::UltraLite => execute_ultra_order(wallet, order, ULTRA_LITE_API_BASE).await,
+        OrderBackend::SwapV2Lite => execute_managed_order(wallet, order, SWAP_V2_LITE_API_BASE).await,
+        OrderBackend::Ultra => execute_managed_order(wallet, order, ULTRA_API_BASE).await,
+        OrderBackend::UltraLite => execute_managed_order(wallet, order, ULTRA_LITE_API_BASE).await,
         OrderBackend::MetisV1Lite => execute_metis_order(wallet, order).await,
     }
 }
 
-async fn execute_ultra_order(wallet: &Wallet, order: &OrderResponse, base_url: &str) -> Result<ExecuteResponse> {
+async fn execute_managed_order(wallet: &Wallet, order: &OrderResponse, base_url: &str) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
         .as_deref()
@@ -684,6 +702,26 @@ mod tests {
         let msg = failure.to_string();
         assert!(msg.contains("code -1000"));
         assert!(msg.contains("failed to land"));
+    }
+
+    #[test]
+    fn infer_backend_from_base_url_matches_public_paths() {
+        assert_eq!(
+            infer_backend_from_base_url("https://lite-api.jup.ag/swap/v2"),
+            OrderBackend::SwapV2Lite
+        );
+        assert_eq!(
+            infer_backend_from_base_url("https://ultra-api.jup.ag"),
+            OrderBackend::Ultra
+        );
+        assert_eq!(
+            infer_backend_from_base_url("https://lite-api.jup.ag/ultra/v1"),
+            OrderBackend::UltraLite
+        );
+        assert_eq!(
+            infer_backend_from_base_url("https://lite-api.jup.ag/swap/v1"),
+            OrderBackend::MetisV1Lite
+        );
     }
 
     // ── get_order httpmock ────────────────────────────────────

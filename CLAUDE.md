@@ -27,7 +27,7 @@ cargo install --path bin/rwa
 - `crates/cli/src/cmd/gm/` — trade, list, portfolio, send, shared preflight helpers
 - `crates/ondo/` — protocol layer: Solana RPC, Jupiter, Ondo API, wallet
 - `crates/ondo/src/solana/` — RPC retry, balances, fees, transactions, transfers
-- `crates/ondo/src/jupiter.rs` — Jupiter public swap backends (Ultra + fallbacks)
+- `crates/ondo/src/jupiter.rs` — Jupiter public swap backends (`swap/v2` first, then Ultra/public fallbacks)
 - `crates/ondo/src/api.rs` — Ondo prices, history, session limits
 
 ## Code conventions
@@ -97,6 +97,7 @@ rwa keys show
 ## Jupiter behavior
 
 - Jupiter handles gas for swaps in many cases; users still need SOL for transfers
+- Public routing order is `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback
 - Default slippage is 100 bps
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted

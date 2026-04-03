@@ -118,7 +118,7 @@ Check tradable + buy basket in 2 commands (most efficient):
 rwa --json gm search --tradable-only --sector Healthcare --type stock
 
 Jupiter API note:
-- The CLI uses public Jupiter backends and falls back across multiple quote paths when liquidity differs by endpoint.
+- The CLI tries public Jupiter routes in this order: `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback.
 - Route availability can differ by session, holiday calendar, and MM liquidity.
 
 # 2. Buy all tradable tokens at once — one command, parallel

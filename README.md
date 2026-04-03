@@ -246,6 +246,7 @@ Common surfaced trade/runtime error kinds now map more cleanly to the real failu
 - **Total return trackers** — dividends reinvested, 1 token ≠ 1 share
 - Both `TSLA` and `TSLAon` symbol formats accepted
 - Swaps via [Jupiter](https://jup.ag/) on Solana
+- Public Jupiter routing is tried in this order: `lite-api.jup.ag/swap/v2`, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` kept as the final manual fallback
 
 ### Trading Sessions (ET)
 
