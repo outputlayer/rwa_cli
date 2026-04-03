@@ -24,8 +24,9 @@ cargo install --path bin/rwa
 
 - `bin/rwa/` — thin binary entry point
 - `crates/cli/` — clap parsing, human/JSON output, process lock, command orchestration
-- `crates/cli/src/cmd/gm/` — trade, list, portfolio, send, shared preflight helpers
+- `crates/cli/src/cmd/gm/` — trade, close_all, basket, reclaim, list, portfolio, send, shared preflight helpers
 - `crates/ondo/` — protocol layer: Solana RPC, Jupiter, Ondo API, wallet
+- `crates/ondo/src/usecases/` — trade orchestration: prepare, execute, order fetch, retry, preflight
 - `crates/ondo/src/solana/` — RPC retry, balances, fees, transactions, transfers
 - `crates/ondo/src/jupiter.rs` — Jupiter public swap backends (`swap/v2` first, then Ultra/public fallbacks)
 - `crates/ondo/src/api.rs` — Ondo prices, history, session limits
@@ -67,7 +68,15 @@ rwa gm sell <SYM> <AMT> --dry-run
 rwa gm sell <SYM> <AMT> -y
 rwa gm close-all --dry-run
 rwa gm close-all -y
+rwa gm close-all --parallel -y
 rwa gm close-all 50% -y
+
+rwa gm buy-basket AAPL 10 TSLA 15 NVDA 5 --dry-run
+rwa gm buy-basket AAPL 10 TSLA 15 -y
+rwa gm buy-basket AAPL 10 TSLA 15 --parallel -y
+rwa gm sell-basket SPY 5 TSLA all --dry-run
+rwa gm sell-basket SPY 5 TSLA 3 -y
+rwa gm sell-basket SPY 5 TSLA 3 --parallel -y
 
 rwa gm portfolio [WALLET]
 rwa gm history <SYM> [-r RANGE]
@@ -92,7 +101,7 @@ rwa keys show
 - Trading sessions are ET-based: Pre-Market, Regular, Post-Market, Overnight, Closed
 - `buy` and `sell` check tradability before calling Jupiter
 - `close-all` skips tiny positions and non-tradable tokens
-- `close-all` and basket trading must remain sequential, with 3s spacing between swaps
+- `close-all` and basket trading default to sequential (3s spacing); use `--parallel` for concurrent swaps
 
 ## Jupiter behavior
 
@@ -121,6 +130,7 @@ rwa keys show
 - Use `gm tradable <SYM...>` to check one or many symbols
 - Use `gm search --tradable-only ...` for bulk scans without Python
 - Use `hours --tradable` only when the user wants the full currently tradable set
+- Use `buy-basket` / `sell-basket` for multi-token trades; prefer `--parallel` for speed
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 
 ## Anti-Overengineering Checklist
