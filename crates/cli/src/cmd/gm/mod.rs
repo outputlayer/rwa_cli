@@ -1,3 +1,4 @@
+mod close_all;
 mod list;
 mod portfolio;
 mod send;
@@ -251,7 +252,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             yes,
             dry_run,
             parallel,
-        } => trade::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url).await,
+        } => close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url).await,
         GmAction::Reclaim { token } => trade::reclaim(token.as_deref(), json, rpc_url).await,
         GmAction::BuyBasket { tokens, yes, dry_run, parallel } =>
             trade::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url).await,
