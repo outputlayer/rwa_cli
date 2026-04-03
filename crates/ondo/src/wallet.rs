@@ -461,6 +461,72 @@ mod tests {
         // Empty base64 should fail
         assert!(w.sign_transaction("").is_err());
     }
+
+    // Helper: create a unique temp path that cleans itself up on drop.
+    struct TempFile(std::path::PathBuf);
+    impl TempFile {
+        fn new(suffix: &str) -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir()
+                .join(format!("rwa_wallet_test_{}_{}.age", ts, suffix));
+            TempFile(path)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let tmp = TempFile::new("roundtrip");
+        let passphrase = "correct-horse-battery-staple";
+
+        let original = Wallet::generate();
+        original
+            .save_encrypted(tmp.path(), passphrase)
+            .expect("save_encrypted should succeed");
+
+        let restored = Wallet::from_encrypted_file(tmp.path(), passphrase)
+            .expect("from_encrypted_file should succeed with correct passphrase");
+
+        assert_eq!(
+            original.pubkey(),
+            restored.pubkey(),
+            "decrypted wallet must produce the same public key"
+        );
+        assert_eq!(
+            original.signing_key().as_bytes(),
+            restored.signing_key().as_bytes(),
+            "decrypted wallet must have identical secret key bytes"
+        );
+    }
+
+    #[test]
+    fn decrypt_wrong_passphrase_fails() {
+        let tmp = TempFile::new("wrongpass");
+        let correct = "right-passphrase";
+        let wrong = "wrong-passphrase";
+
+        let wallet = Wallet::generate();
+        wallet
+            .save_encrypted(tmp.path(), correct)
+            .expect("save_encrypted should succeed");
+
+        let result = Wallet::from_encrypted_file(tmp.path(), wrong);
+        assert!(
+            result.is_err(),
+            "decrypting with wrong passphrase must return an error"
+        );
+    }
 }
 
 /// Decode a compact-u16 from the start of a byte slice.
