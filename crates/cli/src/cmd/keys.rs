@@ -1,7 +1,6 @@
 use clap::Subcommand;
 use eyre::Result;
 use rwa_ondo::wallet::{self, Wallet};
-use std::io::{self, Write};
 
 #[derive(Subcommand, Debug)]
 pub enum KeysAction {
@@ -97,16 +96,12 @@ async fn import(
         (None, Some(pk), None) => Wallet::from_private_key(&pk)?,
         (None, None, Some(sp)) => {
             let phrase = if sp.is_empty() {
-                print!("Enter seed phrase: ");
-                io::stdout().flush().ok();
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)
+                let input = rpassword::prompt_password("Enter seed phrase: ")
                     .map_err(|e| eyre::eyre!("Failed to read seed phrase: {e}"))?;
-                let trimmed = input.trim().to_string();
-                if trimmed.is_empty() {
+                if input.is_empty() {
                     return Err(eyre::eyre!("Seed phrase cannot be empty"));
                 }
-                trimmed
+                input
             } else {
                 sp
             };

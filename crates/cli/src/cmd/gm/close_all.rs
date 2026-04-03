@@ -179,7 +179,7 @@ pub async fn close_all(
             Ok(result) => {
                 let usdc_f: f64 = result.output_amount.parse().unwrap_or(0.0);
                 total_usdc += usdc_f;
-                let tx = format!("https://solscan.io/tx/{}", result.signature);
+                let tx = solscan_tx_url(&result.signature);
                 if !json {
                     println!(
                         "  ✓ {} {} → {} USDC  tx: {}",
@@ -330,7 +330,7 @@ async fn close_all_parallel(
             Ok((sym, display, Ok(exec))) => {
                 let usdc_f: f64 = exec.output_amount.parse().unwrap_or(0.0);
                 total_usdc += usdc_f;
-                let tx = format!("https://solscan.io/tx/{}", exec.signature);
+                let tx = solscan_tx_url(&exec.signature);
                 if !json { println!("  ✓ {} {} → {} USDC  tx: {}", display, sym, exec.output_amount, tx); }
                 sold.push(CloseItemJson { token: sym, amount: display, usdc: exec.output_amount, tx });
             }

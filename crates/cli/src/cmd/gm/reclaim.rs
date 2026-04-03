@@ -87,7 +87,7 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
         );
     }
     for sig in &signatures {
-        println!("  Tx: https://solscan.io/tx/{sig}");
+        println!("  Tx: {}", solscan_tx_url(sig));
     }
     Ok(())
 }

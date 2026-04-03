@@ -60,11 +60,11 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
             token: "SOL".into(),
             amount: display_amount.clone(),
             recipient: to.into(),
-            tx: format!("https://solscan.io/tx/{sig}"),
+            tx: solscan_tx_url(sig),
         });
     }
     println!("✓ Sent {} SOL → {to}", display_amount);
-    println!("  https://solscan.io/tx/{sig}");
+    println!("  {}", solscan_tx_url(sig));
     if !result.confirmed {
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }
@@ -171,11 +171,11 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
             token: "USDC".into(),
             amount: display_amount.clone(),
             recipient: to.into(),
-            tx: format!("https://solscan.io/tx/{sig}"),
+            tx: solscan_tx_url(sig),
         });
     }
     println!("✓ Sent {} USDC → {to}", display_amount);
-    println!("  https://solscan.io/tx/{sig}");
+    println!("  {}", solscan_tx_url(sig));
     if !result.confirmed {
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }
@@ -243,11 +243,11 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
             token: sym.to_string(),
             amount: token_display.clone(),
             recipient: to.into(),
-            tx: format!("https://solscan.io/tx/{sig}"),
+            tx: solscan_tx_url(sig),
         });
     }
     println!("✓ Sent {} {sym} → {to}", token_display);
-    println!("  https://solscan.io/tx/{sig}");
+    println!("  {}", solscan_tx_url(sig));
     if !result.confirmed {
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }

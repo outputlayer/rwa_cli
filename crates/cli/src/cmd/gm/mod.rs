@@ -20,6 +20,10 @@ pub(super) use types::{
     SellBasketResultJson, SendJson, TradeJson, TradableItemJson, TradableResultJson,
 };
 
+fn solscan_tx_url(sig: &str) -> String {
+    format!("https://solscan.io/tx/{sig}")
+}
+
 // ── Subcommand enum ────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]

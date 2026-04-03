@@ -67,7 +67,7 @@ pub async fn buy(
             token: plan.symbol.to_string(),
             counter_amount: plan.counter_amount,
             counter_token: "USDC",
-            tx: format!("https://solscan.io/tx/{}", result.signature),
+            tx: solscan_tx_url(&result.signature),
             slippage_pct: plan.slippage_pct,
             actual_slippage_pct: result.actual_slippage_pct,
             price_impact_pct: plan.order.price_impact,
@@ -83,7 +83,7 @@ pub async fn buy(
     if let Some(s) = plan.slippage_pct.filter(|s| s.abs() > 0.05) {
         println!("  Spread:    {s:.4}%");
     }
-    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+    println!("  Tx:        {}", solscan_tx_url(&result.signature));
     Ok(())
 }
 
@@ -151,7 +151,7 @@ pub async fn sell(
             token: plan.symbol.to_string(),
             counter_amount: result.output_amount,
             counter_token: "USDC",
-            tx: format!("https://solscan.io/tx/{}", result.signature),
+            tx: solscan_tx_url(&result.signature),
             slippage_pct: plan.slippage_pct,
             actual_slippage_pct: result.actual_slippage_pct,
             price_impact_pct: plan.order.price_impact,
@@ -167,6 +167,6 @@ pub async fn sell(
     if let Some(s) = plan.slippage_pct.filter(|s| s.abs() > 0.05) {
         println!("  Spread:    {s:.4}%");
     }
-    println!("  Tx:        https://solscan.io/tx/{}", result.signature);
+    println!("  Tx:        {}", solscan_tx_url(&result.signature));
     Ok(())
 }

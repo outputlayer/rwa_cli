@@ -116,7 +116,7 @@ pub async fn buy_basket(
                 match usecases::gm::execute_buy_from_order(&w, order, json).await {
                     Ok(exec) => {
                         total_usdc_spent += raw_u;
-                        let tx = format!("https://solscan.io/tx/{}", exec.signature);
+                        let tx = solscan_tx_url(&exec.signature);
                         if !json {
                             print!("  ✓ {} {} USDC → {} {}", sym, usdc_display, exec.output_amount, sym);
                             if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
@@ -275,7 +275,7 @@ async fn buy_basket_parallel(
             Ok((sym, usdc_disp, slip, Ok(exec))) => {
                 let usdc_f: f64 = usdc_disp.parse().unwrap_or(0.0);
                 total_usdc_spent += usdc_f;
-                let tx = format!("https://solscan.io/tx/{}", exec.signature);
+                let tx = solscan_tx_url(&exec.signature);
                 if !json {
                     print!("  ✓ {} USDC → {} {}  tx: {}", usdc_disp, exec.output_amount, sym, tx);
                     if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
@@ -376,7 +376,7 @@ pub async fn sell_basket(
                     Ok(exec) => {
                         let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);
                         total_usdc += usdc_out;
-                        let tx = format!("https://solscan.io/tx/{}", exec.signature);
+                        let tx = solscan_tx_url(&exec.signature);
                         if !json {
                             print!("  ✓ {} {} → {} USDC", sym, amt, exec.output_amount);
                             if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
@@ -534,7 +534,7 @@ async fn sell_basket_parallel(
             Ok((sym, amt_disp, slip, Ok(exec))) => {
                 let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);
                 total_usdc += usdc_out;
-                let tx = format!("https://solscan.io/tx/{}", exec.signature);
+                let tx = solscan_tx_url(&exec.signature);
                 if !json {
                     print!("  ✓ {} {} → {} USDC  tx: {}", sym, amt_disp, exec.output_amount, tx);
                     if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
