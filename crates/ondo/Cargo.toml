@@ -10,6 +10,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes test-only helpers (e.g. `get_portfolio_balances_with_urls`) to
+# integration tests under `tests/`. Not intended for downstream consumers.
+test-util = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

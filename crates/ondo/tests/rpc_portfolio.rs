@@ -231,6 +231,62 @@ async fn portfolio_fails_fast_on_rpc_level_error() {
     assert!(msg.contains("Method not found"), "error should propagate: {msg}");
 }
 
+/// Acceptance test for the RPC race mode.
+///
+/// Scenario: one public-like RPC node stalls its response body for 30 s (simulating
+/// the real failure mode of `api.mainnet-beta.solana.com`), while another responds
+/// normally. With `RpcMode::Race`, `get_portfolio_balances` must complete against
+/// the fast node well under the 2-second acceptance bar.
+///
+/// Run with: `cargo test -p rwa-ondo --features test-util portfolio_race_beats_slow_url`
+#[tokio::test]
+#[cfg(feature = "test-util")]
+async fn portfolio_race_beats_slow_url() {
+    use std::time::{Duration, Instant};
+
+    let fast = MockServer::start_async().await;
+    let slow = MockServer::start_async().await;
+
+    let _mf = fast.mock_async(|when, then| {
+        when.method(POST);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(batch_response(
+                1_500_000_000, // 1.5 SOL
+                500_000_000,   // 500 USDC
+                serde_json::json!([token_entry(AAL_MINT, 2.5, "2500000000")]),
+            ));
+    }).await;
+
+    let _ms = slow.mock_async(|when, then| {
+        when.method(POST);
+        then.status(200)
+            .header("content-type", "application/json")
+            .delay(Duration::from_secs(30))
+            .json_body(batch_response(
+                999_999_999_999, 999_999_999, serde_json::json!([]),
+            ));
+    }).await;
+
+    let tokens = &[GmTokenEntry { symbol: "AALon", solana_address: Some(AAL_MINT) }];
+    let fast_url = fast.base_url();
+    let slow_url = slow.base_url();
+    // Slow FIRST — sequential fallback would stall on it; race must still be fast.
+    let urls = vec![slow_url.as_str(), fast_url.as_str()];
+
+    let start = Instant::now();
+    let result = solana::get_portfolio_balances_with_urls(WALLET, tokens, &urls)
+        .await
+        .expect("portfolio succeeds via race");
+    let elapsed = start.elapsed();
+
+    assert!(elapsed < Duration::from_secs(2),
+        "portfolio must finish in < 2 s under race mode; took {elapsed:?}");
+    assert!((result.sol - 1.5).abs() < 1e-9, "sol from FAST mock, got {}", result.sol);
+    assert!((result.usdc - 500.0).abs() < 1e-6, "usdc from FAST mock, got {}", result.usdc);
+    assert_eq!(result.gm_tokens.len(), 1, "gm tokens from FAST mock");
+}
+
 #[tokio::test]
 async fn portfolio_multiple_gm_tokens_sorted_alphabetically() {
     let server = MockServer::start_async().await;

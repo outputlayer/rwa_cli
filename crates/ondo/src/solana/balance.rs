@@ -287,6 +287,25 @@ pub async fn get_portfolio_balances(
     rpc_url: Option<&str>,
 ) -> Result<PortfolioBalances> {
     let urls = rpc_urls(rpc_url);
+    portfolio_balances_against(wallet, tokens, &urls).await
+}
+
+/// Test-only: run portfolio balance fetching against a caller-supplied URL list.
+/// Enables multi-URL race testing in integration tests.
+#[cfg(any(test, feature = "test-util"))]
+pub async fn get_portfolio_balances_with_urls(
+    wallet: &str,
+    tokens: &[GmTokenEntry],
+    urls: &[&str],
+) -> Result<PortfolioBalances> {
+    portfolio_balances_against(wallet, tokens, urls).await
+}
+
+async fn portfolio_balances_against(
+    wallet: &str,
+    tokens: &[GmTokenEntry],
+    urls: &[&str],
+) -> Result<PortfolioBalances> {
     let client = &*crate::HTTP;
 
     // Compute USDC ATA address deterministically (no RPC needed).
@@ -314,7 +333,7 @@ pub async fn get_portfolio_balances(
         },
     ];
 
-    let results = rpc_batch_with_retry(client, &urls, &reqs, RpcMode::Race).await?;
+    let results = rpc_batch_with_retry(client, urls, &reqs, RpcMode::Race).await?;
 
     // Parse SOL + USDC from getMultipleAccounts
     let multi_resp: RpcResponse<GetMultipleAccountsResult> = serde_json::from_value(results[0].clone())

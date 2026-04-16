@@ -15,6 +15,8 @@ pub use balance::{
     get_all_balances, get_balance,
     SolanaTokenBalance, PortfolioBalances, get_portfolio_balances,
 };
+#[cfg(any(test, feature = "test-util"))]
+pub use balance::get_portfolio_balances_with_urls;
 pub use fee::{estimate_gas_needed, estimate_tx_fee, estimate_tx_fee_lamports};
 pub use transaction::{TransactionResult, confirm_transaction, send_signed_transaction};
 pub use transfer::{
