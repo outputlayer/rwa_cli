@@ -552,8 +552,7 @@ pub(super) async fn rpc_batch_with_retry(
 ) -> Result<Vec<serde_json::Value>> {
     match mode {
         RpcMode::Sequential => rpc_batch_sequential(client, urls, reqs).await,
-        // TEMP: race impl in Task 3 — still sequential so behavior is unchanged.
-        RpcMode::Race => rpc_batch_sequential(client, urls, reqs).await,
+        RpcMode::Race => rpc_batch_race(client, urls, reqs).await,
     }
 }
 
@@ -566,139 +565,21 @@ async fn rpc_batch_sequential(
     let mut last_err: Option<SolanaRpcError> = None;
 
     for (try_num, idx) in ordered_indices(urls.len()).enumerate() {
+        if try_num > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         let url = urls[idx];
-        for attempt in 0..3u32 {
-            if attempt > 0 {
-                let delay = backoff_with_jitter(attempt);
-                tokio::time::sleep(delay).await;
-            } else if try_num > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        match single_batch_attempt(client, url, reqs, timeout).await {
+            Ok(results) => {
+                LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
+                return Ok(results);
             }
-            let resp = match client.post(url).json(&reqs).timeout(timeout).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = Some(SolanaRpcError::new(
-                        SolanaRpcErrorKind::Network,
-                        None,
-                        Some(url),
-                        None,
-                        None,
-                        e.to_string(),
-                    ));
-                    break; // connection error → try next URL
+            Err(e) => {
+                if !e.is_retryable() {
+                    return Err(e.into());
                 }
-            };
-
-            let status = resp.status();
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                last_err = Some(SolanaRpcError::new(
-                    SolanaRpcErrorKind::RateLimited,
-                    None,
-                    Some(url),
-                    Some(status),
-                    None,
-                    "HTTP 429 from RPC endpoint",
-                ));
-                continue; // rate limited or 5xx → retry same URL with backoff
+                last_err = Some(e);
             }
-            if status.is_server_error() {
-                last_err = Some(SolanaRpcError::new(
-                    SolanaRpcErrorKind::HttpStatus,
-                    None,
-                    Some(url),
-                    Some(status),
-                    None,
-                    "server-side RPC failure",
-                ));
-                continue; // rate limited or 5xx → retry same URL with backoff
-            }
-            if status.is_client_error() {
-                return Err(SolanaRpcError::new(
-                    SolanaRpcErrorKind::HttpStatus,
-                    None,
-                    Some(url),
-                    Some(status),
-                    None,
-                    "client-side RPC failure",
-                )
-                .into());
-            }
-
-            let mut results: Vec<serde_json::Value> = match resp.json().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_err = Some(SolanaRpcError::new(
-                        SolanaRpcErrorKind::Decode,
-                        None,
-                        Some(url),
-                        None,
-                        None,
-                        format!("error decoding response body: {e}"),
-                    ));
-                    continue; // HTML / bad response → retry with backoff
-                }
-            };
-
-            if results.len() != reqs.len() {
-                last_err = Some(SolanaRpcError::new(
-                    SolanaRpcErrorKind::BatchShape,
-                    None,
-                    Some(url),
-                    None,
-                    None,
-                    format!("got {} responses, expected {}", results.len(), reqs.len()),
-                ));
-                continue;
-            }
-
-            // Check if any individual response contains an RPC error
-            if let Some((err_code, err_msg)) = results.iter().find_map(|r| {
-                let error = r.get("error")?;
-                let msg = error.get("message")?.as_str()?;
-                let code = error.get("code").and_then(|code| code.as_i64());
-                Some((code, msg))
-            }) {
-                if err_msg.contains("Too many requests") {
-                    last_err = Some(SolanaRpcError::new(
-                        SolanaRpcErrorKind::RateLimited,
-                        None,
-                        Some(url),
-                        None,
-                        err_code,
-                        err_msg.to_string(),
-                    ));
-                    continue;
-                }
-                return Err(SolanaRpcError::new(
-                    SolanaRpcErrorKind::RpcResponse,
-                    None,
-                    Some(url),
-                    None,
-                    err_code,
-                    format!("RPC error in batch: {err_msg}"),
-                )
-                .into());
-            }
-
-            // All responses must have a "result" field (JSON-RPC 2.0 spec)
-            if results.iter().any(|r| r.get("result").is_none()) {
-                last_err = Some(SolanaRpcError::new(
-                    SolanaRpcErrorKind::BatchShape,
-                    None,
-                    Some(url),
-                    None,
-                    None,
-                    "missing 'result' in one or more responses",
-                ));
-                continue; // malformed response → retry
-            }
-
-            // JSON-RPC 2.0 spec: batch responses may arrive in any order.
-            // Sort by id to match request order so callers can index by position.
-            results.sort_by_key(|r| r.get("id").and_then(|id| id.as_u64()).unwrap_or(u64::MAX));
-
-            LAST_GOOD_IDX.store(idx, Ordering::Relaxed);
-            return Ok(results);
         }
     }
 
@@ -718,6 +599,192 @@ async fn rpc_batch_sequential(
     .into())
 }
 
+/// One batch attempt against one URL with up to 3 retries.
+async fn single_batch_attempt(
+    client: &reqwest::Client,
+    url: &str,
+    reqs: &[RpcRequest<'_>],
+    timeout: std::time::Duration,
+) -> std::result::Result<Vec<serde_json::Value>, SolanaRpcError> {
+    let mut last_err: Option<SolanaRpcError> = None;
+
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            let delay = backoff_with_jitter(attempt);
+            tokio::time::sleep(delay).await;
+        }
+
+        let resp = match client.post(url).json(reqs).timeout(timeout).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(SolanaRpcError::new(
+                    SolanaRpcErrorKind::Network,
+                    None, Some(url), None, None,
+                    e.to_string(),
+                ));
+            }
+        };
+
+        let status = resp.status();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::RateLimited,
+                None, Some(url), Some(status), None,
+                "HTTP 429 from RPC endpoint",
+            ));
+            continue;
+        }
+        if status.is_server_error() {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::HttpStatus,
+                None, Some(url), Some(status), None,
+                "server-side RPC failure",
+            ));
+            continue;
+        }
+        if status.is_client_error() {
+            return Err(SolanaRpcError::new(
+                SolanaRpcErrorKind::HttpStatus,
+                None, Some(url), Some(status), None,
+                "client-side RPC failure",
+            ));
+        }
+
+        let mut results: Vec<serde_json::Value> = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = Some(SolanaRpcError::new(
+                    SolanaRpcErrorKind::Decode,
+                    None, Some(url), None, None,
+                    format!("error decoding response body: {e}"),
+                ));
+                continue;
+            }
+        };
+
+        if results.len() != reqs.len() {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::BatchShape,
+                None, Some(url), None, None,
+                format!("got {} responses, expected {}", results.len(), reqs.len()),
+            ));
+            continue;
+        }
+
+        if let Some((err_code, err_msg)) = results.iter().find_map(|r| {
+            let error = r.get("error")?;
+            let msg = error.get("message")?.as_str()?;
+            let code = error.get("code").and_then(|code| code.as_i64());
+            Some((code, msg))
+        }) {
+            if err_msg.contains("Too many requests") {
+                last_err = Some(SolanaRpcError::new(
+                    SolanaRpcErrorKind::RateLimited,
+                    None, Some(url), None, err_code,
+                    err_msg.to_string(),
+                ));
+                continue;
+            }
+            return Err(SolanaRpcError::new(
+                SolanaRpcErrorKind::RpcResponse,
+                None, Some(url), None, err_code,
+                format!("RPC error in batch: {err_msg}"),
+            ));
+        }
+
+        if results.iter().any(|r| r.get("result").is_none()) {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::BatchShape,
+                None, Some(url), None, None,
+                "missing 'result' in one or more responses",
+            ));
+            continue;
+        }
+
+        results.sort_by_key(|r| r.get("id").and_then(|id| id.as_u64()).unwrap_or(u64::MAX));
+        return Ok(results);
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        SolanaRpcError::new(
+            SolanaRpcErrorKind::Unavailable,
+            None, Some(url), None, None,
+            "all batch retry attempts exhausted",
+        )
+    }))
+}
+
+/// Owned counterpart of `RpcRequest<'a>`, used to move requests into spawned tasks.
+#[derive(Clone)]
+struct OwnedRequest {
+    jsonrpc: String,
+    id: u64,
+    method: String,
+    params: serde_json::Value,
+}
+
+async fn rpc_batch_race(
+    client: &reqwest::Client,
+    urls: &[&str],
+    reqs: &[RpcRequest<'_>],
+) -> Result<Vec<serde_json::Value>> {
+    let timeout = std::time::Duration::from_secs(8);
+
+    if urls.len() == 1 {
+        return single_batch_attempt(client, urls[0], reqs, timeout).await.map_err(Into::into);
+    }
+
+    let owned_reqs: Vec<OwnedRequest> = reqs.iter().map(|r| OwnedRequest {
+        jsonrpc: r.jsonrpc.to_string(),
+        id: r.id,
+        method: r.method.to_string(),
+        params: r.params.clone(),
+    }).collect();
+
+    let mut set = tokio::task::JoinSet::new();
+    for url in urls {
+        let client = client.clone();
+        let url = (*url).to_string();
+        let owned_reqs = owned_reqs.clone();
+        set.spawn(async move {
+            let borrowed: Vec<RpcRequest<'_>> = owned_reqs.iter().map(|r| RpcRequest {
+                jsonrpc: &r.jsonrpc,
+                id: r.id,
+                method: &r.method,
+                params: r.params.clone(),
+            }).collect();
+            single_batch_attempt(&client, &url, &borrowed, timeout).await
+        });
+    }
+
+    let mut errs: Vec<SolanaRpcError> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok(results)) => {
+                set.abort_all();
+                return Ok(results);
+            }
+            Ok(Err(e)) => errs.push(e),
+            Err(_join_err) => {}
+        }
+    }
+
+    let detail = if errs.is_empty() {
+        "all RPC endpoints failed with no recorded errors".to_string()
+    } else {
+        let summary: Vec<String> = errs.iter()
+            .map(|e| format!("{}: {}", e.url.as_deref().unwrap_or("?"), e.detail))
+            .collect();
+        format!("all RPC endpoints failed: [{}]", summary.join(", "))
+    };
+
+    Err(SolanaRpcError::new(
+        SolanaRpcErrorKind::Unavailable,
+        None, None, None, None,
+        detail,
+    ).into())
+}
+
 /// Backoff with jitter to avoid thundering herd on rate-limited endpoints.
 /// Exponential: 1s, 2s, 4s (capped at 10s) plus random jitter (0–500ms).
 pub(super) fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
@@ -732,6 +799,54 @@ mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn batch_race_returns_fast_url_before_slow() {
+        let fast = MockServer::start_async().await;
+        let slow = MockServer::start_async().await;
+
+        let batch_body = json!([
+            { "jsonrpc": "2.0", "id": 1, "result": "fast-1" },
+            { "jsonrpc": "2.0", "id": 2, "result": "fast-2" }
+        ]);
+
+        let _mf = fast.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(batch_body.clone());
+        }).await;
+
+        let _ms = slow.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200)
+                .header("content-type", "application/json")
+                .delay(Duration::from_secs(2))
+                .json_body(json!([
+                    { "jsonrpc": "2.0", "id": 1, "result": "slow-1" },
+                    { "jsonrpc": "2.0", "id": 2, "result": "slow-2" }
+                ]));
+        }).await;
+
+        let client = reqwest::Client::new();
+        let reqs = vec![
+            RpcRequest { jsonrpc: "2.0", id: 1, method: "m1", params: json!([]) },
+            RpcRequest { jsonrpc: "2.0", id: 2, method: "m2", params: json!([]) },
+        ];
+        let slow_url = slow.base_url();
+        let fast_url = fast.base_url();
+        let urls = vec![slow_url.as_str(), fast_url.as_str()];
+
+        let start = std::time::Instant::now();
+        let out = rpc_batch_race(&client, &urls, &reqs).await.expect("race ok");
+        let elapsed = start.elapsed();
+
+        assert_eq!(out.len(), 2, "batch result length");
+        assert_eq!(out[0].get("result").and_then(|v| v.as_str()), Some("fast-1"));
+        assert_eq!(out[1].get("result").and_then(|v| v.as_str()), Some("fast-2"));
+        assert!(elapsed < Duration::from_millis(500),
+            "race should return in < 500 ms, took {:?}", elapsed);
+    }
 
     #[tokio::test]
     async fn race_returns_fast_url_before_slow() {
