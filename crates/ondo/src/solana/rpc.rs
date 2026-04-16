@@ -18,7 +18,7 @@ use crate::HTTP;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RpcMode {
     Sequential,
-    #[allow(dead_code)] // Used from Task 5 onward — enabled now so Task 1 compiles clean.
+    #[allow(dead_code)] // First call-site flips to this in Task 5.
     Race,
 }
 
@@ -189,8 +189,7 @@ pub(crate) async fn rpc_call_simple<T: serde::de::DeserializeOwned + Send + 'sta
     let urls = rpc_urls(rpc_url);
     let resp: RpcResponse<T> = match mode {
         RpcMode::Sequential => rpc_call_with_retry(client, &urls, &req).await?,
-        // TEMP: race impl in Task 2 — still sequential so behavior is unchanged.
-        RpcMode::Race => rpc_call_with_retry(client, &urls, &req).await?,
+        RpcMode::Race => rpc_call_race(client, &urls, &req).await?,
     };
     resp.result.ok_or_else(|| {
         SolanaRpcError::new(
@@ -348,6 +347,200 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
         ),
     )
     .into())
+}
+
+/// Make up to 3 attempts against a single URL with exponential backoff.
+/// Returns the parsed `RpcResponse` on the first success.
+/// Returns `Err(SolanaRpcError)` after exhausting retries or on a non-retryable
+/// error (e.g. 4xx client error, RPC error that isn't "Too many requests").
+async fn single_attempt<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+    req: &RpcRequest<'_>,
+    timeout: std::time::Duration,
+) -> std::result::Result<RpcResponse<T>, SolanaRpcError> {
+    let mut last_err: Option<SolanaRpcError> = None;
+
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            let delay = backoff_with_jitter(attempt);
+            tokio::time::sleep(delay).await;
+        }
+
+        let resp = match client.post(url).json(req).timeout(timeout).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(SolanaRpcError::new(
+                    SolanaRpcErrorKind::Network,
+                    Some(req.method),
+                    Some(url),
+                    None,
+                    None,
+                    e.to_string(),
+                ));
+            }
+        };
+
+        let status = resp.status();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::RateLimited,
+                Some(req.method),
+                Some(url),
+                Some(status),
+                None,
+                "HTTP 429 from RPC endpoint",
+            ));
+            continue;
+        }
+        if status.is_server_error() {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::HttpStatus,
+                Some(req.method),
+                Some(url),
+                Some(status),
+                None,
+                "server-side RPC failure",
+            ));
+            continue;
+        }
+        if status.is_client_error() {
+            return Err(SolanaRpcError::new(
+                SolanaRpcErrorKind::HttpStatus,
+                Some(req.method),
+                Some(url),
+                Some(status),
+                None,
+                "client-side RPC failure",
+            ));
+        }
+
+        let parsed: RpcResponse<T> = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = Some(SolanaRpcError::new(
+                    SolanaRpcErrorKind::Decode,
+                    Some(req.method),
+                    Some(url),
+                    None,
+                    None,
+                    format!("error decoding response body: {e}"),
+                ));
+                continue;
+            }
+        };
+
+        if let Some(ref err) = parsed.error {
+            if err.message.contains("Too many requests") {
+                last_err = Some(SolanaRpcError::new(
+                    SolanaRpcErrorKind::RateLimited,
+                    Some(req.method),
+                    Some(url),
+                    None,
+                    err.code,
+                    err.message.clone(),
+                ));
+                continue;
+            }
+            return Err(SolanaRpcError::new(
+                SolanaRpcErrorKind::RpcResponse,
+                Some(req.method),
+                Some(url),
+                None,
+                err.code,
+                err.message.clone(),
+            ));
+        }
+
+        if parsed.result.is_none() {
+            last_err = Some(SolanaRpcError::new(
+                SolanaRpcErrorKind::EmptyResult,
+                Some(req.method),
+                Some(url),
+                None,
+                None,
+                "RPC returned null result",
+            ));
+            continue;
+        }
+
+        return Ok(parsed);
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        SolanaRpcError::new(
+            SolanaRpcErrorKind::Unavailable,
+            Some(req.method),
+            Some(url),
+            None,
+            None,
+            "all retry attempts exhausted",
+        )
+    }))
+}
+
+/// Fire the same request at every URL in parallel. Return the first `Ok`.
+/// On any task returning `Ok`, remaining tasks are aborted.
+/// If every task fails, returns an aggregated `SolanaRpcError` describing all URLs.
+async fn rpc_call_race<T: serde::de::DeserializeOwned + Send + 'static>(
+    client: &reqwest::Client,
+    urls: &[&str],
+    req: &RpcRequest<'_>,
+) -> Result<RpcResponse<T>> {
+    let timeout = std::time::Duration::from_secs(8);
+
+    if urls.len() == 1 {
+        return single_attempt(client, urls[0], req, timeout).await.map_err(Into::into);
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for url in urls {
+        let client = client.clone();
+        let url = (*url).to_string();
+        let method = req.method.to_string();
+        let params = req.params.clone();
+        let id = req.id;
+        set.spawn(async move {
+            let owned_req = RpcRequest {
+                jsonrpc: "2.0",
+                id,
+                method: &method,
+                params,
+            };
+            single_attempt::<T>(&client, &url, &owned_req, timeout).await
+        });
+    }
+
+    let mut errs: Vec<SolanaRpcError> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok(resp)) => {
+                set.abort_all();
+                return Ok(resp);
+            }
+            Ok(Err(e)) => errs.push(e),
+            Err(_join_err) => {}
+        }
+    }
+
+    let method = req.method.to_string();
+    let detail = if errs.is_empty() {
+        "all RPC endpoints failed with no recorded errors".to_string()
+    } else {
+        let summary: Vec<String> = errs.iter()
+            .map(|e| format!("{}: {}", e.url.as_deref().unwrap_or("?"), e.detail))
+            .collect();
+        format!("all RPC endpoints failed: [{}]", summary.join(", "))
+    };
+
+    Err(SolanaRpcError::new(
+        SolanaRpcErrorKind::Unavailable,
+        Some(&method),
+        None,
+        None,
+        None,
+        detail,
+    ).into())
 }
 
 /// Make a batch RPC call (multiple requests in one HTTP request) with retry.
@@ -536,7 +729,50 @@ pub(super) fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
     use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn race_returns_fast_url_before_slow() {
+        let fast = MockServer::start_async().await;
+        let slow = MockServer::start_async().await;
+
+        let _mf = fast.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({ "jsonrpc": "2.0", "id": 1, "result": 42u64 }));
+        }).await;
+
+        let _ms = slow.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200)
+                .header("content-type", "application/json")
+                .delay(Duration::from_secs(2))
+                .json_body(json!({ "jsonrpc": "2.0", "id": 1, "result": 99u64 }));
+        }).await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getSomething",
+            params: json!([]),
+        };
+        let slow_url = slow.base_url();
+        let fast_url = fast.base_url();
+        // Slow first in the URL list — sequential would wait ~2 s for it.
+        let urls = vec![slow_url.as_str(), fast_url.as_str()];
+
+        let start = std::time::Instant::now();
+        let resp: RpcResponse<u64> = rpc_call_race(&client, &urls, &req).await.expect("race ok");
+        let elapsed = start.elapsed();
+
+        assert_eq!(resp.result, Some(42), "fast URL's result (42) should win");
+        assert!(elapsed < Duration::from_millis(500),
+            "race should return in < 500 ms, took {:?}", elapsed);
+    }
 
     #[test]
     fn rpc_urls_default_returns_all() {
