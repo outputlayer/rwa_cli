@@ -9,6 +9,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.6] — 2026-04-16
+
+### Performance
+- `rwa gm portfolio` now returns in ~1.2–1.7 s typical (previously 21–26 s). Read-only Solana RPC calls race across all configured endpoints in parallel instead of trying one at a time; the first successful response wins and the loser is aborted mid-flight. Writes (`sendTransaction`) still use the sequential strategy to avoid double-submission.
+- Side benefit: `rwa gm balance` and other read-heavy commands are faster under the same change.
+
+### Internal
+- New `RpcMode::{Sequential, Race}` enum on the RPC layer — every call-site explicitly picks a mode (compile-time safety against accidentally racing a write).
+- Per-URL timeout in race mode is 8 s (was 20 s in sequential mode), since a slow node is almost always beaten by a fast peer.
+
 ## [0.2.0] — 2026-03-29
 
 ### Breaking
