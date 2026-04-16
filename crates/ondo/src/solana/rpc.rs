@@ -56,7 +56,7 @@ pub(super) struct RpcRequest<'a> {
     pub params: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(super) struct RpcResponse<T> {
     pub result: Option<T>,
     pub error: Option<RpcError>,
@@ -799,6 +799,99 @@ mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn race_ignores_429_when_other_url_succeeds() {
+        let bad = MockServer::start_async().await;
+        let good = MockServer::start_async().await;
+
+        let _mb = bad.mock_async(|when, then| {
+            when.method(POST);
+            then.status(429).header("content-type", "application/json").body("rate limited");
+        }).await;
+
+        let _mg = good.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200).header("content-type", "application/json")
+                .json_body(json!({ "jsonrpc": "2.0", "id": 1, "result": "ok" }));
+        }).await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest { jsonrpc: "2.0", id: 1, method: "m", params: json!([]) };
+        let bad_url = bad.base_url();
+        let good_url = good.base_url();
+        let urls = vec![bad_url.as_str(), good_url.as_str()];
+
+        let resp: RpcResponse<String> = rpc_call_race(&client, &urls, &req).await.expect("race ok");
+        assert_eq!(resp.result.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn race_aggregates_errors_when_all_urls_fail() {
+        let a = MockServer::start_async().await;
+        let b = MockServer::start_async().await;
+
+        let _ma = a.mock_async(|when, then| { when.method(POST); then.status(500); }).await;
+        let _mb = b.mock_async(|when, then| { when.method(POST); then.status(500); }).await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest { jsonrpc: "2.0", id: 1, method: "m", params: json!([]) };
+        let a_url = a.base_url();
+        let b_url = b.base_url();
+        let urls = vec![a_url.as_str(), b_url.as_str()];
+
+        let err = rpc_call_race::<u64>(&client, &urls, &req).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("all RPC endpoints failed"), "msg={msg}");
+        assert!(msg.contains(&a_url), "should list first URL: {msg}");
+        assert!(msg.contains(&b_url), "should list second URL: {msg}");
+    }
+
+    #[tokio::test]
+    async fn race_with_single_url_behaves_like_sequential() {
+        let only = MockServer::start_async().await;
+
+        let _m = only.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200).json_body(json!({ "jsonrpc": "2.0", "id": 1, "result": 7u64 }));
+        }).await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest { jsonrpc: "2.0", id: 1, method: "m", params: json!([]) };
+        let only_url = only.base_url();
+        let urls = vec![only_url.as_str()];
+
+        let resp: RpcResponse<u64> = rpc_call_race(&client, &urls, &req).await.unwrap();
+        assert_eq!(resp.result, Some(7));
+    }
+
+    #[tokio::test]
+    async fn race_succeeds_when_peer_has_nonretryable_rpc_error() {
+        let bad = MockServer::start_async().await;
+        let good = MockServer::start_async().await;
+
+        let _mb = bad.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200).json_body(json!({
+                "jsonrpc": "2.0", "id": 1,
+                "error": { "code": -32601, "message": "Method not found" }
+            }));
+        }).await;
+
+        let _mg = good.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200).json_body(json!({ "jsonrpc": "2.0", "id": 1, "result": 42u64 }));
+        }).await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest { jsonrpc: "2.0", id: 1, method: "m", params: json!([]) };
+        let bad_url = bad.base_url();
+        let good_url = good.base_url();
+        let urls = vec![bad_url.as_str(), good_url.as_str()];
+
+        let resp: RpcResponse<u64> = rpc_call_race(&client, &urls, &req).await.unwrap();
+        assert_eq!(resp.result, Some(42));
+    }
 
     #[tokio::test]
     async fn batch_race_returns_fast_url_before_slow() {
