@@ -2,7 +2,7 @@ use eyre::{Result, eyre};
 
 use crate::wallet::Wallet;
 use crate::USDC_MINT;
-use super::rpc::rpc_call_simple;
+use super::rpc::{rpc_call_simple, RpcMode};
 use super::fee::get_priority_fee_for_accounts;
 use super::transaction::{
     TransactionResult, MessageHeader, Instruction,
@@ -257,6 +257,7 @@ async fn check_account_exists(address: &[u8], rpc_url: Option<&str>) -> Result<b
         "getAccountInfo",
         serde_json::json!([addr_str, { "encoding": "base64" }]),
         rpc_url,
+        RpcMode::Sequential,
     ).await?;
 
     Ok(result.get("value")
@@ -287,11 +288,13 @@ pub async fn get_empty_token_accounts(
             "getTokenAccountsByOwner",
             serde_json::json!([wallet, { "programId": super::TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
             rpc_url,
+            RpcMode::Sequential,
         ),
         rpc_call_simple::<GetTokenAccountsResult>(
             "getTokenAccountsByOwner",
             serde_json::json!([wallet, { "programId": TOKEN_PROGRAM_STR }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
             rpc_url,
+            RpcMode::Sequential,
         ),
     );
 
@@ -333,6 +336,7 @@ pub async fn get_empty_token_accounts(
             "getMultipleAccounts",
             serde_json::json!([addrs, { "encoding": "base64", "commitment": "confirmed" }]),
             rpc_url,
+            RpcMode::Sequential,
         ).await?;
 
         if let Some(values) = result.get("value").and_then(|v| v.as_array()) {

@@ -5,6 +5,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::HTTP;
 
+/// How to distribute RPC calls across the configured URLs.
+///
+/// `Sequential` tries one URL at a time in `LAST_GOOD_IDX` order, with up to
+/// 3 retries per URL (backoff between retries). First successful response wins.
+/// Use for writes (`sendTransaction`) and ordering-sensitive reads
+/// (`getLatestBlockhash` ahead of a signed tx).
+///
+/// `Race` fires all configured URLs in parallel and returns the first success.
+/// Losing in-flight requests are aborted. Use for any pure-read RPC method
+/// where the response is cluster-wide state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RpcMode {
+    Sequential,
+    #[allow(dead_code)] // Used from Task 5 onward — enabled now so Task 1 compiles clean.
+    Race,
+}
+
 /// Index of the last RPC URL that responded successfully.
 /// Subsequent calls start from this index, skipping known-dead endpoints.
 static LAST_GOOD_IDX: AtomicUsize = AtomicUsize::new(0);
@@ -156,10 +173,11 @@ impl std::fmt::Display for SolanaRpcErrorKind {
 impl std::error::Error for SolanaRpcError {}
 
 /// Simple RPC call: builds request, retries with URL rotation, extracts result.
-pub(crate) async fn rpc_call_simple<T: serde::de::DeserializeOwned>(
+pub(crate) async fn rpc_call_simple<T: serde::de::DeserializeOwned + Send + 'static>(
     method: &str,
     params: serde_json::Value,
     rpc_url: Option<&str>,
+    mode: RpcMode,
 ) -> Result<T> {
     let client = &*HTTP;
     let req = RpcRequest {
@@ -168,7 +186,12 @@ pub(crate) async fn rpc_call_simple<T: serde::de::DeserializeOwned>(
         method,
         params,
     };
-    let resp: RpcResponse<T> = rpc_call_with_retry(client, &rpc_urls(rpc_url), &req).await?;
+    let urls = rpc_urls(rpc_url);
+    let resp: RpcResponse<T> = match mode {
+        RpcMode::Sequential => rpc_call_with_retry(client, &urls, &req).await?,
+        // TEMP: race impl in Task 2 — still sequential so behavior is unchanged.
+        RpcMode::Race => rpc_call_with_retry(client, &urls, &req).await?,
+    };
     resp.result.ok_or_else(|| {
         SolanaRpcError::new(
             SolanaRpcErrorKind::EmptyResult,
@@ -329,6 +352,19 @@ async fn rpc_call_with_retry<T: serde::de::DeserializeOwned>(
 
 /// Make a batch RPC call (multiple requests in one HTTP request) with retry.
 pub(super) async fn rpc_batch_with_retry(
+    client: &reqwest::Client,
+    urls: &[&str],
+    reqs: &[RpcRequest<'_>],
+    mode: RpcMode,
+) -> Result<Vec<serde_json::Value>> {
+    match mode {
+        RpcMode::Sequential => rpc_batch_sequential(client, urls, reqs).await,
+        // TEMP: race impl in Task 3 — still sequential so behavior is unchanged.
+        RpcMode::Race => rpc_batch_sequential(client, urls, reqs).await,
+    }
+}
+
+async fn rpc_batch_sequential(
     client: &reqwest::Client,
     urls: &[&str],
     reqs: &[RpcRequest<'_>],

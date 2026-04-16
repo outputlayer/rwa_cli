@@ -1,7 +1,7 @@
 use eyre::Result;
 
 use crate::wallet::Wallet;
-use super::rpc::rpc_call_simple;
+use super::rpc::{rpc_call_simple, RpcMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionErrorKind {
@@ -234,6 +234,7 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
             "getSignatureStatuses",
             serde_json::json!([[signature], { "searchTransactionHistory": false }]),
             rpc_url,
+            RpcMode::Sequential,
         ).await
             && let Some(status) = result
                 .get("value")
@@ -291,6 +292,7 @@ async fn get_recent_blockhash(rpc_url: Option<&str>) -> Result<BlockhashInfo> {
         "getLatestBlockhash",
         serde_json::json!([{ "commitment": "confirmed" }]),
         rpc_url,
+        RpcMode::Sequential,
     ).await?;
 
     let hash_str = result["value"]["blockhash"]
@@ -332,6 +334,7 @@ async fn send_raw_transaction(tx_base64: &str, skip_preflight: bool, rpc_url: Op
             { "encoding": "base64", "skipPreflight": skip_preflight, "preflightCommitment": "confirmed" }
         ]),
         rpc_url,
+        RpcMode::Sequential,
     ).await
 }
 
@@ -345,6 +348,7 @@ async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
             { "encoding": "base64", "commitment": "confirmed", "replaceRecentBlockhash": true }
         ]),
         rpc_url,
+        RpcMode::Sequential,
     ).await?;
 
     // Check for simulation error
