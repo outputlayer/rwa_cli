@@ -234,7 +234,7 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
             "getSignatureStatuses",
             serde_json::json!([[signature], { "searchTransactionHistory": false }]),
             rpc_url,
-            RpcMode::Sequential,
+            RpcMode::Race,
         ).await
             && let Some(status) = result
                 .get("value")
@@ -348,7 +348,7 @@ async fn simulate_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<
             { "encoding": "base64", "commitment": "confirmed", "replaceRecentBlockhash": true }
         ]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await?;
 
     // Check for simulation error

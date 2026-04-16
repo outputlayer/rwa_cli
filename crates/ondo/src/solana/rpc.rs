@@ -18,7 +18,6 @@ use crate::HTTP;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RpcMode {
     Sequential,
-    #[allow(dead_code)] // First call-site flips to this in Task 5.
     Race,
 }
 

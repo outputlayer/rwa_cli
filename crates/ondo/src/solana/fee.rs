@@ -53,7 +53,7 @@ async fn fetch_priority_fee(writable_accounts: &[&str], rpc_url: Option<&str>) -
         "getRecentPrioritizationFees",
         params,
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await.unwrap_or_default();
     if entries.is_empty() {
         return Ok(0);
@@ -131,7 +131,7 @@ async fn get_rent_exempt_cached(data_size: u64, rpc_url: Option<&str>) -> u64 {
         "getMinimumBalanceForRentExemption",
         serde_json::json!([data_size]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await {
         if data_size == SPL_TOKEN_ACCOUNT_SIZE
             && let Ok(mut cache) = RENT_CACHE.lock()

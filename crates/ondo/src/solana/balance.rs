@@ -119,7 +119,7 @@ pub async fn get_sol_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result<
         "getBalance",
         serde_json::json!([wallet, { "commitment": "confirmed" }]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await?;
     Ok(result.value.to_string())
 }
@@ -137,7 +137,7 @@ pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result
         "getTokenAccountsByOwner",
         serde_json::json!([wallet, { "mint": USDC_MINT }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await?;
     let parsed = accounts.accounts();
     sum_matching_raw_amounts(&parsed, USDC_MINT)
@@ -240,7 +240,7 @@ pub async fn get_all_balances(
         "getTokenAccountsByOwner",
         serde_json::json!([wallet, { "programId": TOKEN_2022_PROGRAM }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await?;
     let mint_map = build_mint_map(tokens);
     Ok(parse_gm_balances(&accounts.accounts(), &mint_map))
@@ -256,7 +256,7 @@ pub async fn get_balance(
         "getTokenAccountsByOwner",
         serde_json::json!([wallet, { "mint": mint.as_ref() }, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
         rpc_url,
-        RpcMode::Sequential,
+        RpcMode::Race,
     ).await?;
 
     let parsed = accounts.accounts();
@@ -314,7 +314,7 @@ pub async fn get_portfolio_balances(
         },
     ];
 
-    let results = rpc_batch_with_retry(client, &urls, &reqs, RpcMode::Sequential).await?;
+    let results = rpc_batch_with_retry(client, &urls, &reqs, RpcMode::Race).await?;
 
     // Parse SOL + USDC from getMultipleAccounts
     let multi_resp: RpcResponse<GetMultipleAccountsResult> = serde_json::from_value(results[0].clone())
