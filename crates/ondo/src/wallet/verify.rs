@@ -271,12 +271,22 @@ fn parse_message(tx_bytes: &[u8]) -> Result<ParsedMessage> {
 // ── Verifier ──────────────────────────────────────────────────────────────
 
 fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
-    // Owner (signer) must be index 0 in v0/legacy messages — that's the fee payer
-    // and the wallet whose pubkey the ATAs are derived from.
-    let signer = msg
-        .account_key(0)
-        .ok_or(VerifyError::MalformedTransaction("no accounts".into()))?;
-    if signer != &expected.owner_pubkey {
+    // Owner must appear among the signers (account-keys range
+    // `[0..num_required_sigs)`), but is NOT required to be the fee payer at
+    // index 0. Jupiter Z (RFQ) puts the market maker at index 0 as fee payer,
+    // and Ultra gasless adds Jupiter as a secondary fee payer — in both cases
+    // the user is a signer at index 1+. We still require that the user signs
+    // the transaction (anything weaker would let an attacker forge a tx the
+    // user didn't authorize), and the input-transfer authority check below
+    // independently confirms the owner authorized the actual debit.
+    let n_signers = (msg.num_required_sigs as usize).min(msg.keys.len());
+    if n_signers == 0 {
+        return Err(VerifyError::MalformedTransaction("no signers".into()).into());
+    }
+    let owner_is_signer = msg.keys[..n_signers]
+        .iter()
+        .any(|k| k == &expected.owner_pubkey);
+    if !owner_is_signer {
         return Err(VerifyError::OwnerMismatch.into());
     }
 
@@ -807,6 +817,119 @@ mod tests {
             owner_pubkey: owner,
         };
         decode_and_verify(&b64, &expected).expect("extra unknown ix should be allowed");
+    }
+
+    // ── Gasless flow: external fee payer at index 0 ──────────────────────
+    //
+    // Jupiter Z (RFQ) and Ultra gasless make a market maker / Jupiter the fee
+    // payer at signer index 0; the user is a secondary signer at index 1.
+    // The verifier must accept this as long as the user is among the signers
+    // and authorizes the input transfer.
+
+    #[test]
+    fn accepts_gasless_with_external_fee_payer() {
+        let mm = filled(0xEE); // market maker / Jupiter, pays fees
+        let owner = filled(0x11);
+        let input_mint = filled(0x22);
+        let output_mint = filled(0x33);
+        let input_amount = 1_000_000u64;
+        let input_ata = derive_ata_pubkey(&owner, &input_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let output_ata = derive_ata_pubkey(&owner, &output_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let intermediate = filled(0x44);
+        let blockhash = filled(0x55);
+        let token_program = TOKEN_PROGRAM_ID;
+
+        // Account-keys layout:
+        //   [0] mm           (signer, writable, fee payer)
+        //   [1] owner        (signer, writable)
+        //   [2] input_ata    (writable, unsigned)
+        //   [3] intermediate (writable, unsigned)
+        //   [4] output_ata   (writable, unsigned)
+        //   [5] token_program (readonly, unsigned)
+        //   [6] mint         (readonly, unsigned)
+        let keys: Vec<[u8; 32]> = vec![
+            mm, owner, input_ata, intermediate, output_ata, token_program, input_mint,
+        ];
+        // Header: 2 required sigs (mm + owner), 0 readonly signed, 2 readonly unsigned.
+        let header = (2u8, 0u8, 2u8);
+
+        // TransferChecked: source=input_ata(2), mint(6), dest=intermediate(3), authority=owner(1)
+        let mut ix_data = vec![12u8];
+        ix_data.extend_from_slice(&input_amount.to_le_bytes());
+        ix_data.push(6);
+        let ix = ParsedInstruction {
+            program_id_index: 5,
+            account_indices: vec![2, 6, 3, 1],
+            data: ix_data,
+        };
+
+        let msg_bytes = serialize_v0_message(header, &keys, &blockhash, &[ix]);
+        let mut tx = Vec::new();
+        encode_compact_u16(2, &mut tx); // 2 sig slots — mm and owner
+        tx.extend_from_slice(&[0u8; 128]);
+        tx.extend_from_slice(&msg_bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount,
+            output_mint,
+            owner_pubkey: owner,
+        };
+        decode_and_verify(&b64, &expected)
+            .expect("gasless tx with mm as fee payer should verify");
+    }
+
+    // ── Gasless: still rejects when owner is not in signer set ───────────
+    //
+    // Even with a valid fee payer at index 0, if `owner_pubkey` does not
+    // appear among signers `[0..num_required_sigs)` we must refuse — that
+    // would mean the user never signed the transaction at all.
+
+    #[test]
+    fn gasless_rejects_when_owner_not_signer() {
+        let mm = filled(0xEE);
+        let attacker = filled(0xAA); // pretends to be a signer
+        let real_owner = filled(0x11); // expected, but absent from signer set
+        let input_mint = filled(0x22);
+        let output_mint = filled(0x33);
+        let input_amount = 1_000_000u64;
+        // Attacker constructs a tx where input ATA is theirs (not real_owner's)
+        // and tries to pass the user pubkey via ExpectedSwap.
+        let input_ata = derive_ata_pubkey(&attacker, &input_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let output_ata = derive_ata_pubkey(&attacker, &output_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let intermediate = filled(0x44);
+        let blockhash = filled(0x55);
+        let token_program = TOKEN_PROGRAM_ID;
+
+        // Signers: mm (fee payer, idx 0) + attacker (idx 1). real_owner is NOT here.
+        let keys: Vec<[u8; 32]> =
+            vec![mm, attacker, input_ata, intermediate, output_ata, token_program, input_mint];
+        let header = (2u8, 0u8, 2u8);
+
+        let mut ix_data = vec![12u8];
+        ix_data.extend_from_slice(&input_amount.to_le_bytes());
+        ix_data.push(6);
+        let ix = ParsedInstruction {
+            program_id_index: 5,
+            account_indices: vec![2, 6, 3, 1],
+            data: ix_data,
+        };
+
+        let msg_bytes = serialize_v0_message(header, &keys, &blockhash, &[ix]);
+        let mut tx = Vec::new();
+        encode_compact_u16(2, &mut tx);
+        tx.extend_from_slice(&[0u8; 128]);
+        tx.extend_from_slice(&msg_bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount,
+            output_mint,
+            owner_pubkey: real_owner,
+        };
+        assert_err_kind(decode_and_verify(&b64, &expected), VerifyError::OwnerMismatch);
     }
 
     // ── compact-u16 ──────────────────────────────────────────────────────

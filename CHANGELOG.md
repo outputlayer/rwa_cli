@@ -9,11 +9,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.2.7] — 2026-05-08 — Security hot-fix
+## [0.2.7] — 2026-05-09 — Security hot-fix
 
 ### Security
 
-- **Verify Jupiter swap instructions before signing.** `wallet::sign_jupiter_swap` now decodes the base64-encoded transaction returned by Jupiter and refuses to sign unless the on-chain instructions match the user's intent: input mint and amount, output mint, and signer (fee-payer = wallet pubkey). Compromised Jupiter API responses or MITM tampering on a custom RPC URL can no longer redirect funds to a third party. The check tolerates compute-budget and ALT-extend instructions; unknown extras are allowed but at least one SPL Token transfer/transfer_checked from our input ATA at the expected amount is required.
+- **Verify Jupiter swap instructions before signing.** `wallet::sign_jupiter_swap` now decodes the base64-encoded transaction returned by Jupiter and refuses to sign unless the on-chain instructions match the user's intent: input mint and amount, output mint, and signer (the wallet pubkey appears in the signer set). Compromised Jupiter API responses or MITM tampering on a custom RPC URL can no longer redirect funds to a third party. The verifier accepts both standard AMM transactions (user is fee payer at index 0) and gasless flows — Jupiter Z (RFQ, market maker pays gas) and Ultra gasless (Jupiter pays gas) — by searching for the wallet pubkey across all signer slots rather than requiring it at index 0. The input-transfer authority check independently confirms the wallet authorized the actual debit. The check tolerates compute-budget and ALT-extend instructions; unknown extras are allowed but at least one SPL Token transfer/transfer_checked from the wallet's input ATA at the expected amount is required.
 - **Wallet encryption is now the default.** `rwa keys generate` and `rwa keys import` write `key.age` (passphrase-encrypted) by default. Pass `--allow-plaintext` to opt out (with a stderr warning). Plaintext `key.json` files remain readable for backward compatibility, but `rwa keys show` now prints a deprecation warning when it detects one — encrypt with `rwa keys encrypt`.
 - **Minimum passphrase length enforced.** `prompt_new_passphrase` rejects passphrases shorter than 12 characters and rejects digits-only passphrases (low-entropy scrypt bypass). Existing encrypted wallets are unaffected.
 - **`RWA_PASSPHRASE` env warning.** When the passphrase is read from the `RWA_PASSPHRASE` environment variable, a one-time stderr warning is printed about leakage via shell history, `ps -E`, and core dumps. Prefer interactive prompt or a file-based mechanism for production setups.
