@@ -9,6 +9,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.7] — 2026-05-08 — Security hot-fix
+
+### Security
+
+- **Verify Jupiter swap instructions before signing.** `wallet::sign_jupiter_swap` now decodes the base64-encoded transaction returned by Jupiter and refuses to sign unless the on-chain instructions match the user's intent: input mint and amount, output mint, and signer (fee-payer = wallet pubkey). Compromised Jupiter API responses or MITM tampering on a custom RPC URL can no longer redirect funds to a third party. The check tolerates compute-budget and ALT-extend instructions; unknown extras are allowed but at least one SPL Token transfer/transfer_checked from our input ATA at the expected amount is required.
+- **Wallet encryption is now the default.** `rwa keys generate` and `rwa keys import` write `key.age` (passphrase-encrypted) by default. Pass `--allow-plaintext` to opt out (with a stderr warning). Plaintext `key.json` files remain readable for backward compatibility, but `rwa keys show` now prints a deprecation warning when it detects one — encrypt with `rwa keys encrypt`.
+- **Minimum passphrase length enforced.** `prompt_new_passphrase` rejects passphrases shorter than 12 characters and rejects digits-only passphrases (low-entropy scrypt bypass). Existing encrypted wallets are unaffected.
+- **`RWA_PASSPHRASE` env warning.** When the passphrase is read from the `RWA_PASSPHRASE` environment variable, a one-time stderr warning is printed about leakage via shell history, `ps -E`, and core dumps. Prefer interactive prompt or a file-based mechanism for production setups.
+
+### Internal
+
+- New `crates/ondo/src/wallet/verify.rs` module with `ExpectedSwap`, `decode_and_verify`, and `VerifyError`. Tolerant V0 + legacy message parser; positive ATA verification for both Token and Token-2022 programs.
+- `wallet.rs` reorganized as `wallet/` directory module to host the `verify` submodule.
+- `jupiter::execute_order`, `execute_managed_order`, and `execute_metis_order` take `&ExpectedSwap` and route through the new `sign_jupiter_swap` wrapper. The generic `wallet::sign_transaction` is unchanged and continues to back the `transfer_sol`/`transfer_spl` paths that don't go through Jupiter.
+- 11 new tests in `wallet::verify::tests` (parser-level reject scenarios + happy path) and 2 integration tests in `wallet::tests` (`sign_jupiter_swap_signs_when_intent_matches`, `sign_jupiter_swap_refuses_amount_mismatch`).
+
+### Tests
+
+- Workspace test count: 234 → 236 (190 in v0.2.6 → 236 here, +46 across security work). All paths through `execute_with_retry` (single buy/sell, basket buy/sell, close-all sequential/parallel) are covered by the verifier.
+
+### Notes for users
+
+- If you have automation that relied on `rwa keys generate` writing plaintext `key.json` without flags, add `--allow-plaintext` to keep that behaviour, or migrate to encrypted keys (`--encrypt` is now the default).
+- The deprecated `--encrypt` flag still works but is hidden from `--help` and prints a deprecation note.
+
+---
+
 ## [0.2.6] — 2026-04-16
 
 ### Performance
