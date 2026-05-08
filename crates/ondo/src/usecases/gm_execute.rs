@@ -1,7 +1,8 @@
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, jupiter, wallet};
 use crate::types::Mint;
+use crate::wallet::ExpectedSwap;
 use super::gm::{SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS};
 use super::gm_internal::{get_order_checked, MAX_SWAP_RETRIES};
 
@@ -123,9 +124,21 @@ pub(crate) async fn execute_with_retry(
     let mut current_order_owned: Option<jupiter::OrderResponse> = None;
     let mut last_err = None;
 
+    let raw_amount: u64 = params
+        .raw_amount
+        .parse()
+        .map_err(|_| eyre!("Invalid raw amount: {}", params.raw_amount))?;
+    let expected = ExpectedSwap::from_base58(
+        params.input_mint,
+        raw_amount,
+        params.output_mint,
+        params.taker,
+    )
+    .wrap_err("failed to build ExpectedSwap for instruction verification")?;
+
     for attempt in 0..=MAX_SWAP_RETRIES {
         let ord = current_order_owned.as_ref().unwrap_or(order);
-        let execute_result = jupiter::execute_order(wallet, ord).await;
+        let execute_result = jupiter::execute_order(wallet, ord, &expected).await;
         match execute_result {
             Ok(resp) => return Ok(resp),
             Err(e) => {

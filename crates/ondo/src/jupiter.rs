@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::solana;
-use crate::wallet::Wallet;
+use crate::wallet::{ExpectedSwap, Wallet};
 use crate::HTTP;
 
 const SWAP_V2_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v2";
@@ -561,23 +561,36 @@ async fn get_metis_order(
 }
 
 /// Sign and execute a swap via the backend that produced the order.
-pub async fn execute_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+///
+/// `expected` describes what the caller intends to swap; before signing, the
+/// wallet decodes the Jupiter-supplied transaction and refuses to sign if it
+/// doesn't match the intent (wrong mint, wrong amount, foreign recipient).
+pub async fn execute_order(
+    wallet: &Wallet,
+    order: &OrderResponse,
+    expected: &ExpectedSwap,
+) -> Result<ExecuteResponse> {
     let _permit = EXECUTE_SEMAPHORE.acquire().await
         .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
     match order.backend {
-        OrderBackend::SwapV2Lite => execute_managed_order(wallet, order, SWAP_V2_LITE_API_BASE).await,
-        OrderBackend::Ultra => execute_managed_order(wallet, order, ULTRA_API_BASE).await,
-        OrderBackend::UltraLite => execute_managed_order(wallet, order, ULTRA_LITE_API_BASE).await,
-        OrderBackend::MetisV1Lite => execute_metis_order(wallet, order).await,
+        OrderBackend::SwapV2Lite => execute_managed_order(wallet, order, expected, SWAP_V2_LITE_API_BASE).await,
+        OrderBackend::Ultra => execute_managed_order(wallet, order, expected, ULTRA_API_BASE).await,
+        OrderBackend::UltraLite => execute_managed_order(wallet, order, expected, ULTRA_LITE_API_BASE).await,
+        OrderBackend::MetisV1Lite => execute_metis_order(wallet, order, expected).await,
     }
 }
 
-async fn execute_managed_order(wallet: &Wallet, order: &OrderResponse, base_url: &str) -> Result<ExecuteResponse> {
+async fn execute_managed_order(
+    wallet: &Wallet,
+    order: &OrderResponse,
+    expected: &ExpectedSwap,
+    base_url: &str,
+) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
-    let signed_tx = wallet.sign_transaction(tx_b64)
+    let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
 
     let req = ExecuteRequest {
@@ -607,13 +620,17 @@ async fn execute_managed_order(wallet: &Wallet, order: &OrderResponse, base_url:
     Ok(resp)
 }
 
-async fn execute_metis_order(wallet: &Wallet, order: &OrderResponse) -> Result<ExecuteResponse> {
+async fn execute_metis_order(
+    wallet: &Wallet,
+    order: &OrderResponse,
+    expected: &ExpectedSwap,
+) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
     let signed_tx = wallet
-        .sign_transaction(tx_b64)
+        .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;
     let tx = solana::send_signed_transaction(&signed_tx, None).await?;
     Ok(ExecuteResponse {

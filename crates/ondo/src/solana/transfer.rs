@@ -14,12 +14,14 @@ use super::balance::GetTokenAccountsResult;
 /// System Program ID (for SOL transfers)
 const SYSTEM_PROGRAM: [u8; 32] = [0; 32];
 /// SPL Token Program ID (for USDC)
-pub(super) const TOKEN_PROGRAM: [u8; 32] = [
+pub(crate) const TOKEN_PROGRAM: [u8; 32] = [
     6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172,
     28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
 ];
+/// SPL Token Program ID (re-exported for callers outside `solana`).
+pub const TOKEN_PROGRAM_ID: [u8; 32] = TOKEN_PROGRAM;
 /// SPL Token-2022 Program ID (for GM tokens)
-const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
+pub const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
     6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218,
     182, 26, 252, 77, 131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
 ];
@@ -214,6 +216,17 @@ pub async fn transfer_spl(
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
     }
+}
+
+/// Derive an Associated Token Account address from raw 32-byte pubkeys.
+///
+/// `owner` and `mint` are 32-byte Solana pubkeys; `token_program` is either
+/// the SPL Token or Token-2022 program id. Returns the 32-byte ATA pubkey.
+pub fn derive_ata_pubkey(owner: &[u8; 32], mint: &[u8; 32], token_program: &[u8; 32]) -> Result<[u8; 32]> {
+    let v = derive_ata(owner.as_slice(), mint.as_slice(), token_program)?;
+    let arr: [u8; 32] = v.as_slice().try_into()
+        .map_err(|_| eyre!("derived ATA wrong length"))?;
+    Ok(arr)
 }
 
 /// Derive Associated Token Account address.

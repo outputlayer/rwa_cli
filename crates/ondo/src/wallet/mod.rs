@@ -1,3 +1,7 @@
+pub mod verify;
+
+pub use verify::{decode_and_verify, ExpectedSwap, VerifyError};
+
 use age::secrecy::Secret;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use eyre::{Result, eyre};
@@ -245,6 +249,17 @@ impl Wallet {
     /// Access the signing key for building raw transactions.
     pub fn signing_key(&self) -> &SigningKey {
         &self.signing_key
+    }
+
+    /// Sign a Jupiter swap transaction after verifying its instructions
+    /// match the caller's intent.
+    ///
+    /// Refuses to sign — without ever touching the signing key — if the tx
+    /// debits the wrong mint, wrong amount, or routes to an ATA we don't own.
+    /// This is the last line of defence against a compromised quote endpoint.
+    pub fn sign_jupiter_swap(&self, tx_base64: &str, expected: &ExpectedSwap) -> Result<String> {
+        verify::decode_and_verify(tx_base64, expected)?;
+        self.sign_transaction(tx_base64)
     }
 
     /// Sign a serialized Solana transaction (legacy or versioned).
@@ -532,6 +547,118 @@ mod tests {
             restored.signing_key().as_bytes(),
             "decrypted wallet must have identical secret key bytes"
         );
+    }
+
+    // ── sign_jupiter_swap (verifies-then-signs wrapper) ──────────────────
+
+    /// Builds a v0 Solana transaction that debits `amount` from
+    /// ATA(wallet, input_mint) into a writable ATA(wallet, output_mint).
+    /// Returns the base64 transaction. Mirrors the test fixture in
+    /// `verify::tests` but parameterised on the real wallet pubkey.
+    fn build_jupiter_like_tx(
+        owner: &[u8; 32],
+        input_mint: &[u8; 32],
+        output_mint: &[u8; 32],
+        amount: u64,
+    ) -> String {
+        use crate::solana::{TOKEN_PROGRAM_ID, derive_ata_pubkey};
+        use base64::Engine;
+
+        let input_ata = derive_ata_pubkey(owner, input_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let output_ata = derive_ata_pubkey(owner, output_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let intermediate = [0x44u8; 32];
+        let blockhash = [0x55u8; 32];
+
+        let keys: Vec<[u8; 32]> = vec![
+            *owner,
+            input_ata,
+            intermediate,
+            output_ata,
+            TOKEN_PROGRAM_ID,
+            *input_mint,
+        ];
+
+        let mut msg = vec![0x80u8, 1, 0, 2];
+        encode_compact_u16_test(keys.len() as u16, &mut msg);
+        for k in &keys {
+            msg.extend_from_slice(k);
+        }
+        msg.extend_from_slice(&blockhash);
+        encode_compact_u16_test(1, &mut msg);
+        msg.push(4); // program_id_index = TOKEN_PROGRAM_ID
+        encode_compact_u16_test(4, &mut msg); // 4 account indices
+        msg.extend_from_slice(&[1u8, 5, 2, 0]); // source, mint, dest, authority
+
+        let mut ix_data = vec![12u8]; // TransferChecked
+        ix_data.extend_from_slice(&amount.to_le_bytes());
+        ix_data.push(6); // decimals
+        encode_compact_u16_test(ix_data.len() as u16, &mut msg);
+        msg.extend_from_slice(&ix_data);
+        // Zero ALTs.
+        encode_compact_u16_test(0, &mut msg);
+
+        let mut tx = Vec::new();
+        encode_compact_u16_test(1, &mut tx); // 1 sig slot
+        tx.extend_from_slice(&[0u8; 64]);
+        tx.extend_from_slice(&msg);
+        base64::engine::general_purpose::STANDARD.encode(&tx)
+    }
+
+    fn encode_compact_u16_test(val: u16, out: &mut Vec<u8>) {
+        if val < 0x80 {
+            out.push(val as u8);
+        } else if val < 0x4000 {
+            out.push((val & 0x7f) as u8 | 0x80);
+            out.push((val >> 7) as u8);
+        } else {
+            out.push((val & 0x7f) as u8 | 0x80);
+            out.push(((val >> 7) & 0x7f) as u8 | 0x80);
+            out.push((val >> 14) as u8);
+        }
+    }
+
+    #[test]
+    fn sign_jupiter_swap_signs_when_intent_matches() {
+        let w = Wallet::generate();
+        let owner_bytes: [u8; 32] = bs58::decode(w.pubkey()).into_vec().unwrap().try_into().unwrap();
+        let input_mint = [0x22u8; 32];
+        let output_mint = [0x33u8; 32];
+        let amount = 1_000_000u64;
+        let tx = build_jupiter_like_tx(&owner_bytes, &input_mint, &output_mint, amount);
+
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount: amount,
+            output_mint,
+            owner_pubkey: owner_bytes,
+        };
+        let signed = w.sign_jupiter_swap(&tx, &expected)
+            .expect("legitimate Jupiter-shaped tx should be signed");
+        // Signed tx must differ from the unsigned input (signature slot now non-zero).
+        assert_ne!(signed, tx);
+    }
+
+    #[test]
+    fn sign_jupiter_swap_refuses_amount_mismatch() {
+        let w = Wallet::generate();
+        let owner_bytes: [u8; 32] = bs58::decode(w.pubkey()).into_vec().unwrap().try_into().unwrap();
+        let input_mint = [0x22u8; 32];
+        let output_mint = [0x33u8; 32];
+        let amount = 1_000_000u64;
+        let tx = build_jupiter_like_tx(&owner_bytes, &input_mint, &output_mint, amount);
+
+        // Caller expects half the amount → wallet must refuse to sign.
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount: amount / 2,
+            output_mint,
+            owner_pubkey: owner_bytes,
+        };
+        let result = w.sign_jupiter_swap(&tx, &expected);
+        assert!(result.is_err(), "amount mismatch must abort signing");
+        let err = result.unwrap_err();
+        let kind = err.downcast_ref::<VerifyError>().expect("structured VerifyError");
+        assert!(matches!(kind, VerifyError::InputAmountMismatch { .. }));
     }
 
     #[test]
