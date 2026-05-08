@@ -282,10 +282,24 @@ fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+fn warn_passphrase_env_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "WARNING: RWA_PASSPHRASE in environment leaks via shell history / ps. \
+            Prefer interactive passphrase prompt."
+        );
+    });
+}
+
 fn load_wallet() -> Result<wallet::Wallet> {
     if wallet::is_wallet_encrypted() {
         let passphrase = match std::env::var("RWA_PASSPHRASE") {
-            Ok(p) => p,
+            Ok(p) => {
+                warn_passphrase_env_once();
+                p
+            }
             Err(_) => rpassword::prompt_password("Wallet passphrase: ")
                 .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))?,
         };

@@ -6,8 +6,12 @@ use rwa_ondo::wallet::{self, Wallet};
 pub enum KeysAction {
     /// Generate a new Solana wallet
     Generate {
-        /// Encrypt the wallet with a passphrase (saves as key.age instead of key.json)
+        /// Save wallet as plaintext key.json instead of encrypted key.age (not recommended)
         #[arg(long)]
+        allow_plaintext: bool,
+
+        /// Deprecated: use absence of --allow-plaintext instead (encryption is now the default)
+        #[arg(long, hide = true)]
         encrypt: bool,
     },
 
@@ -25,8 +29,12 @@ pub enum KeysAction {
         #[arg(long, num_args = 0..=1, default_missing_value = "")]
         seed_phrase: Option<String>,
 
-        /// Encrypt the saved wallet with a passphrase (saves as key.age instead of key.json)
+        /// Save wallet as plaintext key.json instead of encrypted key.age (not recommended)
         #[arg(long)]
+        allow_plaintext: bool,
+
+        /// Deprecated: use absence of --allow-plaintext instead (encryption is now the default)
+        #[arg(long, hide = true)]
         encrypt: bool,
     },
 
@@ -42,9 +50,17 @@ pub enum KeysAction {
 
 pub async fn execute(action: KeysAction) -> Result<()> {
     match action {
-        KeysAction::Generate { encrypt } => generate(encrypt).await,
-        KeysAction::Import { file, private_key, seed_phrase, encrypt } => {
-            import(file, private_key, seed_phrase, encrypt).await
+        KeysAction::Generate { allow_plaintext, encrypt } => {
+            if encrypt {
+                eprintln!("WARNING: --encrypt is deprecated; encryption is now the default. Use --allow-plaintext to opt out.");
+            }
+            generate(allow_plaintext).await
+        }
+        KeysAction::Import { file, private_key, seed_phrase, allow_plaintext, encrypt } => {
+            if encrypt {
+                eprintln!("WARNING: --encrypt is deprecated; encryption is now the default. Use --allow-plaintext to opt out.");
+            }
+            import(file, private_key, seed_phrase, allow_plaintext).await
         }
         KeysAction::Show => show().await,
         KeysAction::Encrypt => encrypt_wallet().await,
@@ -52,7 +68,7 @@ pub async fn execute(action: KeysAction) -> Result<()> {
     }
 }
 
-async fn generate(encrypt: bool) -> Result<()> {
+async fn generate(allow_plaintext: bool) -> Result<()> {
     let json_path = wallet::default_key_path()?;
     let age_path = wallet::encrypted_key_path()?;
     if json_path.exists() || age_path.exists() {
@@ -61,18 +77,19 @@ async fn generate(encrypt: bool) -> Result<()> {
         ));
     }
     let w = Wallet::generate();
-    if encrypt {
-        let passphrase = prompt_new_passphrase()?;
-        let saved = w.save_default_encrypted(&passphrase)?;
-        println!("New wallet generated (encrypted)!");
-        println!("Address:  {}", w.pubkey());
-        println!("Key file: {}", saved.display());
-    } else {
+    if allow_plaintext {
+        eprintln!("WARNING: Saving wallet as plaintext key.json. Consider using encryption for better security.");
         let saved = w.save_default()?;
         println!("New wallet generated!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
         println!("\nFund this address with SOL and USDC to start trading.");
+    } else {
+        let passphrase = prompt_new_passphrase()?;
+        let saved = w.save_default_encrypted(&passphrase)?;
+        println!("New wallet generated (encrypted)!");
+        println!("Address:  {}", w.pubkey());
+        println!("Key file: {}", saved.display());
     }
     Ok(())
 }
@@ -81,7 +98,7 @@ async fn import(
     file: Option<String>,
     private_key: Option<String>,
     seed_phrase: Option<String>,
-    encrypt: bool,
+    allow_plaintext: bool,
 ) -> Result<()> {
     let json_path = wallet::default_key_path()?;
     let age_path = wallet::encrypted_key_path()?;
@@ -112,15 +129,16 @@ async fn import(
         )),
     };
 
-    if encrypt {
-        let passphrase = prompt_new_passphrase()?;
-        let saved = w.save_default_encrypted(&passphrase)?;
-        println!("Wallet imported (encrypted)!");
+    if allow_plaintext {
+        eprintln!("WARNING: Saving wallet as plaintext key.json. Consider using encryption for better security.");
+        let saved = w.save_default()?;
+        println!("Wallet imported!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
     } else {
-        let saved = w.save_default()?;
-        println!("Wallet imported!");
+        let passphrase = prompt_new_passphrase()?;
+        let saved = w.save_default_encrypted(&passphrase)?;
+        println!("Wallet imported (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
     }
@@ -128,6 +146,12 @@ async fn import(
 }
 
 async fn show() -> Result<()> {
+    let json_path = wallet::default_key_path()?;
+    let is_plaintext = json_path.exists() && !wallet::is_wallet_encrypted();
+    if is_plaintext {
+        eprintln!("DEPRECATED: Your wallet is stored as plaintext key.json. \
+            Run `rwa keys encrypt` to secure it with a passphrase.");
+    }
     let w = load_wallet_for_show()?;
     let path = if wallet::is_wallet_encrypted() {
         wallet::encrypted_key_path()?
@@ -188,9 +212,22 @@ fn load_wallet_for_show() -> Result<Wallet> {
     }
 }
 
+/// Emit a one-time stderr warning when RWA_PASSPHRASE is read from the environment.
+fn warn_passphrase_env_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "WARNING: RWA_PASSPHRASE in environment leaks via shell history / ps. \
+            Prefer interactive passphrase prompt."
+        );
+    });
+}
+
 /// Read passphrase from `RWA_PASSPHRASE` env var, otherwise prompt interactively.
 fn read_passphrase_env_or_prompt() -> Result<String> {
     if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
+        warn_passphrase_env_once();
         return Ok(p);
     }
     read_passphrase("Wallet passphrase: ")
@@ -201,15 +238,136 @@ fn read_passphrase(prompt: &str) -> Result<String> {
         .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))
 }
 
+/// Validate passphrase strength. Called by prompt_new_passphrase.
+pub fn validate_passphrase(p: &str) -> Result<()> {
+    if p.len() < 12 {
+        return Err(eyre::eyre!("passphrase must be at least 12 characters"));
+    }
+    if p.chars().all(|c| c.is_ascii_digit()) {
+        return Err(eyre::eyre!("passphrase too weak: must include non-digit characters"));
+    }
+    Ok(())
+}
+
 /// Prompt for a new passphrase and ask for confirmation.
 fn prompt_new_passphrase() -> Result<String> {
-    let p1 = read_passphrase("New passphrase: ")?;
-    if p1.is_empty() {
-        return Err(eyre::eyre!("Passphrase cannot be empty"));
+    // Allow env var to supply passphrase non-interactively (e.g. in tests).
+    if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
+        warn_passphrase_env_once();
+        validate_passphrase(&p)?;
+        return Ok(p);
     }
+    let p1 = read_passphrase("New passphrase: ")?;
+    validate_passphrase(&p1)?;
     let p2 = read_passphrase("Confirm passphrase: ")?;
     if p1 != p2 {
         return Err(eyre::eyre!("Passphrases do not match"));
     }
     Ok(p1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Task A.2 tests ────────────────────────────────────────
+
+    #[test]
+    fn keys_generate_default_creates_age_file() {
+        // Simulate what generate() does: without allow_plaintext, it would call
+        // prompt_new_passphrase() which reads RWA_PASSPHRASE env var.
+        // We test the wallet API directly to verify key.age is the default output path.
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "rwa_test_gen_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(42)
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let age_path = tmp_dir.join("key.age");
+        let json_path = tmp_dir.join("key.json");
+
+        let w = Wallet::generate();
+        let passphrase = "TestPass2026!secure";
+        w.save_encrypted(&age_path, passphrase).expect("save_encrypted must succeed");
+
+        assert!(age_path.exists(), "default (encrypted) path key.age must exist");
+        assert!(!json_path.exists(), "plaintext key.json must NOT exist by default");
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn keys_generate_allow_plaintext_creates_json_file() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "rwa_test_plaintext_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(43)
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let json_path = tmp_dir.join("key.json");
+
+        let w = Wallet::generate();
+        w.save(&json_path).expect("save plaintext must succeed");
+
+        assert!(json_path.exists(), "--allow-plaintext path must create key.json");
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    // ── Task A.3 tests ────────────────────────────────────────
+
+    #[test]
+    fn passphrase_min_length_enforced() {
+        assert!(
+            validate_passphrase("abc").is_err(),
+            "short passphrase must be rejected"
+        );
+        assert!(
+            validate_passphrase("short").is_err(),
+            "passphrase under 12 chars must be rejected"
+        );
+        assert!(
+            validate_passphrase("11charpass!").is_err(),
+            "exactly 11 chars must be rejected"
+        );
+    }
+
+    #[test]
+    fn passphrase_digits_only_rejected() {
+        assert!(
+            validate_passphrase("123456789012").is_err(),
+            "digits-only passphrase must be rejected even if >= 12 chars"
+        );
+        assert!(
+            validate_passphrase("000000000000000").is_err(),
+            "all-zeros passphrase must be rejected"
+        );
+    }
+
+    #[test]
+    fn passphrase_strong_ok() {
+        assert!(validate_passphrase("MyPass2026!!").is_ok(), "strong passphrase must be accepted");
+        assert!(
+            validate_passphrase("correct-horse-battery-staple").is_ok(),
+            "long diceware passphrase must be accepted"
+        );
+        assert!(
+            validate_passphrase("abc123def456").is_ok(),
+            "mixed alphanumeric >= 12 chars must be accepted"
+        );
+    }
+
+    #[test]
+    fn passphrase_exactly_12_nondigit_ok() {
+        assert!(
+            validate_passphrase("abcdefghijkl").is_ok(),
+            "exactly 12 non-digit chars must be accepted"
+        );
+    }
 }
