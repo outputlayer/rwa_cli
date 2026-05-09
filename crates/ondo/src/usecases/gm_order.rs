@@ -71,7 +71,7 @@ pub async fn fetch_sell_order_by_symbol(
             return Err(eyre!("Percentage must be 0–100, got {amount_str}"));
         }
         let raw: u128 = bal.raw_amount.parse().map_err(|_| eyre!("Invalid balance"))?;
-        let scaled = ((raw as f64) * pct / 100.0).round() as u128;
+        let scaled = amounts::pct_of_u128(raw, pct);
         (
             amounts::format_amount(&scaled.to_string(), gm_dec),
             scaled.to_string(),
