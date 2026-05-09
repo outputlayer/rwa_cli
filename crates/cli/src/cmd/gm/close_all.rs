@@ -1,7 +1,257 @@
 use eyre::Result;
 use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinSet;
 
 use super::*;
+
+/// A tradable, non-tiny position pre-filtered for closing.
+struct CloseCandidate {
+    symbol: String,
+    mint: String,
+    sell_raw: String,
+    sell_display: String,
+}
+
+/// Filter phase: from raw balances to (candidates, skipped[]).
+/// Used by both real-execution and dry-run paths.
+fn filter_close_items(
+    balances: &[solana::SolanaTokenBalance],
+    sell_pct: f64,
+    assets: &[api::OndoAsset],
+    tradable_set: &std::collections::HashSet<String>,
+    json: bool,
+) -> Result<(Vec<CloseCandidate>, Vec<CloseSkipJson>)> {
+    let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
+
+    for tb in balances {
+        let sell_raw = if sell_pct < 100.0 {
+            let raw: u128 = tb.raw_amount.parse().map_err(|_| {
+                eyre::eyre!(
+                    "Invalid on-chain amount for {}: {}",
+                    tb.symbol,
+                    tb.raw_amount
+                )
+            })?;
+            let partial = amounts::pct_of_u128(raw, sell_pct);
+            if partial == 0 {
+                continue;
+            }
+            partial.to_string()
+        } else {
+            tb.raw_amount.clone()
+        };
+
+        let sell_balance = if sell_pct < 100.0 {
+            tb.balance * sell_pct / 100.0
+        } else {
+            tb.balance
+        };
+        let est_value = match api::market_snapshot_for_symbol(&tb.symbol, assets) {
+            Ok((price, _)) => sell_balance * price,
+            Err(_) => {
+                if !json {
+                    eprintln!("  Skipping {} — market data unavailable", tb.symbol);
+                }
+                skipped.push(CloseSkipJson {
+                    token: tb.symbol.clone(),
+                    estimated_usd: 0.0,
+                    reason: "market data unavailable",
+                });
+                continue;
+            }
+        };
+
+        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, tradable_set) {
+            if !json {
+                eprintln!("  Skipping {} — {}", skip.token, skip.reason);
+            }
+            skipped.push(CloseSkipJson {
+                token: skip.token,
+                estimated_usd: skip.estimated_usd,
+                reason: skip.reason,
+            });
+            continue;
+        }
+
+        let sell_display = amounts::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
+        candidates.push(CloseCandidate {
+            symbol: tb.symbol.clone(),
+            mint: tb.mint.to_string(),
+            sell_raw,
+            sell_display,
+        });
+    }
+
+    Ok((candidates, skipped))
+}
+
+/// Per-item processor: fetch a sell order and execute it.
+async fn process_close_item(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    candidate: CloseCandidate,
+    json: bool,
+) -> std::result::Result<(CloseItemJson, f64), CloseFailJson> {
+    let order = match usecases::gm::fetch_sell_order(
+        &candidate.symbol,
+        &candidate.mint,
+        &candidate.sell_raw,
+        &taker,
+        json,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", candidate.symbol, e);
+            }
+            return Err(CloseFailJson {
+                token: candidate.symbol,
+                error: e.to_string(),
+            });
+        }
+    };
+    let display = order.display_amount.clone();
+
+    match usecases::gm::execute_sell_from_order(&wallet, order, json).await {
+        Ok(exec) => {
+            // output_amount is produced by amounts::format_amount and is always a valid f64
+            let usdc_f: f64 = exec
+                .output_amount
+                .parse()
+                .expect("format_amount produces valid f64");
+            let tx = solscan_tx_url(&exec.signature);
+            if !json {
+                println!(
+                    "  ✓ {} {} → {} USDC  tx: {}",
+                    display, candidate.symbol, exec.output_amount, tx
+                );
+            }
+            Ok((
+                CloseItemJson {
+                    token: candidate.symbol,
+                    amount: display,
+                    usdc: exec.output_amount,
+                    tx,
+                },
+                usdc_f,
+            ))
+        }
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", candidate.symbol, e);
+            }
+            Err(CloseFailJson {
+                token: candidate.symbol,
+                error: e.to_string(),
+            })
+        }
+    }
+}
+
+/// Orchestrate close: sequential (with 3s delay) or parallel (JoinSet).
+async fn run_close_items(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    candidates: Vec<CloseCandidate>,
+    parallel: bool,
+    json: bool,
+) -> (Vec<CloseItemJson>, Vec<CloseFailJson>, f64) {
+    let mut sold: Vec<CloseItemJson> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+    let mut total: f64 = 0.0;
+
+    if parallel {
+        if !json {
+            println!("Processing {} positions in parallel...", candidates.len());
+        }
+        let mut joinset: JoinSet<std::result::Result<(CloseItemJson, f64), CloseFailJson>> =
+            JoinSet::new();
+        for c in candidates {
+            let w = wallet.clone();
+            let tk = taker.clone();
+            joinset.spawn(async move { process_close_item(w, tk, c, json).await });
+        }
+        while let Some(res) = joinset.join_next().await {
+            match res {
+                Ok(Ok((item, value))) => {
+                    sold.push(item);
+                    total += value;
+                }
+                Ok(Err(fail)) => failed.push(fail),
+                Err(e) => {
+                    if !json {
+                        eprintln!("  ✗ join error: {}", e);
+                    }
+                }
+            }
+        }
+    } else {
+        for (i, c) in candidates.into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            if !json {
+                println!("Selling {} {} ...", c.sell_display, c.symbol);
+            }
+            match process_close_item(wallet.clone(), taker.clone(), c, json).await {
+                Ok((item, value)) => {
+                    sold.push(item);
+                    total += value;
+                }
+                Err(fail) => failed.push(fail),
+            }
+        }
+    }
+
+    (sold, failed, total)
+}
+
+/// Dry-run: fetch-only, no execute. Sequential (Jupiter rate-limit conservatism).
+async fn run_close_dry_run(
+    taker: &str,
+    candidates: Vec<CloseCandidate>,
+    json: bool,
+) -> (Vec<CloseItemJson>, Vec<CloseFailJson>) {
+    let mut sold = Vec::new();
+    let mut failed = Vec::new();
+
+    for c in candidates {
+        match usecases::gm::fetch_sell_order(&c.symbol, &c.mint, &c.sell_raw, taker, json).await {
+            Ok(order) => {
+                let quoted_usdc =
+                    amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS);
+                if !json {
+                    println!(
+                        "  [DRY RUN] Would sell {} {} -> ~{} USDC",
+                        c.sell_display, c.symbol, quoted_usdc
+                    );
+                }
+                sold.push(CloseItemJson {
+                    token: c.symbol,
+                    amount: c.sell_display,
+                    usdc: quoted_usdc,
+                    tx: String::new(),
+                });
+            }
+            Err(e) => {
+                if !json {
+                    eprintln!("  [DRY RUN] ✗ {} — {}", c.symbol, e);
+                }
+                failed.push(CloseFailJson {
+                    token: c.symbol,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    (sold, failed)
+}
 
 pub async fn close_all(
     amount: Option<&str>,
@@ -74,137 +324,30 @@ pub async fn close_all(
         usecases::gm::ensure_trading_open()?;
     }
 
-    let mut sold = Vec::new();
-    let mut failed = Vec::new();
-    let mut skipped = Vec::new();
-    let mut total_usdc: f64 = 0.0;
+    let (candidates, skipped) =
+        filter_close_items(&balances, sell_pct, &assets, &tradable_set, json)?;
 
-    if parallel && !dry_run {
-        return close_all_parallel(
-            w, taker, balances, assets, tradable_set,
-            sell_pct, json,
-        ).await;
-    }
-
-    for (i, tb) in balances.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        }
-
-        let sell_raw = if sell_pct < 100.0 {
-            let raw: u128 = tb.raw_amount.parse().map_err(|_| {
-                eyre::eyre!(
-                    "Invalid on-chain amount for {}: {}",
-                    tb.symbol,
-                    tb.raw_amount
-                )
-            })?;
-            let partial = amounts::pct_of_u128(raw, sell_pct);
-            if partial == 0 {
-                continue;
-            }
-            partial.to_string()
-        } else {
-            tb.raw_amount.clone()
-        };
-
-        let sell_balance = if sell_pct < 100.0 {
-            tb.balance * sell_pct / 100.0
-        } else {
-            tb.balance
-        };
-        let est_value = match api::market_snapshot_for_symbol(&tb.symbol, &assets) {
-            Ok((price, _)) => sell_balance * price,
-            Err(_) => {
-                if !json {
-                    eprintln!("  Skipping {} — market data unavailable", tb.symbol);
-                }
-                skipped.push(CloseSkipJson {
-                    token: tb.symbol.clone(),
-                    estimated_usd: 0.0,
-                    reason: "market data unavailable",
-                });
-                continue;
-            }
-        };
-
-        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set)
-        {
-            if !json {
-                eprintln!("  Skipping {} — {}", skip.token, skip.reason);
-            }
-            skipped.push(CloseSkipJson {
-                token: skip.token,
-                estimated_usd: skip.estimated_usd,
-                reason: skip.reason,
+    if candidates.is_empty() {
+        if json {
+            return json_out(&CloseAllResultJson {
+                status: if dry_run { "dry_run" } else { "success" },
+                sold: vec![],
+                failed: vec![],
+                skipped,
+                total_usdc: "0".to_string(),
             });
-            continue;
         }
-
-        let sell_display = amounts::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
-
-        if dry_run {
-            let mint = tb.mint.to_string();
-            match usecases::gm::fetch_sell_order(&tb.symbol, &mint, &sell_raw, &taker, json).await {
-                Ok(order) => {
-                    let quoted_usdc = amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS);
-                    if !json {
-                        println!("  [DRY RUN] Would sell {} {} -> ~{} USDC", sell_display, tb.symbol, quoted_usdc);
-                    }
-                    sold.push(CloseItemJson {
-                        token: tb.symbol.clone(),
-                        amount: sell_display,
-                        usdc: quoted_usdc,
-                        tx: String::new(),
-                    });
-                }
-                Err(e) => {
-                    if !json {
-                        eprintln!("  [DRY RUN] ✗ {} — {}", tb.symbol, e);
-                    }
-                    failed.push(CloseFailJson {
-                        token: tb.symbol.clone(),
-                        error: e.to_string(),
-                    });
-                }
-            }
-            continue;
-        }
-
-        if !json {
-            println!("Selling {} {} ...", sell_display, tb.symbol);
-        }
-
-        match usecases::gm::execute_sell_raw(&w, &tb.mint, &sell_raw, &taker, json).await {
-            Ok(result) => {
-                // output_amount is produced by amounts::format_amount and is always a valid f64
-                let usdc_f: f64 = result.output_amount.parse().expect("format_amount produces valid f64");
-                total_usdc += usdc_f;
-                let tx = solscan_tx_url(&result.signature);
-                if !json {
-                    println!(
-                        "  ✓ {} {} → {} USDC  tx: {}",
-                        sell_display, tb.symbol, result.output_amount, tx
-                    );
-                }
-                sold.push(CloseItemJson {
-                    token: tb.symbol.clone(),
-                    amount: sell_display,
-                    usdc: result.output_amount,
-                    tx,
-                });
-            }
-            Err(e) => {
-                if !json {
-                    eprintln!("  ✗ {} — {}", tb.symbol, e);
-                }
-                failed.push(CloseFailJson {
-                    token: tb.symbol.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
+        println!("Nothing to sell after filtering.");
+        return Ok(());
     }
+
+    let (sold, failed, total_usdc) = if dry_run {
+        let (sold, failed) = run_close_dry_run(&taker, candidates, json).await;
+        (sold, failed, 0.0)
+    } else {
+        let wallet_arc = Arc::new(w);
+        run_close_items(wallet_arc, taker, candidates, parallel, json).await
+    };
 
     if json {
         return json_out(&CloseAllResultJson {
@@ -218,6 +361,8 @@ pub async fn close_all(
 
     let label = if dry_run {
         "[DRY RUN] Would close-all"
+    } else if parallel {
+        "Close-all (parallel)"
     } else {
         "Close-all"
     };
@@ -235,126 +380,6 @@ pub async fn close_all(
             usecases::gm::MIN_SELL_VALUE_USD,
             names.join(", ")
         );
-    }
-    if !failed.is_empty() {
-        println!("  Failed:  {} positions", failed.len());
-    }
-    Ok(())
-}
-
-// ── Parallel close-all ──────────────────────────────────────
-
-async fn close_all_parallel(
-    w: rwa_ondo::wallet::Wallet,
-    taker: String,
-    balances: Vec<solana::SolanaTokenBalance>,
-    assets: Vec<api::OndoAsset>,
-    tradable_set: std::collections::HashSet<String>,
-    sell_pct: f64,
-    json: bool,
-) -> Result<()> {
-    use tokio::task::JoinSet;
-
-    // Build list of (symbol, mint, raw_amount) for tradable, non-tiny positions
-    let mut items: Vec<(String, String, String)> = Vec::new();
-    let mut skipped: Vec<CloseSkipJson> = Vec::new();
-
-    for tb in &balances {
-        let sell_raw = if sell_pct < 100.0 {
-            let raw: u128 = tb.raw_amount.parse()?;
-            let partial = amounts::pct_of_u128(raw, sell_pct);
-            if partial == 0 { continue; }
-            partial.to_string()
-        } else {
-            tb.raw_amount.clone()
-        };
-
-        let sell_balance = tb.balance * sell_pct / 100.0;
-        let est_value = match api::market_snapshot_for_symbol(&tb.symbol, &assets) {
-            Ok((price, _)) => sell_balance * price,
-            Err(_) => {
-                if !json { eprintln!("  Skipping {} — market data unavailable", tb.symbol); }
-                skipped.push(CloseSkipJson { token: tb.symbol.clone(), estimated_usd: 0.0, reason: "market data unavailable" });
-                continue;
-            }
-        };
-
-        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, &tradable_set) {
-            if !json { eprintln!("  Skipping {} — {}", skip.token, skip.reason); }
-            skipped.push(CloseSkipJson { token: skip.token, estimated_usd: skip.estimated_usd, reason: skip.reason });
-            continue;
-        }
-
-        items.push((tb.symbol.clone(), tb.mint.to_string(), sell_raw));
-    }
-
-    if items.is_empty() {
-        if json {
-            return json_out(&CloseAllResultJson { status: "success", sold: vec![], failed: vec![], skipped, total_usdc: "0".to_string() });
-        }
-        println!("Nothing to sell after filtering.");
-        return Ok(());
-    }
-
-    // ── Pipeline: fetch→execute per token in parallel ──
-    // Each task fetches its order and immediately executes, keeping the number
-    // of pending (unfulfilled) orders at the market maker low.
-    if !json {
-        println!("Processing {} positions in parallel...", items.len());
-    }
-
-    use std::sync::Arc;
-    let wallet_arc = Arc::new(w);
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-
-    let mut pipeline: JoinSet<(String, String, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
-    for (symbol, mint, raw) in items {
-        let taker = taker.clone();
-        let w2 = wallet_arc.clone();
-        pipeline.spawn(async move {
-            let sym_clone = symbol.clone();
-            let order = match usecases::gm::fetch_sell_order(&symbol, &mint, &raw, &taker, json).await {
-                Ok(o) => o,
-                Err(e) => return (sym_clone, String::new(), Err(e)),
-            };
-            let display = order.display_amount.clone();
-            let result = usecases::gm::execute_sell_from_order(&w2, order, json).await;
-            (sym_clone, display, result)
-        });
-    }
-
-    let mut sold: Vec<CloseItemJson> = Vec::new();
-    let mut total_usdc: f64 = 0.0;
-
-    while let Some(res) = pipeline.join_next().await {
-        match res {
-            Ok((sym, display, Ok(exec))) => {
-                // output_amount is produced by amounts::format_amount and is always a valid f64
-                let usdc_f: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
-                total_usdc += usdc_f;
-                let tx = solscan_tx_url(&exec.signature);
-                if !json { println!("  ✓ {} {} → {} USDC  tx: {}", display, sym, exec.output_amount, tx); }
-                sold.push(CloseItemJson { token: sym, amount: display, usdc: exec.output_amount, tx });
-            }
-            Ok((sym, _display, Err(e))) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
-            }
-            Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
-            }
-        }
-    }
-
-    if json {
-        return json_out(&CloseAllResultJson { status: "success", sold, failed, skipped, total_usdc: format!("{total_usdc:.2}") });
-    }
-
-    println!("\nClose-all (parallel) complete:");
-    println!("  Sold:    {} positions → {:.2} USDC", sold.len(), total_usdc);
-    if !skipped.is_empty() {
-        let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
-        println!("  Skipped: {} ({})", skipped.len(), names.join(", "));
     }
     if !failed.is_empty() {
         println!("  Failed:  {} positions", failed.len());

@@ -4,7 +4,7 @@ use crate::{amounts, jupiter, wallet};
 use crate::types::Mint;
 use crate::wallet::ExpectedSwap;
 use super::gm::{SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS};
-use super::gm_internal::{get_order_checked, MAX_SWAP_RETRIES};
+use super::gm_internal::MAX_SWAP_RETRIES;
 
 pub(crate) struct SwapParams<'a> {
     pub(crate) input_mint: &'a Mint,
@@ -12,45 +12,6 @@ pub(crate) struct SwapParams<'a> {
     pub(crate) raw_amount: &'a str,
     pub(crate) taker: &'a str,
     pub(crate) slippage_bps: Option<u32>,
-}
-
-pub async fn execute_sell_raw(
-    wallet: &wallet::Wallet,
-    mint: &str,
-    raw_amount: &str,
-    taker: &str,
-    json: bool,
-) -> Result<SwapExecution> {
-    let (order, _) = get_order_checked(
-        mint,
-        jupiter::USDC_MINT,
-        raw_amount,
-        taker,
-        None,
-        json,
-        None,
-    )
-    .await?;
-    let input_mint = Mint::from(mint);
-    let output_mint = Mint::from(jupiter::USDC_MINT);
-    let params = SwapParams {
-        input_mint: &input_mint,
-        output_mint: &output_mint,
-        raw_amount,
-        taker,
-        slippage_bps: None,
-    };
-    let result = execute_with_retry(wallet, &order, json, &params).await?;
-    let actual_slippage_pct = calc_actual_slippage(&order, &result);
-    Ok(SwapExecution {
-        output_amount: result
-            .output_amount_result
-            .as_deref()
-            .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
-            .unwrap_or_else(|| amounts::format_amount(&order.out_amount, jupiter::USDC_DECIMALS)),
-        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
-        actual_slippage_pct,
-    })
 }
 
 /// Phase 2 for parallel close-all: execute a pre-fetched sell order.
