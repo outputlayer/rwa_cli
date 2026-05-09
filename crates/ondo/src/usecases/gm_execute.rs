@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 
-use crate::{amounts, jupiter, wallet};
+use crate::{amounts, audit, jupiter, wallet};
 use crate::types::Mint;
 use crate::wallet::ExpectedSwap;
 use super::gm::{SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS};
@@ -25,6 +25,9 @@ pub async fn execute_sell_from_order(
     // taker is encoded in the signed tx; for RefreshOrder retry we need it separately
     // We grab it from the wallet since SellOrderReady is always for our own wallet.
     let taker = wallet.pubkey();
+    let symbol = ready.symbol.clone();
+    let raw_amount = ready.raw_amount.clone();
+    let backend = ready.order.backend.label().to_string();
     let params = SwapParams {
         input_mint: &input_mint,
         output_mint: &output_mint,
@@ -32,17 +35,27 @@ pub async fn execute_sell_from_order(
         taker: &taker,
         slippage_bps: None,
     };
-    let result = execute_with_retry(wallet, &ready.order, json, &params).await?;
-    let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
-    Ok(SwapExecution {
-        output_amount: result
-            .output_amount_result
-            .as_deref()
-            .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
-            .unwrap_or_else(|| amounts::format_amount(&ready.order.out_amount, jupiter::USDC_DECIMALS)),
-        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
-        actual_slippage_pct,
-    })
+    match execute_with_retry(wallet, &ready.order, json, &params).await {
+        Ok(result) => {
+            let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
+            let output_amount = result
+                .output_amount_result
+                .as_deref()
+                .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
+                .unwrap_or_else(|| amounts::format_amount(&ready.order.out_amount, jupiter::USDC_DECIMALS));
+            let signature = result.signature.unwrap_or_else(|| "unknown".to_string());
+            audit_swap_ok("sell", symbol, raw_amount, taker, None, backend, &signature, &output_amount);
+            Ok(SwapExecution {
+                output_amount,
+                signature,
+                actual_slippage_pct,
+            })
+        }
+        Err(e) => {
+            audit_swap_err("sell", symbol, raw_amount, taker, None, backend, &e);
+            Err(e)
+        }
+    }
 }
 
 /// Phase 2 for basket buy: execute a pre-fetched buy order.
@@ -54,6 +67,9 @@ pub async fn execute_buy_from_order(
     let input_mint = Mint::from(jupiter::USDC_MINT);
     let output_mint = ready.gm_mint;
     let taker = wallet.pubkey();
+    let symbol = ready.symbol.clone();
+    let raw_amount = ready.usdc_raw.clone();
+    let backend = ready.order.backend.label().to_string();
     let params = SwapParams {
         input_mint: &input_mint,
         output_mint: &output_mint,
@@ -61,19 +77,98 @@ pub async fn execute_buy_from_order(
         taker: &taker,
         slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
     };
-    let result = execute_with_retry(wallet, &ready.order, json, &params).await?;
-    let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
-    Ok(SwapExecution {
-        output_amount: result
-            .output_amount_result
-            .as_deref()
-            .map(|r| amounts::format_amount(r, jupiter::GM_SOL_DECIMALS))
-            .unwrap_or_else(|| {
-                amounts::format_amount(&ready.order.out_amount, jupiter::GM_SOL_DECIMALS)
-            }),
-        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
-        actual_slippage_pct,
-    })
+    match execute_with_retry(wallet, &ready.order, json, &params).await {
+        Ok(result) => {
+            let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
+            let output_amount = result
+                .output_amount_result
+                .as_deref()
+                .map(|r| amounts::format_amount(r, jupiter::GM_SOL_DECIMALS))
+                .unwrap_or_else(|| {
+                    amounts::format_amount(&ready.order.out_amount, jupiter::GM_SOL_DECIMALS)
+                });
+            let signature = result.signature.unwrap_or_else(|| "unknown".to_string());
+            audit_swap_ok(
+                "buy",
+                symbol,
+                raw_amount,
+                taker,
+                Some(DEFAULT_SLIPPAGE_BPS),
+                backend,
+                &signature,
+                &output_amount,
+            );
+            Ok(SwapExecution {
+                output_amount,
+                signature,
+                actual_slippage_pct,
+            })
+        }
+        Err(e) => {
+            audit_swap_err(
+                "buy",
+                symbol,
+                raw_amount,
+                taker,
+                Some(DEFAULT_SLIPPAGE_BPS),
+                backend,
+                &e,
+            );
+            Err(e)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_swap_ok(
+    op: &'static str,
+    symbol: String,
+    raw_amount: String,
+    taker: String,
+    slippage_bps: Option<u32>,
+    backend: String,
+    signature: &str,
+    output_amount: &str,
+) {
+    audit::record_swap(&audit::SwapAuditRecord {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        op,
+        symbol,
+        raw_amount,
+        taker,
+        slippage_bps,
+        backend,
+        status: "ok",
+        signature: Some(signature.to_string()),
+        output_amount: Some(output_amount.to_string()),
+        error: None,
+        error_kind: None,
+    });
+}
+
+fn audit_swap_err(
+    op: &'static str,
+    symbol: String,
+    raw_amount: String,
+    taker: String,
+    slippage_bps: Option<u32>,
+    backend: String,
+    err: &eyre::Error,
+) {
+    audit::record_swap(&audit::SwapAuditRecord {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        op,
+        symbol,
+        raw_amount,
+        taker,
+        slippage_bps,
+        backend,
+        status: "error",
+        signature: None,
+        output_amount: None,
+        error: Some(err.to_string()),
+        error_kind: super::gm::classify_error(err),
+    });
 }
 
 pub(crate) async fn execute_with_retry(
