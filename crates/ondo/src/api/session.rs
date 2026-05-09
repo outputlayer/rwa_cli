@@ -302,6 +302,10 @@ struct SessionResponse {
 /// Fetch session limits from Ondo status API.
 pub async fn fetch_session_limits(base_url: Option<&str>) -> Result<Vec<SessionLimits>> {
     let url = base_url.unwrap_or(ONDO_SESSION_URL);
+    super::retry_with_backoff(3, || fetch_session_limits_attempt(url)).await
+}
+
+async fn fetch_session_limits_attempt(url: &str) -> Result<Vec<SessionLimits>> {
     let resp = HTTP.get(url).send().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Network,

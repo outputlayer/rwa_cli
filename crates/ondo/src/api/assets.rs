@@ -87,6 +87,10 @@ pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
 }
 
 async fn fetch_assets_live() -> Result<Vec<OndoAsset>> {
+    super::retry_with_backoff(3, fetch_assets_attempt).await
+}
+
+async fn fetch_assets_attempt() -> Result<Vec<OndoAsset>> {
     let resp = HTTP.get(ONDO_API_URL).send().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Network,

@@ -47,7 +47,11 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
     };
 
     let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
-    let resp = HTTP.get(&url).send().await.map_err(|e| {
+    super::retry_with_backoff(3, || fetch_history_attempt(&url, &sym)).await
+}
+
+async fn fetch_history_attempt(url: &str, sym: &str) -> Result<Vec<HistoryCandle>> {
+    let resp = HTTP.get(url).send().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Network,
             "history",
