@@ -177,7 +177,8 @@ pub async fn close_all(
 
         match usecases::gm::execute_sell_raw(&w, &tb.mint, &sell_raw, &taker, json).await {
             Ok(result) => {
-                let usdc_f: f64 = result.output_amount.parse().unwrap_or(0.0);
+                // output_amount is produced by amounts::format_amount and is always a valid f64
+                let usdc_f: f64 = result.output_amount.parse().expect("format_amount produces valid f64");
                 total_usdc += usdc_f;
                 let tx = solscan_tx_url(&result.signature);
                 if !json {
@@ -328,7 +329,8 @@ async fn close_all_parallel(
     while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, display, Ok(exec))) => {
-                let usdc_f: f64 = exec.output_amount.parse().unwrap_or(0.0);
+                // output_amount is produced by amounts::format_amount and is always a valid f64
+                let usdc_f: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
                 total_usdc += usdc_f;
                 let tx = solscan_tx_url(&exec.signature);
                 if !json { println!("  ✓ {} {} → {} USDC  tx: {}", display, sym, exec.output_amount, tx); }
