@@ -111,8 +111,9 @@ pub async fn buy_basket(
             }
             Ok(order) => {
                 let slip = order.slippage_pct;
-                let raw_u: f64 = raw.parse::<u128>().unwrap_or(0) as f64
-                    / 10f64.powi(jupiter::USDC_DECIMALS as i32);
+                // raw was already validated as u128 upstream when computing total_raw
+                let raw_u128: u128 = raw.parse().expect("raw validated as u128 upstream");
+                let raw_u: f64 = raw_u128 as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32);
                 match usecases::gm::execute_buy_from_order(&w, order, json).await {
                     Ok(exec) => {
                         total_usdc_spent += raw_u;
@@ -273,7 +274,8 @@ async fn buy_basket_parallel(
     while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, usdc_disp, slip, Ok(exec))) => {
-                let usdc_f: f64 = usdc_disp.parse().unwrap_or(0.0);
+                // usdc_disp is produced by amounts::format_amount and is always a valid f64
+                let usdc_f: f64 = usdc_disp.parse().expect("format_amount produces valid f64");
                 total_usdc_spent += usdc_f;
                 let tx = solscan_tx_url(&exec.signature);
                 if !json {
@@ -374,7 +376,8 @@ pub async fn sell_basket(
                 let slip = order.slippage_pct;
                 match usecases::gm::execute_sell_from_order(&w, order, json).await {
                     Ok(exec) => {
-                        let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);
+                        // output_amount is produced by amounts::format_amount and is always a valid f64
+                        let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
                         total_usdc += usdc_out;
                         let tx = solscan_tx_url(&exec.signature);
                         if !json {
@@ -532,7 +535,8 @@ async fn sell_basket_parallel(
     while let Some(res) = pipeline.join_next().await {
         match res {
             Ok((sym, amt_disp, slip, Ok(exec))) => {
-                let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);
+                // output_amount is produced by amounts::format_amount and is always a valid f64
+                let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
                 total_usdc += usdc_out;
                 let tx = solscan_tx_url(&exec.signature);
                 if !json {
