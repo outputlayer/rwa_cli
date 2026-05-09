@@ -411,6 +411,7 @@ mod tests {
             failed: vec![CloseFailJson {
                 token: "AAPLon".into(),
                 error: "not tradable".into(),
+                error_kind: None,
             }],
             skipped: vec![],
             total_usdc: "96.44".into(),

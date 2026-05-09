@@ -208,6 +208,11 @@ pub struct CloseItemJson {
 pub struct CloseFailJson {
     pub token: String,
     pub error: String,
+    /// Stable kind label for the error (e.g. "slippage_too_high", "swap_rejected").
+    /// Present when the underlying error is a known structured type; absent for
+    /// opaque errors. Agents/scripts can branch on this to decide retry vs abort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<&'static str>,
 }
 
 #[derive(Serialize)]

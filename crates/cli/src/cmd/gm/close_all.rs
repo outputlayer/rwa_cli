@@ -109,10 +109,7 @@ async fn process_close_item(
             if !json {
                 eprintln!("  ✗ {} — {}", candidate.symbol, e);
             }
-            return Err(CloseFailJson {
-                token: candidate.symbol,
-                error: e.to_string(),
-            });
+            return Err(fail_json(candidate.symbol, &e));
         }
     };
     let display = order.display_amount.clone();
@@ -145,10 +142,7 @@ async fn process_close_item(
             if !json {
                 eprintln!("  ✗ {} — {}", candidate.symbol, e);
             }
-            Err(CloseFailJson {
-                token: candidate.symbol,
-                error: e.to_string(),
-            })
+            Err(fail_json(candidate.symbol, &e))
         }
     }
 }
@@ -242,10 +236,7 @@ async fn run_close_dry_run(
                 if !json {
                     eprintln!("  [DRY RUN] ✗ {} — {}", c.symbol, e);
                 }
-                failed.push(CloseFailJson {
-                    token: c.symbol,
-                    error: e.to_string(),
-                });
+                failed.push(fail_json(c.symbol, &e));
             }
         }
     }

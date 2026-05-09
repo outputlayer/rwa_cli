@@ -139,6 +139,26 @@ impl ExecuteFailureKind {
         }
     }
 
+    /// Stable kind label for JSON output (e.g. agent-readable `error_kind`).
+    /// Distinct from `hint()`, which is human-readable text that may change.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MissingCachedOrder => "missing_cached_order",
+            Self::InvalidSignedTransaction => "invalid_signed_transaction",
+            Self::InvalidMessageBytes => "invalid_message_bytes",
+            Self::FailedToLand => "failed_to_land",
+            Self::UnknownAggregatorError => "unknown_aggregator_error",
+            Self::RfqFailedToLand => "rfq_failed_to_land",
+            Self::UnknownRfqError => "unknown_rfq_error",
+            Self::InvalidPayload => "invalid_payload",
+            Self::QuoteExpired => "quote_expired",
+            Self::SwapRejected => "swap_rejected",
+            Self::InternalError => "internal_error",
+            Self::Unknown => "unknown",
+        }
+    }
+
     #[must_use]
     pub fn hint(self) -> &'static str {
         match self {

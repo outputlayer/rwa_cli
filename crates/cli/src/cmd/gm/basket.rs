@@ -55,7 +55,7 @@ async fn process_buy_item(
             if !json {
                 eprintln!("  ✗ {} — {}", sym, e);
             }
-            return Err(CloseFailJson { token: sym, error: e.to_string() });
+            return Err(fail_json(sym, &e));
         }
     };
     let usdc_display = order.usdc_display.clone();
@@ -87,7 +87,7 @@ async fn process_buy_item(
             if !json {
                 eprintln!("  ✗ {} — {}", sym, e);
             }
-            Err(CloseFailJson { token: sym, error: e.to_string() })
+            Err(fail_json(sym, &e))
         }
     }
 }
@@ -106,7 +106,7 @@ async fn process_sell_item(
             if !json {
                 eprintln!("  ✗ {} — {}", sym, e);
             }
-            return Err(CloseFailJson { token: sym, error: e.to_string() });
+            return Err(fail_json(sym, &e));
         }
     };
     let display_amt = order.display_amount.clone();
@@ -137,7 +137,7 @@ async fn process_sell_item(
             if !json {
                 eprintln!("  ✗ {} — {}", sym, e);
             }
-            Err(CloseFailJson { token: sym, error: e.to_string() })
+            Err(fail_json(sym, &e))
         }
     }
 }
@@ -398,7 +398,7 @@ async fn buy_basket_dry_run(
                 if !json {
                     eprintln!("  ✗ {} — {}", sym, e);
                 }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
+                failed.push(fail_json(sym, &e));
             }
             Err(e) => {
                 if !json {
@@ -547,7 +547,7 @@ async fn sell_basket_dry_run(
                 if !json {
                     eprintln!("  ✗ {} — {}", sym, e);
                 }
-                failed.push(CloseFailJson { token: sym, error: e.to_string() });
+                failed.push(fail_json(sym, &e));
             }
             Err(e) => {
                 if !json {
@@ -654,6 +654,7 @@ mod tests {
             failed: vec![CloseFailJson {
                 token: "TSLAon".to_string(),
                 error: "Swap failed (code -2004): swap rejected".to_string(),
+                error_kind: Some("swap_rejected"),
             }],
             skipped: vec![],
             total_usdc_spent: "15.00".to_string(),
@@ -665,6 +666,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("swap rejected"));
+        assert_eq!(json["failed"][0]["error_kind"], "swap_rejected");
         assert_eq!(json["bought"][0]["token"], "JNJon");
         assert_eq!(json["total_usdc_spent"], "15.00");
     }
@@ -723,6 +725,7 @@ mod tests {
             failed: vec![CloseFailJson {
                 token: "TSLAon".to_string(),
                 error: "not tradable".to_string(),
+                error_kind: Some("not_tradable"),
             }],
             skipped: vec![],
             total_usdc_received: "531.25".to_string(),
@@ -733,6 +736,7 @@ mod tests {
         assert_eq!(json["sold"][0]["token"], "SPYon");
         assert_eq!(json["sold"][0]["usdc"], "531.25");
         assert_eq!(json["failed"][0]["token"], "TSLAon");
+        assert_eq!(json["failed"][0]["error_kind"], "not_tradable");
         assert!(json.get("skipped").is_none()); // skip_serializing_if = empty
     }
 

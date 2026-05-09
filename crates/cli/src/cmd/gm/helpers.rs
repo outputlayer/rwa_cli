@@ -6,12 +6,24 @@
 //! flows.
 
 use eyre::Result;
-use rwa_ondo::{gm, token_list, types::{Mint, Symbol}, wallet};
+use rwa_ondo::{gm, token_list, types::{Mint, Symbol}, usecases, wallet};
 use serde::Serialize;
 use std::io::{self, Write};
 
+use super::types::CloseFailJson;
+
 pub(super) fn solscan_tx_url(sig: &str) -> String {
     format!("https://solscan.io/tx/{sig}")
+}
+
+/// Build a CloseFailJson from a token symbol and an eyre error.
+/// Populates `error_kind` when the error is a known structured type.
+pub(super) fn fail_json(token: String, err: &eyre::Error) -> CloseFailJson {
+    CloseFailJson {
+        token,
+        error: err.to_string(),
+        error_kind: usecases::gm::classify_error(err),
+    }
 }
 
 pub(super) fn json_out(v: &impl Serialize) -> Result<()> {

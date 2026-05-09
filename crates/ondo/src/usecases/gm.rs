@@ -54,6 +54,27 @@ impl std::fmt::Display for GmTradeErrorKind {
 
 impl std::error::Error for GmTradeError {}
 
+/// Classify an eyre error as a stable error kind label, suitable for JSON
+/// `error_kind` fields consumed by agents/scripts. Returns `None` for opaque
+/// errors that aren't one of the known structured types.
+///
+/// Currently recognizes `GmTradeError` and Jupiter `ExecuteFailure`. RPC-layer
+/// failures bubble up as opaque `eyre` errors today and return `None`.
+#[must_use]
+pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
+    if let Some(g) = err.downcast_ref::<GmTradeError>() {
+        return Some(match g.kind {
+            GmTradeErrorKind::MarketClosed => "market_closed",
+            GmTradeErrorKind::NotTradable => "not_tradable",
+            GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
+        });
+    }
+    if let Some(f) = err.downcast_ref::<jupiter::ExecuteFailure>() {
+        return Some(f.kind.label());
+    }
+    None
+}
+
 /// Default slippage limit in basis points (100 = 1%).
 pub const DEFAULT_SLIPPAGE_BPS: u32 = 100;
 /// Minimum sell value in USD (Jupiter MM rejects tiny orders).
@@ -592,5 +613,44 @@ mod tests {
     fn parse_sell_pct_exactly_100_percent() {
         let pct = parse_sell_pct(Some("100%")).unwrap();
         assert_eq!(pct, 100.0);
+    }
+
+    // ── classify_error ────────────────────────────────────────
+
+    #[test]
+    fn classify_error_recognizes_gm_trade_error() {
+        let err: eyre::Error = GmTradeError::new(GmTradeErrorKind::SlippageTooHigh, "x").into();
+        assert_eq!(classify_error(&err), Some("slippage_too_high"));
+
+        let err: eyre::Error = GmTradeError::new(GmTradeErrorKind::MarketClosed, "y").into();
+        assert_eq!(classify_error(&err), Some("market_closed"));
+
+        let err: eyre::Error = GmTradeError::new(GmTradeErrorKind::NotTradable, "z").into();
+        assert_eq!(classify_error(&err), Some("not_tradable"));
+    }
+
+    #[test]
+    fn classify_error_recognizes_jupiter_execute_failure() {
+        let err: eyre::Error = jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::QuoteExpired,
+            code: Some(-2003),
+            message: "expired".to_string(),
+        }
+        .into();
+        assert_eq!(classify_error(&err), Some("quote_expired"));
+
+        let err: eyre::Error = jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::SwapRejected,
+            code: Some(-2004),
+            message: "rejected".to_string(),
+        }
+        .into();
+        assert_eq!(classify_error(&err), Some("swap_rejected"));
+    }
+
+    #[test]
+    fn classify_error_returns_none_for_opaque_eyre_error() {
+        let err: eyre::Error = eyre::eyre!("unstructured failure");
+        assert_eq!(classify_error(&err), None);
     }
 }
