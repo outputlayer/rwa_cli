@@ -24,12 +24,24 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let balances = portfolio_bal.gm_tokens;
 
     let mut positions = Vec::new();
+    let mut unavailable = Vec::new();
     let mut gm_positions_value = 0.0;
     let mut gm_positions_prev_value = 0.0;
 
     for tb in &balances {
-        let (price, pct_24h) = api::market_snapshot_for_symbol(&tb.symbol, &assets)
-            .map_err(|e| eyre::eyre!("Invalid market data for {}: {}", tb.symbol, e))?;
+        let (price, pct_24h) = match api::market_snapshot_for_symbol(&tb.symbol, &assets) {
+            Ok(v) => v,
+            Err(e) => {
+                if !json {
+                    eprintln!("  Skipping {} — market data unavailable: {e}", tb.symbol);
+                }
+                unavailable.push(PortfolioUnavailableJson {
+                    symbol: tb.symbol.clone(),
+                    reason: format!("market data unavailable: {e}"),
+                });
+                continue;
+            }
+        };
         let value = tb.balance * price;
         let prev_value = if pct_24h.abs() > f64::EPSILON {
             value / (1.0 + pct_24h / 100.0)
@@ -80,6 +92,7 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
                 change_24h_usd: gm_positions_change,
                 change_24h_pct: gm_positions_change_pct,
             },
+            unavailable,
         });
     }
 

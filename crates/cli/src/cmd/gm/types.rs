@@ -101,10 +101,18 @@ pub struct PortfolioGmPositionsJson {
 }
 
 #[derive(Serialize)]
+pub struct PortfolioUnavailableJson {
+    pub symbol: String,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
 pub struct PortfolioJson {
     pub wallet: String,
     pub cash: PortfolioCashJson,
     pub gm_positions: PortfolioGmPositionsJson,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<PortfolioUnavailableJson>,
 }
 
 #[derive(Serialize)]

@@ -16,8 +16,9 @@ use std::io::{self, Write};
 pub(super) use types::{
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
-    PortfolioGmPositionsJson, PortfolioJson, PositionJson, ReclaimJson, SellBasketItemJson,
-    SellBasketResultJson, SendJson, TradeJson, TradableItemJson, TradableResultJson,
+    PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,
+    SellBasketItemJson, SellBasketResultJson, SendJson, TradeJson, TradableItemJson,
+    TradableResultJson,
 };
 
 fn solscan_tx_url(sig: &str) -> String {
@@ -398,6 +399,7 @@ mod tests {
                 change_24h_usd: 1.17,
                 change_24h_pct: 1.23,
             },
+            unavailable: vec![],
         })
         .unwrap();
 
@@ -412,6 +414,52 @@ mod tests {
         assert!(json.get("sol").is_none());
         assert!(json.get("usdc").is_none());
         assert!(json.get("gm_positions_value_usd").is_none());
+        // unavailable omitted when empty
+        assert!(json.get("unavailable").is_none());
+    }
+
+    #[test]
+    fn portfolio_json_omits_unavailable_when_empty() {
+        let json = serde_json::to_value(PortfolioJson {
+            wallet: "w".into(),
+            cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
+            gm_positions: PortfolioGmPositionsJson {
+                positions: vec![],
+                value_usd: 0.0,
+                change_24h_usd: 0.0,
+                change_24h_pct: 0.0,
+            },
+            unavailable: vec![],
+        })
+        .unwrap();
+        assert!(json.get("unavailable").is_none());
+    }
+
+    #[test]
+    fn portfolio_json_includes_unavailable_when_present() {
+        let json = serde_json::to_value(PortfolioJson {
+            wallet: "w".into(),
+            cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
+            gm_positions: PortfolioGmPositionsJson {
+                positions: vec![],
+                value_usd: 0.0,
+                change_24h_usd: 0.0,
+                change_24h_pct: 0.0,
+            },
+            unavailable: vec![PortfolioUnavailableJson {
+                symbol: "TSLAon".into(),
+                reason: "market data unavailable: not found".into(),
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            json.pointer("/unavailable/0/symbol"),
+            Some(&Value::from("TSLAon"))
+        );
+        assert_eq!(
+            json.pointer("/unavailable/0/reason"),
+            Some(&Value::from("market data unavailable: not found"))
+        );
     }
 
     #[test]
