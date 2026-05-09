@@ -1,5 +1,8 @@
 use eyre::{Result, eyre};
 use rwa_ondo::{amounts, jupiter, usecases};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinSet;
 
 use super::*;
 
@@ -31,6 +34,246 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
         i += 2;
     }
     Ok(pairs)
+}
+
+// ── Per-item processors ─────────────────────────────────────
+//
+// One processor per operation. Each does fetch + execute and returns either
+// the JSON entry + USDC delta on success, or a CloseFailJson on failure.
+// Used by both the sequential and parallel orchestrators below.
+
+async fn process_buy_item(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    sym: String,
+    raw: String,
+    json: bool,
+) -> std::result::Result<(BuyBasketItemJson, f64), CloseFailJson> {
+    let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await {
+        Ok(o) => o,
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", sym, e);
+            }
+            return Err(CloseFailJson { token: sym, error: e.to_string() });
+        }
+    };
+    let usdc_display = order.usdc_display.clone();
+    let slip = order.slippage_pct;
+
+    match usecases::gm::execute_buy_from_order(&wallet, order, json).await {
+        Ok(exec) => {
+            // raw was already validated as u128 upstream when computing total_raw
+            let raw_u128: u128 = raw.parse().expect("raw validated as u128 upstream");
+            let raw_u: f64 = raw_u128 as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32);
+            let tx = solscan_tx_url(&exec.signature);
+            if !json {
+                print!("  ✓ {} {} USDC → {} {}", sym, usdc_display, exec.output_amount, sym);
+                if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
+                println!("  tx: {tx}");
+            }
+            Ok((
+                BuyBasketItemJson {
+                    token: sym,
+                    received: exec.output_amount,
+                    usdc: usdc_display,
+                    tx,
+                    slippage_pct: slip,
+                },
+                raw_u,
+            ))
+        }
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", sym, e);
+            }
+            Err(CloseFailJson { token: sym, error: e.to_string() })
+        }
+    }
+}
+
+async fn process_sell_item(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    sym: String,
+    amt: String,
+    json: bool,
+    rpc_url: Option<String>,
+) -> std::result::Result<(SellBasketItemJson, f64), CloseFailJson> {
+    let order = match usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc_url.as_deref()).await {
+        Ok(o) => o,
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", sym, e);
+            }
+            return Err(CloseFailJson { token: sym, error: e.to_string() });
+        }
+    };
+    let display_amt = order.display_amount.clone();
+    let slip = order.slippage_pct;
+
+    match usecases::gm::execute_sell_from_order(&wallet, order, json).await {
+        Ok(exec) => {
+            // output_amount is produced by amounts::format_amount and is always a valid f64
+            let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
+            let tx = solscan_tx_url(&exec.signature);
+            if !json {
+                print!("  ✓ {} {} → {} USDC", sym, display_amt, exec.output_amount);
+                if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
+                println!("  tx: {tx}");
+            }
+            Ok((
+                SellBasketItemJson {
+                    token: sym,
+                    amount: display_amt,
+                    usdc: exec.output_amount,
+                    tx,
+                    slippage_pct: slip,
+                },
+                usdc_out,
+            ))
+        }
+        Err(e) => {
+            if !json {
+                eprintln!("  ✗ {} — {}", sym, e);
+            }
+            Err(CloseFailJson { token: sym, error: e.to_string() })
+        }
+    }
+}
+
+// ── Orchestrators ───────────────────────────────────────────
+//
+// One orchestrator per operation. Sequential (`parallel=false`) awaits each
+// item with a 3-second inter-item delay (Jupiter rate-limit conservatism).
+// Parallel (`parallel=true`) spawns a JoinSet and lets them race; concurrency
+// at the swap layer is bounded by ORDER_SEMAPHORE inside execute_*_from_order.
+
+async fn run_buy_items(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    items: Vec<(String, String)>,
+    parallel: bool,
+    json: bool,
+) -> (Vec<BuyBasketItemJson>, Vec<CloseFailJson>, f64) {
+    let mut bought: Vec<BuyBasketItemJson> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+    let mut total: f64 = 0.0;
+
+    if parallel {
+        if !json {
+            println!("Processing {} buy orders in parallel...", items.len());
+        }
+        let mut joinset: JoinSet<std::result::Result<(BuyBasketItemJson, f64), CloseFailJson>> =
+            JoinSet::new();
+        for (sym, raw) in items {
+            let w = wallet.clone();
+            let tk = taker.clone();
+            joinset.spawn(async move { process_buy_item(w, tk, sym, raw, json).await });
+        }
+        while let Some(res) = joinset.join_next().await {
+            match res {
+                Ok(Ok((item, value))) => {
+                    bought.push(item);
+                    total += value;
+                }
+                Ok(Err(fail)) => failed.push(fail),
+                Err(e) => {
+                    if !json {
+                        eprintln!("  ✗ join error: {}", e);
+                    }
+                }
+            }
+        }
+    } else {
+        for (i, (sym, raw)) in items.into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            let usdc_display = amounts::format_amount(&raw, jupiter::USDC_DECIMALS);
+            if !json {
+                println!("Buying {} {} USDC ...", sym, usdc_display);
+            }
+            match process_buy_item(wallet.clone(), taker.clone(), sym, raw, json).await {
+                Ok((item, value)) => {
+                    bought.push(item);
+                    total += value;
+                }
+                Err(fail) => failed.push(fail),
+            }
+        }
+    }
+
+    (bought, failed, total)
+}
+
+async fn run_sell_items(
+    wallet: Arc<rwa_ondo::wallet::Wallet>,
+    taker: String,
+    items: Vec<(String, String)>,
+    parallel: bool,
+    json: bool,
+    rpc_url: Option<&str>,
+) -> (Vec<SellBasketItemJson>, Vec<CloseFailJson>, f64) {
+    let mut sold: Vec<SellBasketItemJson> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+    let mut total: f64 = 0.0;
+    let rpc = rpc_url.map(str::to_string);
+
+    if parallel {
+        if !json {
+            println!("Processing {} sell orders in parallel...", items.len());
+        }
+        let mut joinset: JoinSet<std::result::Result<(SellBasketItemJson, f64), CloseFailJson>> =
+            JoinSet::new();
+        for (sym, amt) in items {
+            let w = wallet.clone();
+            let tk = taker.clone();
+            let rpc = rpc.clone();
+            joinset.spawn(async move { process_sell_item(w, tk, sym, amt, json, rpc).await });
+        }
+        while let Some(res) = joinset.join_next().await {
+            match res {
+                Ok(Ok((item, value))) => {
+                    sold.push(item);
+                    total += value;
+                }
+                Ok(Err(fail)) => failed.push(fail),
+                Err(e) => {
+                    if !json {
+                        eprintln!("  ✗ join error: {}", e);
+                    }
+                }
+            }
+        }
+    } else {
+        for (i, (sym, amt)) in items.into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            if !json {
+                println!("Selling {} {} ...", sym, amt);
+            }
+            match process_sell_item(
+                wallet.clone(),
+                taker.clone(),
+                sym,
+                amt,
+                json,
+                rpc.clone(),
+            )
+            .await
+            {
+                Ok((item, value)) => {
+                    sold.push(item);
+                    total += value;
+                }
+                Err(fail) => failed.push(fail),
+            }
+        }
+    }
+
+    (sold, failed, total)
 }
 
 // ── Buy basket ─────────────────────────────────────────────
@@ -87,58 +330,13 @@ pub async fn buy_basket(
         .map(|((sym, _), raw)| (sym.clone(), raw.clone()))
         .collect();
 
-    if parallel || dry_run {
-        return buy_basket_parallel(w, taker, &symbol_raw, dry_run, json).await;
+    if dry_run {
+        return buy_basket_dry_run(&taker, &symbol_raw, json).await;
     }
 
-    // ── Sequential path ──
-    let mut bought: Vec<BuyBasketItemJson> = Vec::new();
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-    let mut total_usdc_spent: f64 = 0.0;
-
-    for (i, (sym, raw)) in symbol_raw.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        }
-        let usdc_display = amounts::format_amount(raw, jupiter::USDC_DECIMALS);
-        if !json {
-            println!("Buying {} {} USDC ...", sym, usdc_display);
-        }
-        match usecases::gm::fetch_buy_order(sym, raw, &taker, json).await {
-            Err(e) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                failed.push(CloseFailJson { token: sym.clone(), error: e.to_string() });
-            }
-            Ok(order) => {
-                let slip = order.slippage_pct;
-                // raw was already validated as u128 upstream when computing total_raw
-                let raw_u128: u128 = raw.parse().expect("raw validated as u128 upstream");
-                let raw_u: f64 = raw_u128 as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32);
-                match usecases::gm::execute_buy_from_order(&w, order, json).await {
-                    Ok(exec) => {
-                        total_usdc_spent += raw_u;
-                        let tx = solscan_tx_url(&exec.signature);
-                        if !json {
-                            print!("  ✓ {} {} USDC → {} {}", sym, usdc_display, exec.output_amount, sym);
-                            if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
-                            println!("  tx: {tx}");
-                        }
-                        bought.push(BuyBasketItemJson {
-                            token: sym.clone(),
-                            received: exec.output_amount,
-                            usdc: usdc_display,
-                            tx,
-                            slippage_pct: slip,
-                        });
-                    }
-                    Err(e) => {
-                        if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                        failed.push(CloseFailJson { token: sym.clone(), error: e.to_string() });
-                    }
-                }
-            }
-        }
-    }
+    let wallet_arc = Arc::new(w);
+    let (bought, failed, total_usdc_spent) =
+        run_buy_items(wallet_arc, taker, symbol_raw, parallel, json).await;
 
     let total_str = format!("{total_usdc_spent:.2}");
     if json {
@@ -150,171 +348,98 @@ pub async fn buy_basket(
             total_usdc_spent: total_str,
         });
     }
-    println!("\nBuy-basket complete:");
-    println!("  Bought:  {} tokens", bought.len());
-    println!("  Total:   {} USDC", total_usdc_spent);
+    let label = if parallel { "Buy-basket (parallel)" } else { "Buy-basket" };
+    println!("\n{} complete:", label);
+    println!("  Bought:  {} tokens → {} USDC", bought.len(), total_usdc_spent);
     if !failed.is_empty() {
         println!("  Failed:  {} tokens", failed.len());
     }
     Ok(())
 }
 
-async fn buy_basket_parallel(
-    w: rwa_ondo::wallet::Wallet,
-    taker: String,
+async fn buy_basket_dry_run(
+    taker: &str,
     symbol_raw: &[(String, String)],
-    dry_run: bool,
     json: bool,
 ) -> Result<()> {
-    use std::sync::Arc;
-    use tokio::task::JoinSet;
-
     if !json {
         println!("Processing {} buy orders in parallel...", symbol_raw.len());
     }
 
-    let wallet_arc = Arc::new(w);
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-
-    if dry_run {
-        // ── Dry-run: fetch-only (no execution to consume orders) ──
-        let mut order_set: JoinSet<(String, Result<usecases::gm::BuyOrderReady>)> = JoinSet::new();
-        for (sym, raw) in symbol_raw {
-            let sym = sym.clone();
-            let taker = taker.clone();
-            let raw = raw.clone();
-            order_set.spawn(async move {
-                let sym_copy = sym.clone();
-                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await;
-                (sym_copy, result)
-            });
-        }
-
-        let mut ready_orders: Vec<usecases::gm::BuyOrderReady> = Vec::new();
-        while let Some(res) = order_set.join_next().await {
-            match res {
-                Ok((sym, Ok(order))) => {
-                    if !json {
-                        println!(
-                            "  ✓ {} — ~{} {} (spread {:.2}%)",
-                            sym,
-                            amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
-                            sym,
-                            order.slippage_pct.unwrap_or(0.0)
-                        );
-                    }
-                    ready_orders.push(order);
-                }
-                Ok((sym, Err(e))) => {
-                    if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                    failed.push(CloseFailJson { token: sym, error: e.to_string() });
-                }
-                Err(e) => {
-                    if !json { eprintln!("  ✗ join error: {}", e); }
-                }
-            }
-        }
-
-        if json {
-            let preview: Vec<BuyBasketItemJson> = ready_orders
-                .iter()
-                .map(|o| BuyBasketItemJson {
-                    token: o.symbol.clone(),
-                    received: amounts::format_amount(&o.order.out_amount, jupiter::GM_SOL_DECIMALS),
-                    usdc: o.usdc_display.clone(),
-                    tx: String::new(),
-                    slippage_pct: o.slippage_pct,
-                })
-                .collect();
-            return json_out(&BuyBasketResultJson {
-                status: "dry_run",
-                bought: preview,
-                failed,
-                skipped: vec![],
-                total_usdc_spent: "0".to_string(),
-            });
-        }
-        println!("\n[DRY RUN] Would buy:");
-        for o in &ready_orders {
-            let recv = amounts::format_amount(&o.order.out_amount, jupiter::GM_SOL_DECIMALS);
-            println!("  {} USDC → {} {}  (spread {:.2}%)",
-                o.usdc_display, recv, o.symbol, o.slippage_pct.unwrap_or(0.0));
-        }
-        if !failed.is_empty() {
-            println!("  {} tokens would fail (see above)", failed.len());
-        }
-        return Ok(());
-    }
-
-    // ── Real execution: pipeline fetch→execute per token ──
-    // Each task fetches the order and immediately executes it, so pending
-    // orders at the market maker stay low (bounded by ORDER_SEMAPHORE).
-    let mut pipeline: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
+    let mut order_set: JoinSet<(String, Result<usecases::gm::BuyOrderReady>)> = JoinSet::new();
     for (sym, raw) in symbol_raw {
         let sym = sym.clone();
+        let taker = taker.to_string();
         let raw = raw.clone();
-        let taker = taker.clone();
-        let w2 = wallet_arc.clone();
-        pipeline.spawn(async move {
+        order_set.spawn(async move {
             let sym_copy = sym.clone();
-            let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await {
-                Ok(o) => o,
-                Err(e) => return (sym_copy, raw, None, Err(e)),
-            };
-            let usdc_disp = order.usdc_display.clone();
-            let slip = order.slippage_pct;
-            let result = usecases::gm::execute_buy_from_order(&w2, order, json).await;
-            (sym_copy, usdc_disp, slip, result)
+            let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await;
+            (sym_copy, result)
         });
     }
 
-    let mut bought: Vec<BuyBasketItemJson> = Vec::new();
-    let mut total_usdc_spent: f64 = 0.0;
-
-    while let Some(res) = pipeline.join_next().await {
+    let mut ready_orders: Vec<usecases::gm::BuyOrderReady> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+    while let Some(res) = order_set.join_next().await {
         match res {
-            Ok((sym, usdc_disp, slip, Ok(exec))) => {
-                // usdc_disp is produced by amounts::format_amount and is always a valid f64
-                let usdc_f: f64 = usdc_disp.parse().expect("format_amount produces valid f64");
-                total_usdc_spent += usdc_f;
-                let tx = solscan_tx_url(&exec.signature);
+            Ok((sym, Ok(order))) => {
                 if !json {
-                    print!("  ✓ {} USDC → {} {}  tx: {}", usdc_disp, exec.output_amount, sym, tx);
-                    if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
-                    println!();
+                    println!(
+                        "  ✓ {} — ~{} {} (spread {:.2}%)",
+                        sym,
+                        amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
+                        sym,
+                        order.slippage_pct.unwrap_or(0.0)
+                    );
                 }
-                bought.push(BuyBasketItemJson {
-                    token: sym,
-                    received: exec.output_amount,
-                    usdc: usdc_disp,
-                    tx,
-                    slippage_pct: slip,
-                });
+                ready_orders.push(order);
             }
-            Ok((sym, _, _, Err(e))) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
+            Ok((sym, Err(e))) => {
+                if !json {
+                    eprintln!("  ✗ {} — {}", sym, e);
+                }
                 failed.push(CloseFailJson { token: sym, error: e.to_string() });
             }
             Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
+                if !json {
+                    eprintln!("  ✗ join error: {}", e);
+                }
             }
         }
     }
 
-    let total_str = format!("{total_usdc_spent:.2}");
     if json {
+        let preview: Vec<BuyBasketItemJson> = ready_orders
+            .iter()
+            .map(|o| BuyBasketItemJson {
+                token: o.symbol.clone(),
+                received: amounts::format_amount(&o.order.out_amount, jupiter::GM_SOL_DECIMALS),
+                usdc: o.usdc_display.clone(),
+                tx: String::new(),
+                slippage_pct: o.slippage_pct,
+            })
+            .collect();
         return json_out(&BuyBasketResultJson {
-            status: "success",
-            bought,
+            status: "dry_run",
+            bought: preview,
             failed,
             skipped: vec![],
-            total_usdc_spent: total_str,
+            total_usdc_spent: "0".to_string(),
         });
     }
-    println!("\nBuy-basket (parallel) complete:");
-    println!("  Bought:  {} tokens → {} USDC spent", bought.len(), total_usdc_spent);
+    println!("\n[DRY RUN] Would buy:");
+    for o in &ready_orders {
+        let recv = amounts::format_amount(&o.order.out_amount, jupiter::GM_SOL_DECIMALS);
+        println!(
+            "  {} USDC → {} {}  (spread {:.2}%)",
+            o.usdc_display,
+            recv,
+            o.symbol,
+            o.slippage_pct.unwrap_or(0.0)
+        );
+    }
     if !failed.is_empty() {
-        println!("  Failed:  {} tokens", failed.len());
+        println!("  {} tokens would fail (see above)", failed.len());
     }
     Ok(())
 }
@@ -353,54 +478,13 @@ pub async fn sell_basket(
         usecases::gm::ensure_trading_open()?;
     }
 
-    if parallel || dry_run {
-        return sell_basket_parallel(w, taker, &pairs, dry_run, json, rpc_url).await;
+    if dry_run {
+        return sell_basket_dry_run(&taker, &pairs, json, rpc_url).await;
     }
 
-    // ── Sequential path ──
-    let mut sold: Vec<SellBasketItemJson> = Vec::new();
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-    let mut total_usdc: f64 = 0.0;
-
-    for (i, (sym, amt)) in pairs.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        }
-        if !json { println!("Selling {} {} ...", sym, amt); }
-        match usecases::gm::fetch_sell_order_by_symbol(sym, amt, &taker, json, rpc_url).await {
-            Err(e) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                failed.push(CloseFailJson { token: sym.clone(), error: e.to_string() });
-            }
-            Ok(order) => {
-                let slip = order.slippage_pct;
-                match usecases::gm::execute_sell_from_order(&w, order, json).await {
-                    Ok(exec) => {
-                        // output_amount is produced by amounts::format_amount and is always a valid f64
-                        let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
-                        total_usdc += usdc_out;
-                        let tx = solscan_tx_url(&exec.signature);
-                        if !json {
-                            print!("  ✓ {} {} → {} USDC", sym, amt, exec.output_amount);
-                            if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
-                            println!("  tx: {tx}");
-                        }
-                        sold.push(SellBasketItemJson {
-                            token: sym.clone(),
-                            amount: amt.clone(),
-                            usdc: exec.output_amount,
-                            tx,
-                            slippage_pct: slip,
-                        });
-                    }
-                    Err(e) => {
-                        if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                        failed.push(CloseFailJson { token: sym.clone(), error: e.to_string() });
-                    }
-                }
-            }
-        }
-    }
+    let wallet_arc = Arc::new(w);
+    let (sold, failed, total_usdc) =
+        run_sell_items(wallet_arc, taker, pairs.clone(), parallel, json, rpc_url).await;
 
     let total_str = format!("{total_usdc:.2}");
     if json {
@@ -412,7 +496,8 @@ pub async fn sell_basket(
             total_usdc_received: total_str,
         });
     }
-    println!("\nSell-basket complete:");
+    let label = if parallel { "Sell-basket (parallel)" } else { "Sell-basket" };
+    println!("\n{} complete:", label);
     println!("  Sold:    {} tokens → {:.2} USDC", sold.len(), total_usdc);
     if !failed.is_empty() {
         println!("  Failed:  {} tokens", failed.len());
@@ -420,162 +505,90 @@ pub async fn sell_basket(
     Ok(())
 }
 
-async fn sell_basket_parallel(
-    w: rwa_ondo::wallet::Wallet,
-    taker: String,
+async fn sell_basket_dry_run(
+    taker: &str,
     pairs: &[(String, String)],
-    dry_run: bool,
     json: bool,
     rpc_url: Option<&str>,
 ) -> Result<()> {
-    use std::sync::Arc;
-    use tokio::task::JoinSet;
-
     if !json {
         println!("Processing {} sell orders in parallel...", pairs.len());
     }
 
-    let wallet_arc = Arc::new(w);
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-
-    if dry_run {
-        // ── Dry-run: fetch-only ──
-        let mut order_set: JoinSet<(String, Result<usecases::gm::SellOrderReady>)> = JoinSet::new();
-        for (sym, amt) in pairs {
-            let sym = sym.clone();
-            let amt = amt.clone();
-            let taker = taker.clone();
-            let rpc = rpc_url.map(str::to_string);
-            order_set.spawn(async move {
-                let sym_copy = sym.clone();
-                let result = usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await;
-                (sym_copy, result)
-            });
-        }
-
-        let mut ready_orders: Vec<usecases::gm::SellOrderReady> = Vec::new();
-        while let Some(res) = order_set.join_next().await {
-            match res {
-                Ok((sym, Ok(order))) => {
-                    if !json {
-                        println!(
-                            "  ✓ {} — ~{} USDC (spread {:.2}%)",
-                            sym,
-                            amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
-                            order.slippage_pct.unwrap_or(0.0)
-                        );
-                    }
-                    ready_orders.push(order);
-                }
-                Ok((sym, Err(e))) => {
-                    if !json { eprintln!("  ✗ {} — {}", sym, e); }
-                    failed.push(CloseFailJson { token: sym, error: e.to_string() });
-                }
-                Err(e) => {
-                    if !json { eprintln!("  ✗ join error: {}", e); }
-                }
-            }
-        }
-
-        if json {
-            let preview: Vec<SellBasketItemJson> = ready_orders
-                .iter()
-                .map(|o| SellBasketItemJson {
-                    token: o.symbol.clone(),
-                    amount: o.display_amount.clone(),
-                    usdc: amounts::format_amount(&o.order.out_amount, jupiter::USDC_DECIMALS),
-                    tx: String::new(),
-                    slippage_pct: o.slippage_pct,
-                })
-                .collect();
-            return json_out(&SellBasketResultJson {
-                status: "dry_run",
-                sold: preview,
-                failed,
-                skipped: vec![],
-                total_usdc_received: "0".to_string(),
-            });
-        }
-        println!("\n[DRY RUN] Would sell:");
-        for o in &ready_orders {
-            let usdc_out = amounts::format_amount(&o.order.out_amount, jupiter::USDC_DECIMALS);
-            println!("  {} {} → {} USDC  (spread {:.2}%)",
-                o.symbol, o.display_amount, usdc_out, o.slippage_pct.unwrap_or(0.0));
-        }
-        if !failed.is_empty() {
-            println!("  {} tokens would fail (see above)", failed.len());
-        }
-        return Ok(());
-    }
-
-    // ── Real execution: pipeline fetch→execute per token ──
-    let mut pipeline: JoinSet<(String, String, Option<f64>, Result<usecases::gm::SwapExecution>)> = JoinSet::new();
+    let mut order_set: JoinSet<(String, Result<usecases::gm::SellOrderReady>)> = JoinSet::new();
     for (sym, amt) in pairs {
         let sym = sym.clone();
         let amt = amt.clone();
-        let taker = taker.clone();
+        let taker = taker.to_string();
         let rpc = rpc_url.map(str::to_string);
-        let w2 = wallet_arc.clone();
-        pipeline.spawn(async move {
+        order_set.spawn(async move {
             let sym_copy = sym.clone();
-            let order = match usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await {
-                Ok(o) => o,
-                Err(e) => return (sym_copy, String::new(), None, Err(e)),
-            };
-            let disp = order.display_amount.clone();
-            let slip = order.slippage_pct;
-            let result = usecases::gm::execute_sell_from_order(&w2, order, json).await;
-            (sym_copy, disp, slip, result)
+            let result = usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await;
+            (sym_copy, result)
         });
     }
 
-    let mut sold: Vec<SellBasketItemJson> = Vec::new();
-    let mut total_usdc: f64 = 0.0;
-
-    while let Some(res) = pipeline.join_next().await {
+    let mut ready_orders: Vec<usecases::gm::SellOrderReady> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+    while let Some(res) = order_set.join_next().await {
         match res {
-            Ok((sym, amt_disp, slip, Ok(exec))) => {
-                // output_amount is produced by amounts::format_amount and is always a valid f64
-                let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
-                total_usdc += usdc_out;
-                let tx = solscan_tx_url(&exec.signature);
+            Ok((sym, Ok(order))) => {
                 if !json {
-                    print!("  ✓ {} {} → {} USDC  tx: {}", sym, amt_disp, exec.output_amount, tx);
-                    if let Some(s) = slip { print!("  (spread {s:.2}%)"); }
-                    println!();
+                    println!(
+                        "  ✓ {} — ~{} USDC (spread {:.2}%)",
+                        sym,
+                        amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
+                        order.slippage_pct.unwrap_or(0.0)
+                    );
                 }
-                sold.push(SellBasketItemJson {
-                    token: sym,
-                    amount: amt_disp,
-                    usdc: exec.output_amount,
-                    tx,
-                    slippage_pct: slip,
-                });
+                ready_orders.push(order);
             }
-            Ok((sym, _, _, Err(e))) => {
-                if !json { eprintln!("  ✗ {} — {}", sym, e); }
+            Ok((sym, Err(e))) => {
+                if !json {
+                    eprintln!("  ✗ {} — {}", sym, e);
+                }
                 failed.push(CloseFailJson { token: sym, error: e.to_string() });
             }
             Err(e) => {
-                if !json { eprintln!("  ✗ join error: {}", e); }
+                if !json {
+                    eprintln!("  ✗ join error: {}", e);
+                }
             }
         }
     }
 
-    let total_str = format!("{total_usdc:.2}");
     if json {
+        let preview: Vec<SellBasketItemJson> = ready_orders
+            .iter()
+            .map(|o| SellBasketItemJson {
+                token: o.symbol.clone(),
+                amount: o.display_amount.clone(),
+                usdc: amounts::format_amount(&o.order.out_amount, jupiter::USDC_DECIMALS),
+                tx: String::new(),
+                slippage_pct: o.slippage_pct,
+            })
+            .collect();
         return json_out(&SellBasketResultJson {
-            status: "success",
-            sold,
+            status: "dry_run",
+            sold: preview,
             failed,
             skipped: vec![],
-            total_usdc_received: total_str,
+            total_usdc_received: "0".to_string(),
         });
     }
-    println!("\nSell-basket (parallel) complete:");
-    println!("  Sold:    {} tokens → {:.2} USDC", sold.len(), total_usdc);
+    println!("\n[DRY RUN] Would sell:");
+    for o in &ready_orders {
+        let usdc_out = amounts::format_amount(&o.order.out_amount, jupiter::USDC_DECIMALS);
+        println!(
+            "  {} {} → {} USDC  (spread {:.2}%)",
+            o.symbol,
+            o.display_amount,
+            usdc_out,
+            o.slippage_pct.unwrap_or(0.0)
+        );
+    }
     if !failed.is_empty() {
-        println!("  Failed:  {} tokens", failed.len());
+        println!("  {} tokens would fail (see above)", failed.len());
     }
     Ok(())
 }
