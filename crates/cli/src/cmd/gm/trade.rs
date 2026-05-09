@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::usecases;
+use rwa_ondo::{types::Symbol, usecases};
 
 use super::*;
 
