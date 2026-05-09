@@ -141,8 +141,9 @@ pub(super) fn ordered_indices(len: usize) -> impl Iterator<Item = usize> {
 /// Backoff with jitter to avoid thundering herd on rate-limited endpoints.
 /// Exponential: 1s, 2s, 4s (capped at 10s) plus random jitter (0–500ms).
 pub(super) fn backoff_with_jitter(attempt: u32) -> std::time::Duration {
+    use rand::Rng;
     let base_ms = (1000u64 << attempt.saturating_sub(1)).min(10_000);
-    let jitter_ms = rand::random::<u64>() % 500;
+    let jitter_ms = rand::thread_rng().gen_range(0..500);
     std::time::Duration::from_millis(base_ms + jitter_ms)
 }
 
