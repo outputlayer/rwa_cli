@@ -47,8 +47,8 @@ pub enum GmAction {
         /// Show quote and validate without executing the swap
         #[arg(long)]
         dry_run: bool,
-        /// Preview a quote for any size, skipping the wallet-balance check (implies dry-run; cannot execute)
-        #[arg(long)]
+        /// Preview a quote for any size, skipping the balance check (implies dry-run, never executes; a wallet is still required as the swap taker)
+        #[arg(long, conflicts_with = "yes")]
         quote_only: bool,
     },
 
@@ -273,6 +273,24 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn quote_only_conflicts_with_yes_at_parse_time() {
+        use clap::Parser;
+        let res = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--quote-only", "--yes",
+        ]);
+        assert!(res.is_err(), "--quote-only with -y must be rejected by clap");
+    }
+
+    #[test]
+    fn quote_only_alone_parses() {
+        use clap::Parser;
+        let res = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--quote-only",
+        ]);
+        assert!(res.is_ok(), "--quote-only alone should parse");
+    }
 
     #[test]
     fn portfolio_json_serializes_nested_cash_and_gm_positions() {

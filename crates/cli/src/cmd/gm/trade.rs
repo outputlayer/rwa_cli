@@ -14,9 +14,9 @@ pub async fn buy(
     slippage: Option<u32>,
     quote_only: bool,
 ) -> Result<()> {
-    if quote_only && yes {
-        return Err(eyre::eyre!("--quote-only cannot execute a trade; drop -y"));
-    }
+    // `--quote-only` previews any size by skipping the funds pre-flight; it still
+    // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
+    // Implemented for buy only — sell amounts derive from on-chain holdings.
     let dry_run = dry_run || quote_only;
     let w = load_wallet()?;
     let symbol = Symbol::from(symbol);
