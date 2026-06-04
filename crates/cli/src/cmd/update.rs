@@ -2,6 +2,7 @@
 
 use eyre::Result;
 use serde::Serialize;
+use std::time::Duration;
 
 /// Stable, machine-readable failure kinds surfaced in `--json` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +173,43 @@ struct UpdateJson {
     target: &'static str,
 }
 
+const API_BASE: &str = "https://api.github.com";
+const REPO_PATH: &str = "/repos/outputlayer/rwa_cli/releases/latest";
+
+/// Build the HTTP client. GitHub's API requires a User-Agent.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("rwa-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("failed to build HTTP client")
+}
+
+/// GET the latest release tag. `api_base` is injectable for tests.
+async fn fetch_latest_tag(client: &reqwest::Client, api_base: &str) -> Result<String> {
+    let url = format!("{api_base}{REPO_PATH}");
+    let resp = client.get(&url).send().await.map_err(|e| {
+        UpdateError::new(UpdateErrorKind::Network, format!("GitHub API request failed: {e}"))
+    })?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(UpdateError::new(
+            UpdateErrorKind::RateLimited,
+            "GitHub API rate limit hit; try again in a few minutes",
+        ).into());
+    }
+    if !status.is_success() {
+        return Err(UpdateError::new(
+            UpdateErrorKind::Network,
+            format!("GitHub API returned HTTP {status}"),
+        ).into());
+    }
+    let body = resp.text().await.map_err(|e| {
+        UpdateError::new(UpdateErrorKind::Network, format!("failed to read API response: {e}"))
+    })?;
+    parse_latest_tag(&body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +340,36 @@ mod tests {
         assert_eq!(j.pointer("/current"), Some(&Value::from("0.2.8")));
         assert_eq!(j.pointer("/latest"), Some(&Value::from("0.2.9")));
         assert!(j.get("target").is_some());
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_tag_reads_tag_name_from_server() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(GET).path("/repos/outputlayer/rwa_cli/releases/latest");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({"tag_name": "v0.9.9"}));
+        }).await;
+
+        let client = http_client();
+        let tag = fetch_latest_tag(&client, &server.base_url()).await.unwrap();
+        assert_eq!(tag, "v0.9.9");
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_tag_maps_rate_limit_to_kind() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(GET);
+            then.status(403).body("rate limited");
+        }).await;
+
+        let client = http_client();
+        let err = fetch_latest_tag(&client, &server.base_url()).await.unwrap_err();
+        let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
+        assert_eq!(ue.kind, UpdateErrorKind::RateLimited);
     }
 }
