@@ -67,6 +67,36 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
+/// The release asset name + inner binary name for a target triple.
+#[derive(Debug)]
+struct AssetSpec {
+    archive: String,
+    inner_bin: &'static str,
+}
+
+/// Supported release targets (must match `.github/workflows/release.yml`).
+const SUPPORTED_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+];
+
+fn asset_spec(target: &str) -> std::result::Result<AssetSpec, UpdateError> {
+    if !SUPPORTED_TARGETS.contains(&target) {
+        return Err(UpdateError::new(
+            UpdateErrorKind::NoReleaseAsset,
+            format!("no pre-built release for {target}; build from source via `cargo install --git https://github.com/outputlayer/rwa_cli`"),
+        ));
+    }
+    let windows = target.contains("windows");
+    Ok(AssetSpec {
+        archive: format!("rwa-{target}.{}", if windows { "zip" } else { "tar.gz" }),
+        inner_bin: if windows { "rwa.exe" } else { "rwa" },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +126,25 @@ mod tests {
         assert!(is_newer("1.0.0", "0.9.9"));
         assert!(!is_newer("0.2.9", "0.2.9"));
         assert!(!is_newer("0.2.8", "0.2.9"));
+    }
+
+    #[test]
+    fn asset_spec_maps_supported_triples() {
+        let mac = asset_spec("aarch64-apple-darwin").unwrap();
+        assert_eq!(mac.archive, "rwa-aarch64-apple-darwin.tar.gz");
+        assert_eq!(mac.inner_bin, "rwa");
+
+        let win = asset_spec("x86_64-pc-windows-msvc").unwrap();
+        assert_eq!(win.archive, "rwa-x86_64-pc-windows-msvc.zip");
+        assert_eq!(win.inner_bin, "rwa.exe");
+
+        let lin = asset_spec("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(lin.archive, "rwa-x86_64-unknown-linux-gnu.tar.gz");
+    }
+
+    #[test]
+    fn asset_spec_rejects_unsupported_triple() {
+        let err = asset_spec("aarch64-pc-windows-msvc").unwrap_err();
+        assert_eq!(err.kind, UpdateErrorKind::NoReleaseAsset);
     }
 }
