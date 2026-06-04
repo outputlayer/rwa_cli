@@ -297,7 +297,24 @@ Not all tokens are tradable in every session. Use `rwa gm hours --tradable` or t
 
 **Parallel-safe**: parallel trades of *different* tokens from the same wallet work at normal spread. jupiterz routes through multiple market makers internally — if one MM returns a bad quote on small orders, the CLI automatically retries to get a better one. Live-tested: 4-token parallel buy → immediate parallel sell → all 8 swaps at normal spread (0.2–0.7%).
 
-RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs with fast failover. Set `RWA_RPC_URL` to a private RPC for even faster responses.
+RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs with fast failover; transient transport errors and rate limits are retried with exponential backoff before failover.
+
+### Reliability & rate limits
+
+The default public Solana endpoints (`api.mainnet-beta.solana.com`, `solana-rpc.publicnode.com`) are rate-limited and carry no SLA — Solana's own docs recommend against them for anything beyond development. Under load you may see:
+
+```
+Solana RPC error [unavailable] ... all RPC endpoints failed: [... HTTP 429 ...]
+```
+
+The fix is a dedicated endpoint via `RWA_RPC_URL` (or `--rpc-url`). Free tiers from Alchemy, Helius, QuickNode, Chainstack, or dRPC are far more reliable than the public nodes and need only a free API key:
+
+```bash
+export RWA_RPC_URL="https://<your-endpoint>"
+rwa --json gm portfolio
+```
+
+When a custom URL is set the CLI uses only that endpoint (no silent fallback) — set one you trust.
 
 ## Architecture
 

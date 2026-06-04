@@ -162,4 +162,4 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 - `slippage_too_high` → reduce size or skip token
 - `confirmation_timeout` → tx may still land; check Solscan before retrying
 - `on_chain_failure` → treat as real chain failure, not a preview issue
-- `Solana RPC unavailable` → wait 5s, retry; after repeated failures suggest `RWA_RPC_URL`
+- `Solana RPC ... unavailable` / `all RPC endpoints failed` / `HTTP 429` → public nodes are rate-limited; the CLI already retries transient errors and 429s with backoff. On repeated failures, wait a few seconds, or set `RWA_RPC_URL` to a dedicated endpoint (free API key from Alchemy/Helius/QuickNode/Chainstack/dRPC) — the canonical fix per Solana's own docs.

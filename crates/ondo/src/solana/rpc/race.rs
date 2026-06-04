@@ -7,6 +7,25 @@ use eyre::Result;
 use super::error::{SolanaRpcError, SolanaRpcErrorKind};
 use super::{single_attempt, single_batch_attempt, RpcRequest, RpcResponse};
 
+/// Appended to the aggregated "all endpoints failed" error so users hit by
+/// public-RPC rate limits know the supported escape hatch. Matches the
+/// sequential path's wording. Only reached with the default multi-URL list —
+/// a custom RWA_RPC_URL is a single URL and takes the non-aggregate path.
+const RPC_FALLBACK_HINT: &str =
+    ". Hint: set RWA_RPC_URL to a private RPC endpoint, or retry in a few seconds.";
+
+/// Summarize per-URL errors into a single human-readable line.
+fn aggregate_detail(errs: &[SolanaRpcError]) -> String {
+    if errs.is_empty() {
+        return "all RPC endpoints failed with no recorded errors".to_string();
+    }
+    let summary: Vec<String> = errs
+        .iter()
+        .map(|e| format!("{}: {}", e.url.as_deref().unwrap_or("?"), e.detail))
+        .collect();
+    format!("all RPC endpoints failed: [{}]", summary.join(", "))
+}
+
 /// Owned counterpart of `RpcRequest<'a>`, used to move requests into spawned tasks.
 #[derive(Clone)]
 struct OwnedRequest {
@@ -61,15 +80,7 @@ pub(super) async fn rpc_call_race<T: serde::de::DeserializeOwned + Send + 'stati
     }
 
     let method = req.method.to_string();
-    let detail = if errs.is_empty() {
-        "all RPC endpoints failed with no recorded errors".to_string()
-    } else {
-        let summary: Vec<String> = errs
-            .iter()
-            .map(|e| format!("{}: {}", e.url.as_deref().unwrap_or("?"), e.detail))
-            .collect();
-        format!("all RPC endpoints failed: [{}]", summary.join(", "))
-    };
+    let detail = format!("{}{RPC_FALLBACK_HINT}", aggregate_detail(&errs));
 
     Err(SolanaRpcError::new(
         SolanaRpcErrorKind::Unavailable,
@@ -134,15 +145,7 @@ pub(super) async fn rpc_batch_race(
         }
     }
 
-    let detail = if errs.is_empty() {
-        "all RPC endpoints failed with no recorded errors".to_string()
-    } else {
-        let summary: Vec<String> = errs
-            .iter()
-            .map(|e| format!("{}: {}", e.url.as_deref().unwrap_or("?"), e.detail))
-            .collect();
-        format!("all RPC endpoints failed: [{}]", summary.join(", "))
-    };
+    let detail = format!("{}{RPC_FALLBACK_HINT}", aggregate_detail(&errs));
 
     Err(SolanaRpcError::new(SolanaRpcErrorKind::Unavailable, None, None, None, None, detail).into())
 }

@@ -170,7 +170,10 @@ pub(super) async fn single_attempt<T: serde::de::DeserializeOwned>(
         let resp = match client.post(url).json(req).timeout(timeout).send().await {
             Ok(r) => r,
             Err(e) => {
-                return Err(SolanaRpcError::new(
+                // Transient transport error (connection reset, timeout, etc.).
+                // `is_retryable()` classifies Network as retryable, so retry the
+                // same URL with backoff instead of giving up after one blip.
+                last_err = Some(SolanaRpcError::new(
                     SolanaRpcErrorKind::Network,
                     Some(req.method),
                     Some(url),
@@ -178,6 +181,7 @@ pub(super) async fn single_attempt<T: serde::de::DeserializeOwned>(
                     None,
                     e.to_string(),
                 ));
+                continue;
             }
         };
 
@@ -298,11 +302,15 @@ pub(super) async fn single_batch_attempt(
         let resp = match client.post(url).json(reqs).timeout(timeout).send().await {
             Ok(r) => r,
             Err(e) => {
-                return Err(SolanaRpcError::new(
+                // Transient transport error (connection reset, timeout, etc.).
+                // `is_retryable()` classifies Network as retryable, so retry the
+                // same URL with backoff instead of giving up after one blip.
+                last_err = Some(SolanaRpcError::new(
                     SolanaRpcErrorKind::Network,
                     None, Some(url), None, None,
                     e.to_string(),
                 ));
+                continue;
             }
         };
 
@@ -458,6 +466,88 @@ mod tests {
     #[test]
     fn http_client_is_initialized() {
         let _ = &*HTTP;
+    }
+
+    /// Spawn a one-shot fake HTTP server that drops the first connection
+    /// (simulating a transient transport error on the client's `.send()`),
+    /// then serves `body` as a 200 JSON response on the second connection.
+    /// Returns the base URL to point an RPC attempt at.
+    async fn spawn_drop_then_ok_server(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            // Connection #1: accept then drop → client sees a transport error.
+            if let Ok((sock1, _)) = listener.accept().await {
+                drop(sock1);
+            }
+            // Connection #2: read the request, then return a valid JSON response.
+            if let Ok((mut sock2, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock2.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock2.write_all(resp.as_bytes()).await;
+                let _ = sock2.flush().await;
+            }
+        });
+
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn single_batch_attempt_retries_transient_network_error() {
+        // Regression: a transient transport error on `.send()` must be retried,
+        // not returned immediately. This is the root cause of intermittent
+        // `gm portfolio` failures when one public endpoint blips and the other
+        // is rate-limited. `is_retryable()` classifies Network as retryable;
+        // the attempt loop must honor that.
+        let url = spawn_drop_then_ok_server(
+            r#"[{"jsonrpc":"2.0","id":1,"result":"ok"}]"#,
+        )
+        .await;
+
+        let client = reqwest::Client::new();
+        let reqs = vec![RpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "m",
+            params: json!([]),
+        }];
+        let out = single_batch_attempt(&client, &url, &reqs, std::time::Duration::from_secs(5))
+            .await
+            .expect("transient network error should be retried, second attempt succeeds");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].get("result").and_then(|v| v.as_str()), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn single_attempt_retries_transient_network_error() {
+        // Same regression guard for the single (non-batch) RPC path used by
+        // race-mode reads like getBalance / getTokenAccountsByOwner.
+        let url = spawn_drop_then_ok_server(
+            r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#,
+        )
+        .await;
+
+        let client = reqwest::Client::new();
+        let req = RpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "m",
+            params: json!([]),
+        };
+        let resp: RpcResponse<String> =
+            single_attempt(&client, &url, &req, std::time::Duration::from_secs(5))
+                .await
+                .expect("transient network error should be retried, second attempt succeeds");
+        assert_eq!(resp.result.as_deref(), Some("ok"));
     }
 
     #[test]
