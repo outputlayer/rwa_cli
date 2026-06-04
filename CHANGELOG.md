@@ -9,6 +9,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.8] — 2026-06-04 — RPC reliability & agent JSON
+
+### Fixed
+
+- **`gm portfolio` no longer fails on a single transient RPC blip.** Transport errors (connection reset, timeout) during a Solana RPC call were returned immediately without retry, contradicting the retryability classifier. In race mode, one endpoint's transient error plus a rate-limit (HTTP 429) on the other made the whole call fail (`error sending request for url ... all RPC endpoints failed`). Transient network/timeout errors are now retried with exponential backoff like 429/5xx, on both the single and batch RPC paths.
+- **Sell-percentage math uses exact integer arithmetic** (`pct_of_u128`) instead of float, avoiding precision drift on `sell <SYM> <PCT>%` and `close-all <PCT>%`.
+- Retry transient failures on Ondo HTTP API calls (prices, history, session limits).
+
+### Added
+
+- **`error_kind` in JSON error output** — trade/runtime failures surface a stable machine-readable kind (`market_closed`, `not_tradable`, `slippage_too_high`, `quote_expired`, `swap_rejected`, …) for agents and scripts.
+- **`unavailable[]` in `gm portfolio` JSON** — symbols whose market data can't be fetched are skipped from positions and reported separately with a reason, instead of silently distorting totals.
+- **Persistent JSONL audit log** for swap operations.
+- **`RWA_RPC_URL` hint** is now surfaced in race-mode "all endpoints failed" errors (the sequential path already had it). README and `llms.txt` document the public-node rate-limit reality and the free dedicated-endpoint escape hatch.
+
+### Internal
+
+- Split `solana/rpc.rs` into `rpc/{mod,error,sequential,race}` and `jupiter.rs` into `jupiter/{types,order,execute}`.
+- Extracted shared `gm/helpers`, unified `close_all` sequential/parallel paths, and per-item processors in basket flows.
+- Replaced silent `unwrap_or(0.0)` / parse fallbacks with `.expect()` on invariant paths so bad upstream data fails loudly.
+
+### Docs
+
+- Fixed README Architecture section drift (module files that became directories: `api/`, `wallet/`, `solana/rpc/`).
+
+### Tests
+
+- Workspace test count: 236 → 250, including 2 regression tests for transient-RPC-error retry (local TCP server that drops the first connection, then serves a valid response).
+
+---
+
 ## [0.2.7] — 2026-05-09 — Security hot-fix
 
 ### Security
