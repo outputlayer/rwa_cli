@@ -34,6 +34,15 @@ pub enum Commands {
         #[command(subcommand)]
         action: cmd::keys::KeysAction,
     },
+    /// Update rwa to the latest release
+    Update {
+        /// Only check for a newer version; don't replace the binary
+        #[arg(long)]
+        check: bool,
+        /// Skip the confirmation prompt and update immediately
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 fn lock_path() -> Result<PathBuf> {
@@ -71,6 +80,7 @@ pub async fn run() -> Result<()> {
     let result = match cli.command {
         Commands::Gm { action } => cmd::gm::execute(action, json, cli.rpc_url.as_deref()).await,
         Commands::Keys { action } => cmd::keys::execute(action).await,
+        Commands::Update { check, yes } => cmd::update::run(check, yes, json).await,
     };
 
     // Explicit unlock (also happens on drop, but be clear)

@@ -311,6 +311,115 @@ fn replace_running_binary(new_bin: &Path) -> Result<()> {
     })
 }
 
+const RELEASE_BASE: &str = "https://github.com/outputlayer/rwa_cli/releases";
+
+fn print_json(status: &'static str, current: &str, latest: &str) {
+    let out = UpdateJson {
+        status,
+        current: current.to_string(),
+        latest: latest.to_string(),
+        target: env!("RWA_TARGET"),
+    };
+    println!("{}", serde_json::to_string(&out).unwrap_or_default());
+}
+
+fn print_json_error(err: &eyre::Error) {
+    let kind = err.downcast_ref::<UpdateError>().map(|u| u.kind.label());
+    let body = serde_json::json!({
+        "status": "error",
+        "error": err.to_string(),
+        "error_kind": kind,
+    });
+    println!("{body}");
+}
+
+/// Prompt the user to confirm; returns true on y/yes.
+fn confirm(current: &str, latest: &str) -> Result<bool> {
+    use std::io::Write;
+    print!("Update rwa {current} -> {latest}? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+pub async fn run(check: bool, yes: bool, json: bool) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let client = http_client();
+
+    let result = async {
+        let latest_tag = fetch_latest_tag(&client, API_BASE).await?;
+        let latest = latest_tag.trim_start_matches('v');
+
+        match decide(latest, current, check, yes, json) {
+            UpdateAction::UpToDate => {
+                if json {
+                    print_json("up_to_date", current, latest);
+                } else {
+                    println!("Already up to date (v{current}).");
+                }
+            }
+            UpdateAction::ReportAvailable => {
+                if json {
+                    print_json("update_available", current, latest);
+                } else {
+                    println!("Update available: v{current} -> v{latest}");
+                    println!("Run `rwa update -y` to install it.");
+                }
+            }
+            UpdateAction::Confirm => {
+                if !confirm(current, latest)? {
+                    println!("Update cancelled.");
+                    return Ok(());
+                }
+                perform(&client, &latest_tag, current, latest, json).await?;
+            }
+            UpdateAction::Perform => {
+                perform(&client, &latest_tag, current, latest, json).await?;
+            }
+        }
+        Ok::<(), eyre::Error>(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        if json {
+            print_json_error(&err);
+            std::process::exit(1);
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+async fn perform(
+    client: &reqwest::Client,
+    latest_tag: &str,
+    current: &str,
+    latest: &str,
+    json: bool,
+) -> Result<()> {
+    let spec = asset_spec(env!("RWA_TARGET"))?;
+    let download_base = format!("{RELEASE_BASE}/download/{latest_tag}");
+    let workdir = std::env::temp_dir().join(format!("rwa-update-{}", std::process::id()));
+
+    let outcome = async {
+        let bin = download_verify_extract(client, &download_base, &spec, &workdir).await?;
+        replace_running_binary(&bin)
+    }
+    .await;
+
+    std::fs::remove_dir_all(&workdir).ok();
+    outcome?;
+
+    if json {
+        print_json("updated", current, latest);
+    } else {
+        println!("Updated rwa v{current} -> v{latest}.");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
