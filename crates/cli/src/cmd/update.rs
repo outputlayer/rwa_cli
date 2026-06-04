@@ -176,6 +176,7 @@ struct UpdateJson {
 
 const API_BASE: &str = "https://api.github.com";
 const REPO_PATH: &str = "/repos/outputlayer/rwa_cli/releases/latest";
+const RELEASE_BASE: &str = "https://github.com/outputlayer/rwa_cli/releases";
 
 /// Build the HTTP client. GitHub's API requires a User-Agent.
 fn http_client() -> reqwest::Client {
@@ -302,16 +303,16 @@ fn replace_running_binary(new_bin: &Path) -> Result<()> {
         }
     }
     self_replace::self_replace(new_bin).map_err(|e| {
-        let kind = if e.kind() == std::io::ErrorKind::PermissionDenied {
-            UpdateErrorKind::NotWritable
-        } else {
-            UpdateErrorKind::Network
-        };
-        UpdateError::new(kind, format!("could not replace binary: {e}")).into()
+        // Any failure replacing the on-disk executable is a write/replace
+        // failure (permissions, missing temp binary, cross-device, disk full) —
+        // never a network error.
+        UpdateError::new(
+            UpdateErrorKind::NotWritable,
+            format!("could not replace binary: {e}"),
+        )
+        .into()
     })
 }
-
-const RELEASE_BASE: &str = "https://github.com/outputlayer/rwa_cli/releases";
 
 fn print_json(status: &'static str, current: &str, latest: &str) {
     let out = UpdateJson {
@@ -320,7 +321,7 @@ fn print_json(status: &'static str, current: &str, latest: &str) {
         latest: latest.to_string(),
         target: env!("RWA_TARGET"),
     };
-    println!("{}", serde_json::to_string(&out).unwrap_or_default());
+    println!("{}", serde_json::to_string(&out).expect("UpdateJson is always serializable"));
 }
 
 fn print_json_error(err: &eyre::Error) {
@@ -696,6 +697,6 @@ mod tests {
         let bogus = std::path::Path::new("/nonexistent/rwa-binary-xyz");
         let err = replace_running_binary(bogus).unwrap_err();
         let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
-        assert!(matches!(ue.kind, UpdateErrorKind::NotWritable | UpdateErrorKind::Network));
+        assert_eq!(ue.kind, UpdateErrorKind::NotWritable);
     }
 }
