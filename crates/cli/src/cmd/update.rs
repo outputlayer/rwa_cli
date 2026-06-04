@@ -247,6 +247,7 @@ async fn download_verify_extract(
     extract_binary(&archive_path, workdir, spec.inner_bin)
 }
 
+/// GET `url` and return the response body bytes, mapping failures to `UpdateErrorKind::Network`.
 async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     let resp = client.get(url).send().await.map_err(|e| {
         UpdateError::new(UpdateErrorKind::Network, format!("download failed: {e}"))
@@ -262,10 +263,16 @@ async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> 
     })?.to_vec())
 }
 
+/// GET `url` and return the response body as a UTF-8 (lossy) string.
 async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&http_get_bytes(client, url).await?).into_owned())
 }
 
+// Archive extraction: both `tar::Archive::unpack` and `zip::ZipArchive::extract`
+// reject entries that resolve outside `dest` (tar/zip-slip protection) in their
+// current resolved versions. This is backstopped by SHA-256 verification of the
+// archive against the signed release manifest before we ever write to disk, and
+// by the archives coming only from this repo's GitHub Releases over HTTPS.
 #[cfg(unix)]
 fn extract_binary(archive: &Path, dest: &Path, inner: &str) -> Result<PathBuf> {
     let file = std::fs::File::open(archive)?;
@@ -536,9 +543,10 @@ mod tests {
             when.method(GET).path(format!("/{archive_name}"));
             then.status(200).body(b"not a real archive".to_vec());
         }).await;
+        let bad_hash = "0".repeat(64);
         let _s = server.mock_async(|when, then| {
             when.method(GET).path("/SHA256SUMS.txt");
-            then.status(200).body(format!("deadbeef  {archive_name}\n"));
+            then.status(200).body(format!("{bad_hash}  {archive_name}\n"));
         }).await;
 
         let client = http_client();
