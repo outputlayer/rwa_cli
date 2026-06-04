@@ -92,6 +92,9 @@ rwa keys import --seed-phrase|--private-key|--file
 rwa keys encrypt
 rwa keys decrypt
 rwa keys show
+
+rwa update --check
+rwa update -y
 ```
 
 `history` default range is `1M`.

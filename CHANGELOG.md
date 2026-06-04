@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.9] — 2026-06-04 — Self-update
+
+### Added
+
+- **`rwa update`** — upgrade the binary in place to the latest GitHub Release. Verifies the downloaded archive's SHA-256 against the published `SHA256SUMS.txt` (fail-closed — a mismatch or missing entry aborts without replacing). `--check` reports availability without changing anything; `-y` skips the confirmation prompt; `--json` emits `{status, current, latest, target}` (or `{status:"error", error_kind}`). Error kinds: `checksum_mismatch`, `no_release_asset`, `not_writable`, `network`, `rate_limited`.
+
+---
+
 ## [0.2.8] — 2026-06-04 — RPC reliability & agent JSON
 
 ### Fixed

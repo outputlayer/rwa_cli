@@ -179,6 +179,7 @@ rwa --json gm send SOL all <ADDR> -y
 | `rwa keys generate` | Create new wallet |
 | `rwa keys import --seed-phrase "..."` | Import from mnemonic |
 | `rwa keys show` | Show address + key file path |
+| `rwa update` | Update rwa to the latest release (`--check` to preview, `-y` to skip confirm) |
 
 ### Flags
 

@@ -82,6 +82,8 @@ Do not rely on legacy flat `portfolio` fields.
 ### Maintenance
 - `rwa --json gm reclaim` — close empty token accounts, reclaim SOL rent
 - `rwa --json gm reclaim --token <SYM>` — reclaim one token only
+- `rwa --json update --check` — report if a newer release exists (status `up_to_date` | `update_available`)
+- `rwa --json update -y` — self-update to latest (verifies SHA-256, fail-closed)
 
 ### Wallet
 - `rwa keys generate --encrypt` — create encrypted wallet
