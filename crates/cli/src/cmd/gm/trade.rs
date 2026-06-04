@@ -14,7 +14,7 @@ pub async fn buy(
 ) -> Result<()> {
     let w = load_wallet()?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, false).await?;
 
     if !json {
         println!(

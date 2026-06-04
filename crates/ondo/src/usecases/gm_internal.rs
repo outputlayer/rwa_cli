@@ -252,4 +252,11 @@ mod tests {
         let err = super::check_buy_funds("100000000", 0, 50_000_000).unwrap_err();
         assert!(err.to_string().contains("Insufficient SOL"));
     }
+
+    #[test]
+    fn check_buy_funds_sol_boundary_is_strict_less_than() {
+        // exactly MIN_SOL_FOR_FEES (2_000_000 lamports) passes; one below fails.
+        assert!(super::check_buy_funds("100000000", 2_000_000, 50_000_000).is_ok());
+        assert!(super::check_buy_funds("100000000", 1_999_999, 50_000_000).is_err());
+    }
 }
