@@ -47,6 +47,9 @@ pub enum GmAction {
         /// Show quote and validate without executing the swap
         #[arg(long)]
         dry_run: bool,
+        /// Preview a quote for any size, skipping the wallet-balance check (implies dry-run; cannot execute)
+        #[arg(long)]
+        quote_only: bool,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -192,6 +195,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             yes,
             slippage,
             dry_run,
+            quote_only,
         } => {
             trade::buy(
                 &symbol,
@@ -201,6 +205,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 json,
                 rpc_url,
                 Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
+                quote_only,
             )
             .await
         }

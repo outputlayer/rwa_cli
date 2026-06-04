@@ -11,10 +11,15 @@ pub async fn buy(
     json: bool,
     rpc_url: Option<&str>,
     slippage: Option<u32>,
+    quote_only: bool,
 ) -> Result<()> {
+    if quote_only && yes {
+        return Err(eyre::eyre!("--quote-only cannot execute a trade; drop -y"));
+    }
+    let dry_run = dry_run || quote_only;
     let w = load_wallet()?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, false).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only).await?;
 
     if !json {
         println!(
