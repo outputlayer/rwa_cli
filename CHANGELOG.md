@@ -9,6 +9,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.10] — 2026-06-05 — Quote-only previews + docs drift guard
+
+### Added
+
+- **`rwa gm buy --quote-only`** — preview a Jupiter quote for any size, skipping only the wallet-balance check, so you can size a trade before funding. Implies dry-run (never executes; `--quote-only -y` is rejected by clap) and still enforces market hours, the 1 USDC minimum, tradability, and the slippage refresh/>3% block. JSON output uses the existing `dry_run` shape.
+
+### Internal
+
+- Extracted a pure, unit-tested `check_buy_funds` from the buy pre-flight.
+- New `docs_sync` integration test fails CI when a CLI command is missing from README.md / CLAUDE.md (catches doc drift).
+
+---
+
 ## [0.2.9] — 2026-06-04 — Self-update
 
 ### Added

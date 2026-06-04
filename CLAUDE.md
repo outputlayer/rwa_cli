@@ -47,6 +47,7 @@ cargo install --path bin/rwa
 - Inputs with too many decimal places must be rejected, not silently rounded
 - `send` and `sell` are different actions
 - There is no `quote` command; preview uses `buy/sell --dry-run`
+- `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
 - Legacy flat `portfolio` fields should be treated as obsolete
@@ -64,6 +65,7 @@ rwa gm tradable [SYM ...]
 rwa gm buy <SYM> <AMT> --dry-run
 rwa gm buy <SYM> <AMT> -y
 rwa gm buy <SYM> <AMT> -y --slippage 50
+rwa gm buy <SYM> <AMT> --quote-only
 rwa gm sell <SYM> <AMT> --dry-run
 rwa gm sell <SYM> <AMT> -y
 rwa gm close-all --dry-run

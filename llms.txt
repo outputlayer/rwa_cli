@@ -42,6 +42,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 
 ### Trading
 - `rwa --json gm buy <SYM> <AMT> --dry-run` — preview buy
+- `rwa --json gm buy <SYM> <AMT> --quote-only` — quote any size without a balance check; never executes (rejects `-y`), still enforces market hours + slippage. JSON `status` is `dry_run` (same shape as `--dry-run`). Use to size a trade before funding.
 - `rwa --json gm buy <SYM> <AMT> -y` — execute buy
 - `rwa --json gm sell <SYM> <AMT> --dry-run` — preview sell
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
