@@ -139,6 +139,7 @@ pub async fn prepare_buy(
     rpc_url: Option<&str>,
     slippage_bps: Option<u32>,
     json: bool,
+    quote_only: bool,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -156,7 +157,7 @@ pub async fn prepare_buy(
     let usdc_amount = amounts::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
 
     let (preflight_res, tradable_res) = tokio::join!(
-        preflight_buy_raw(&taker, &raw_usdc, rpc_url),
+        preflight_buy_raw(&taker, &raw_usdc, rpc_url, !quote_only),
         check_tradable(&symbol, None),
     );
     preflight_res?;

@@ -153,39 +153,57 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
     Ok(())
 }
 
-pub(crate) async fn preflight_buy_raw(pubkey: &str, raw_usdc_amount: &str, rpc_url: Option<&str>) -> Result<()> {
-    check_trading_hours()?;
-    let requested: u128 = raw_usdc_amount.parse().map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
-    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
-    if requested < minimum {
-        return Err(eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
-    }
-
-    let (usdc_res, sol_raw_res) = tokio::join!(
-        solana::get_usdc_balance_raw(pubkey, rpc_url),
-        solana::get_sol_balance_raw(pubkey, rpc_url),
-    );
-
-    let (_, balance_raw) = usdc_res?;
-    let balance: u128 = balance_raw.parse().map_err(|_| eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
+/// Pure affordability check for a buy. Separated from `preflight_buy_raw` so it
+/// is unit-testable and so `--quote-only` can skip it. Amounts are raw on-chain
+/// units; `requested` is raw USDC.
+fn check_buy_funds(usdc_balance_raw: &str, sol_lamports: u64, requested: u128) -> Result<()> {
+    let balance: u128 = usdc_balance_raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain USDC amount: {usdc_balance_raw}"))?;
     if balance < requested {
         return Err(eyre!(
-            "Insufficient USDC: {:.6} USDC (need {:.6})\n  Fund wallet: {pubkey}",
+            "Insufficient USDC: {:.6} USDC (need {:.6})",
             balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
             requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
         ));
     }
-
-    let sol_raw = sol_raw_res?;
-    let sol_lamports: u64 = sol_raw.parse().map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
     let sol = sol_lamports as f64 / 1_000_000_000.0;
     if sol < MIN_SOL_FOR_FEES {
         return Err(eyre!(
-            "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
+            "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL."
         ));
     }
-
     Ok(())
+}
+
+pub(crate) async fn preflight_buy_raw(
+    pubkey: &str,
+    raw_usdc_amount: &str,
+    rpc_url: Option<&str>,
+    check_funds: bool,
+) -> Result<()> {
+    check_trading_hours()?;
+    let requested: u128 = raw_usdc_amount
+        .parse()
+        .map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
+    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
+    if requested < minimum {
+        return Err(eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
+    }
+    if !check_funds {
+        return Ok(());
+    }
+    let (usdc_res, sol_raw_res) = tokio::join!(
+        solana::get_usdc_balance_raw(pubkey, rpc_url),
+        solana::get_sol_balance_raw(pubkey, rpc_url),
+    );
+    let (_, balance_raw) = usdc_res?;
+    let sol_raw = sol_raw_res?;
+    let sol_lamports: u64 = sol_raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
+    check_buy_funds(&balance_raw, sol_lamports, requested)
+        .map_err(|e| eyre!("{e}\n  Fund wallet: {pubkey}"))
 }
 
 pub(crate) fn preflight_sell() -> Result<()> {
@@ -216,5 +234,22 @@ mod tests {
         };
         let hint = slippage_block_hint(-4.0, &order);
         assert!(hint.contains("liquidity") || hint.contains("larger"), "hint: {hint}");
+    }
+
+    #[test]
+    fn check_buy_funds_ok_when_sufficient() {
+        assert!(super::check_buy_funds("100000000", 10_000_000, 50_000_000).is_ok());
+    }
+
+    #[test]
+    fn check_buy_funds_errors_on_insufficient_usdc() {
+        let err = super::check_buy_funds("50000000", 10_000_000, 100_000_000).unwrap_err();
+        assert!(err.to_string().contains("Insufficient USDC"));
+    }
+
+    #[test]
+    fn check_buy_funds_errors_on_insufficient_sol() {
+        let err = super::check_buy_funds("100000000", 0, 50_000_000).unwrap_err();
+        assert!(err.to_string().contains("Insufficient SOL"));
     }
 }
