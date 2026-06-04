@@ -1,6 +1,7 @@
 //! `rwa update` — in-place self-update from the latest GitHub Release.
 
 use eyre::Result;
+use serde::Serialize;
 
 /// Stable, machine-readable failure kinds surfaced in `--json` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +164,14 @@ fn decide(latest: &str, current: &str, check: bool, yes: bool, json: bool) -> Up
     UpdateAction::Confirm
 }
 
+#[derive(Serialize)]
+struct UpdateJson {
+    status: &'static str,
+    current: String,
+    latest: String,
+    target: &'static str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +286,21 @@ mod tests {
     #[test]
     fn decide_human_without_yes_asks_to_confirm() {
         assert_eq!(decide("0.3.0", "0.2.9", false, false, false), UpdateAction::Confirm);
+    }
+
+    #[test]
+    fn update_json_shape_is_stable() {
+        use serde_json::Value;
+        let j = serde_json::to_value(UpdateJson {
+            status: "update_available",
+            current: "0.2.8".into(),
+            latest: "0.2.9".into(),
+            target: env!("RWA_TARGET"),
+        })
+        .unwrap();
+        assert_eq!(j.pointer("/status"), Some(&Value::from("update_available")));
+        assert_eq!(j.pointer("/current"), Some(&Value::from("0.2.8")));
+        assert_eq!(j.pointer("/latest"), Some(&Value::from("0.2.9")));
+        assert!(j.get("target").is_some());
     }
 }
