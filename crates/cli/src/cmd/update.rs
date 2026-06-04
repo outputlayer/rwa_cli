@@ -188,26 +188,42 @@ fn http_client() -> reqwest::Client {
 /// GET the latest release tag. `api_base` is injectable for tests.
 async fn fetch_latest_tag(client: &reqwest::Client, api_base: &str) -> Result<String> {
     let url = format!("{api_base}{REPO_PATH}");
-    let resp = client.get(&url).send().await.map_err(|e| {
+    let resp = client.get(url).send().await.map_err(|e| {
         UpdateError::new(UpdateErrorKind::Network, format!("GitHub API request failed: {e}"))
     })?;
     let status = resp.status();
-    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+
+    // GitHub signals primary rate limiting with 429, or with 403 plus an
+    // `x-ratelimit-remaining: 0` header. A bare 403 (no such header) is a
+    // generic access failure, not rate limiting.
+    let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN
+            && resp
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                == Some("0"));
+    if rate_limited {
         return Err(UpdateError::new(
             UpdateErrorKind::RateLimited,
             "GitHub API rate limit hit; try again in a few minutes",
-        ).into());
+        )
+        .into());
     }
     if !status.is_success() {
         return Err(UpdateError::new(
             UpdateErrorKind::Network,
             format!("GitHub API returned HTTP {status}"),
-        ).into());
+        )
+        .into());
     }
     let body = resp.text().await.map_err(|e| {
         UpdateError::new(UpdateErrorKind::Network, format!("failed to read API response: {e}"))
     })?;
-    parse_latest_tag(&body)
+    parse_latest_tag(&body).map_err(|e| {
+        UpdateError::new(UpdateErrorKind::Network, format!("unexpected GitHub API response: {e}"))
+            .into()
+    })
 }
 
 #[cfg(test)]
@@ -363,13 +379,45 @@ mod tests {
         use httpmock::prelude::*;
         let server = MockServer::start_async().await;
         let _m = server.mock_async(|when, then| {
-            when.method(GET);
-            then.status(403).body("rate limited");
+            when.method(GET).path("/repos/outputlayer/rwa_cli/releases/latest");
+            then.status(403)
+                .header("x-ratelimit-remaining", "0")
+                .body("rate limited");
         }).await;
 
         let client = http_client();
         let err = fetch_latest_tag(&client, &server.base_url()).await.unwrap_err();
         let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
         assert_eq!(ue.kind, UpdateErrorKind::RateLimited);
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_tag_maps_server_error_to_network() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(GET).path("/repos/outputlayer/rwa_cli/releases/latest");
+            then.status(500).body("boom");
+        }).await;
+
+        let client = http_client();
+        let err = fetch_latest_tag(&client, &server.base_url()).await.unwrap_err();
+        let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
+        assert_eq!(ue.kind, UpdateErrorKind::Network);
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_tag_maps_bad_body_to_network() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(GET).path("/repos/outputlayer/rwa_cli/releases/latest");
+            then.status(200).json_body(serde_json::json!({}));
+        }).await;
+
+        let client = http_client();
+        let err = fetch_latest_tag(&client, &server.base_url()).await.unwrap_err();
+        let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
+        assert_eq!(ue.kind, UpdateErrorKind::Network);
     }
 }
