@@ -303,22 +303,26 @@ RPC health tracking: auto-remembers the last good endpoint. 2 public Solana RPCs
 
 ```
 bin/rwa/              → Binary entry point
-crates/cli/           → CLI parsing (clap v4), output formatting
+crates/cli/           → CLI parsing (clap v4), output formatting, process lock
+  src/cmd/gm/         → trade, close_all, basket, reclaim, list, portfolio, send
 crates/ondo/          → Solana RPC, Jupiter API, Ondo API, wallet
   src/amounts.rs      → Exact amount parsing, formatting, percent math
-  src/usecases/gm.rs  → Buy/sell/close-all application flows
+  src/audit.rs        → Persistent JSONL audit log for swaps
+  src/usecases/       → Buy/sell/close-all flows (gm, gm_execute, gm_order, gm_internal)
   src/solana/
-    rpc.rs            → RPC retry + URL rotation
+    rpc/              → RPC retry + URL rotation (mod, error, sequential, race)
     fee.rs            → Priority fees + rent estimation
     transaction.rs    → Transaction building + sending
     transfer.rs       → SOL/SPL transfers + ATA management
-    mod.rs            → Balances, validation, portfolio queries
-  src/jupiter.rs      → Jupiter Ultra swap API
-  src/api.rs          → Ondo session/pricing API
-  src/wallet.rs       → Ed25519 wallet (SLIP-10, BIP39)
+    balance.rs        → Balances + portfolio queries
+    mod.rs            → Validation + shared helpers
+  src/jupiter.rs      → Jupiter swap backends (swap/v2 first, Ultra/public fallbacks)
+  src/jupiter/        → order, execute, types
+  src/api/            → Ondo session/pricing/history API (mod, assets, history, session)
+  src/wallet/         → Ed25519 wallet (SLIP-10, BIP39) + transaction verification
 ```
 
-~5,500 lines of Rust, ~3 MB binary, 100+ tests. Pure Rust, no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), and exact amount conversion helpers shared across trade and transfer flows.
+~13k lines of Rust, ~3 MB binary, 200+ tests. Pure Rust, no native C dependencies, no `unsafe`. Uses `rustls-tls`, `ed25519-dalek` (with zeroize), and exact amount conversion helpers shared across trade and transfer flows.
 
 ## Development
 
