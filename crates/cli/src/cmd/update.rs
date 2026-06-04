@@ -2,6 +2,7 @@
 
 use eyre::Result;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Stable, machine-readable failure kinds surfaced in `--json` output.
@@ -226,6 +227,62 @@ async fn fetch_latest_tag(client: &reqwest::Client, api_base: &str) -> Result<St
     })
 }
 
+/// Download the archive + SHA256SUMS.txt from `download_base`, verify the
+/// checksum, and extract the inner binary into `workdir`. Returns the path to
+/// the extracted binary. Checksum is verified BEFORE extraction (fail-closed).
+async fn download_verify_extract(
+    client: &reqwest::Client,
+    download_base: &str,
+    spec: &AssetSpec,
+    workdir: &Path,
+) -> Result<PathBuf> {
+    let archive_bytes = http_get_bytes(client, &format!("{download_base}/{}", spec.archive)).await?;
+    let manifest = http_get_text(client, &format!("{download_base}/SHA256SUMS.txt")).await?;
+
+    verify_sha256(&archive_bytes, &manifest, &spec.archive)?;
+
+    std::fs::create_dir_all(workdir)?;
+    let archive_path = workdir.join(&spec.archive);
+    std::fs::write(&archive_path, &archive_bytes)?;
+    extract_binary(&archive_path, workdir, spec.inner_bin)
+}
+
+async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    let resp = client.get(url).send().await.map_err(|e| {
+        UpdateError::new(UpdateErrorKind::Network, format!("download failed: {e}"))
+    })?;
+    if !resp.status().is_success() {
+        return Err(UpdateError::new(
+            UpdateErrorKind::Network,
+            format!("download {url} returned HTTP {}", resp.status()),
+        ).into());
+    }
+    Ok(resp.bytes().await.map_err(|e| {
+        UpdateError::new(UpdateErrorKind::Network, format!("read body failed: {e}"))
+    })?.to_vec())
+}
+
+async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
+    Ok(String::from_utf8_lossy(&http_get_bytes(client, url).await?).into_owned())
+}
+
+#[cfg(unix)]
+fn extract_binary(archive: &Path, dest: &Path, inner: &str) -> Result<PathBuf> {
+    let file = std::fs::File::open(archive)?;
+    let dec = flate2::read::GzDecoder::new(file);
+    let mut ar = tar::Archive::new(dec);
+    ar.unpack(dest)?;
+    Ok(dest.join(inner))
+}
+
+#[cfg(windows)]
+fn extract_binary(archive: &Path, dest: &Path, inner: &str) -> Result<PathBuf> {
+    let file = std::fs::File::open(archive)?;
+    let mut zip = zip::ZipArchive::new(file)?;
+    zip.extract(dest)?;
+    Ok(dest.join(inner))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +476,78 @@ mod tests {
         let err = fetch_latest_tag(&client, &server.base_url()).await.unwrap_err();
         let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
         assert_eq!(ue.kind, UpdateErrorKind::Network);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_verify_extract_round_trip() {
+        use httpmock::prelude::*;
+        use sha2::{Digest, Sha256};
+
+        let mut tar_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_buf, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let payload = b"#!/bin/sh\necho updated\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("rwa").unwrap();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append(&header, &payload[..]).unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let digest = {
+            let mut h = Sha256::new();
+            h.update(&tar_buf);
+            hex::encode(h.finalize())
+        };
+        let archive_name = "rwa-x86_64-unknown-linux-gnu.tar.gz";
+        let manifest = format!("{digest}  {archive_name}\n");
+
+        let server = MockServer::start_async().await;
+        let tb = tar_buf.clone();
+        let _a = server.mock_async(|when, then| {
+            when.method(GET).path(format!("/{archive_name}"));
+            then.status(200).body(tb);
+        }).await;
+        let _s = server.mock_async(|when, then| {
+            when.method(GET).path("/SHA256SUMS.txt");
+            then.status(200).body(manifest);
+        }).await;
+
+        let client = http_client();
+        let spec = AssetSpec { archive: archive_name.to_string(), inner_bin: "rwa" };
+        let workdir = std::env::temp_dir().join(format!("rwa-update-test-{}", std::process::id()));
+        let bin = download_verify_extract(&client, &server.base_url(), &spec, &workdir).await.unwrap();
+
+        let extracted = std::fs::read(&bin).unwrap();
+        assert_eq!(extracted, b"#!/bin/sh\necho updated\n");
+        std::fs::remove_dir_all(&workdir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_verify_extract_aborts_on_bad_checksum() {
+        use httpmock::prelude::*;
+        let archive_name = "rwa-x86_64-unknown-linux-gnu.tar.gz";
+        let server = MockServer::start_async().await;
+        let _a = server.mock_async(|when, then| {
+            when.method(GET).path(format!("/{archive_name}"));
+            then.status(200).body(b"not a real archive".to_vec());
+        }).await;
+        let _s = server.mock_async(|when, then| {
+            when.method(GET).path("/SHA256SUMS.txt");
+            then.status(200).body(format!("deadbeef  {archive_name}\n"));
+        }).await;
+
+        let client = http_client();
+        let spec = AssetSpec { archive: archive_name.to_string(), inner_bin: "rwa" };
+        let workdir = std::env::temp_dir().join(format!("rwa-update-bad-{}", std::process::id()));
+        let err = download_verify_extract(&client, &server.base_url(), &spec, &workdir).await.unwrap_err();
+        let ue = err.downcast_ref::<UpdateError>().expect("typed");
+        assert_eq!(ue.kind, UpdateErrorKind::ChecksumMismatch);
+        assert!(!workdir.join("rwa").exists(), "must not extract on checksum failure");
+        std::fs::remove_dir_all(&workdir).ok();
     }
 }
