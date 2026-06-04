@@ -21,7 +21,7 @@ Pre-built binaries for Linux, macOS, and Windows are published on [GitHub Releas
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | RWA_VERSION=v0.2.0 sh
+curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | RWA_VERSION=v0.2.9 sh
 ```
 
 ## Agent Skills
