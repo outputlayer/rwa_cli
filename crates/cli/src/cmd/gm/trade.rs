@@ -3,6 +3,7 @@ use rwa_ondo::{types::Symbol, usecases};
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn buy(
     symbol: &str,
     amount: &str,
