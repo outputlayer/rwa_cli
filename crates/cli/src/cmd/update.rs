@@ -290,6 +290,27 @@ fn extract_binary(archive: &Path, dest: &Path, inner: &str) -> Result<PathBuf> {
     Ok(dest.join(inner))
 }
 
+/// Atomically replace the currently running executable with `new_bin`.
+/// On Unix sets 0755 first; `self_replace` handles the cross-platform swap
+/// (including the Windows running-exe rename).
+fn replace_running_binary(new_bin: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if new_bin.exists() {
+            std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755)).ok();
+        }
+    }
+    self_replace::self_replace(new_bin).map_err(|e| {
+        let kind = if e.kind() == std::io::ErrorKind::PermissionDenied {
+            UpdateErrorKind::NotWritable
+        } else {
+            UpdateErrorKind::Network
+        };
+        UpdateError::new(kind, format!("could not replace binary: {e}")).into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +578,15 @@ mod tests {
         assert_eq!(ue.kind, UpdateErrorKind::ChecksumMismatch);
         assert!(!workdir.join("rwa").exists(), "must not extract on checksum failure");
         std::fs::remove_dir_all(&workdir).ok();
+    }
+
+    #[test]
+    fn replace_maps_permission_denied_to_not_writable() {
+        // A non-existent source path makes self_replace fail with an IO error;
+        // assert our wrapper produces a typed UpdateError rather than a raw eyre.
+        let bogus = std::path::Path::new("/nonexistent/rwa-binary-xyz");
+        let err = replace_running_binary(bogus).unwrap_err();
+        let ue = err.downcast_ref::<UpdateError>().expect("typed update error");
+        assert!(matches!(ue.kind, UpdateErrorKind::NotWritable | UpdateErrorKind::Network));
     }
 }
