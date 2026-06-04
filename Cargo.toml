@@ -52,6 +52,12 @@ dirs = "6"
 hex = "0.4"
 fs2 = "0.4"
 
+# Self-update
+self-replace = "1"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # Wallet encryption
 age = "0.10"
 rpassword = "7"

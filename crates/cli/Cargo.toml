@@ -22,3 +22,11 @@ chrono-tz.workspace = true
 fs2.workspace = true
 dirs.workspace = true
 rpassword.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+self-replace.workspace = true
+flate2.workspace = true
+tar.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+zip.workspace = true
