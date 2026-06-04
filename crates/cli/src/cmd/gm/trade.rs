@@ -51,7 +51,13 @@ pub async fn buy(
         println!("  Would buy:   ~{} {}", plan.amount, plan.symbol);
         println!("  Would spend:  {} USDC", plan.counter_amount);
         if let Some(s) = plan.slippage_pct {
-            println!("  Spread/cost:  {s:.4}%");
+            println!("  Spread/cost:  {s:.4}% ({:.1} bps)", s * 100.0);
+        }
+        if let Some(fee) = plan.order.fee_bps {
+            println!("  Jupiter fee:  {fee} bps");
+        }
+        if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
+            println!("  Est. all-in:  ~{:.1} bps", fee as f64 - s * 100.0);
         }
         return Ok(());
     }
@@ -135,7 +141,13 @@ pub async fn sell(
         println!("  Would sell:    {} {}", plan.amount, plan.symbol);
         println!("  Would receive: ~{} USDC", plan.counter_amount);
         if let Some(s) = plan.slippage_pct {
-            println!("  Spread/cost:   {s:.4}%");
+            println!("  Spread/cost:   {s:.4}% ({:.1} bps)", s * 100.0);
+        }
+        if let Some(fee) = plan.order.fee_bps {
+            println!("  Jupiter fee:   {fee} bps");
+        }
+        if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
+            println!("  Est. all-in:   ~{:.1} bps", fee as f64 - s * 100.0);
         }
         return Ok(());
     }
