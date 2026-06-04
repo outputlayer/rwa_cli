@@ -106,6 +106,36 @@ fn parse_latest_tag(body: &str) -> Result<String> {
         .ok_or_else(|| eyre::eyre!("GitHub API response had no tag_name"))
 }
 
+/// Verify `data`'s SHA-256 against the entry for `archive_name` in a
+/// `sha256sum`-format manifest. Fail-closed: a missing entry or any mismatch
+/// is an error — never a silent pass.
+fn verify_sha256(data: &[u8], manifest: &str, archive_name: &str) -> std::result::Result<(), UpdateError> {
+    use sha2::{Digest, Sha256};
+
+    let expected = manifest
+        .lines()
+        .find_map(|line| {
+            let (hash, name) = line.split_once("  ")?;
+            (name.trim() == archive_name).then(|| hash.trim().to_lowercase())
+        })
+        .ok_or_else(|| UpdateError::new(
+            UpdateErrorKind::ChecksumMismatch,
+            format!("no checksum entry for {archive_name} in SHA256SUMS.txt"),
+        ))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let actual = hex::encode(hasher.finalize());
+
+    if actual != expected {
+        return Err(UpdateError::new(
+            UpdateErrorKind::ChecksumMismatch,
+            format!("checksum mismatch for {archive_name}: expected {expected}, got {actual}"),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +196,32 @@ mod tests {
     #[test]
     fn parse_latest_tag_errors_without_tag_name() {
         assert!(parse_latest_tag(r#"{"message":"Not Found"}"#).is_err());
+    }
+
+    #[test]
+    fn verify_sha256_accepts_matching_digest() {
+        let data = b"hello rwa";
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(data);
+            hex::encode(h.finalize())
+        };
+        let manifest = format!("{digest}  rwa-x86_64-apple-darwin.tar.gz\n");
+        assert!(verify_sha256(data, &manifest, "rwa-x86_64-apple-darwin.tar.gz").is_ok());
+    }
+
+    #[test]
+    fn verify_sha256_rejects_tampered_bytes() {
+        let manifest = "deadbeef  rwa-x86_64-apple-darwin.tar.gz\n";
+        let err = verify_sha256(b"tampered", manifest, "rwa-x86_64-apple-darwin.tar.gz").unwrap_err();
+        assert_eq!(err.kind, UpdateErrorKind::ChecksumMismatch);
+    }
+
+    #[test]
+    fn verify_sha256_rejects_missing_manifest_entry() {
+        let manifest = "deadbeef  some-other-file.tar.gz\n";
+        let err = verify_sha256(b"x", manifest, "rwa-x86_64-apple-darwin.tar.gz").unwrap_err();
+        assert_eq!(err.kind, UpdateErrorKind::ChecksumMismatch);
     }
 }

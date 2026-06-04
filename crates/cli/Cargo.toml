@@ -24,6 +24,7 @@ dirs.workspace = true
 rpassword.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
+hex.workspace = true
 self-replace.workspace = true
 flate2.workspace = true
 tar.workspace = true
