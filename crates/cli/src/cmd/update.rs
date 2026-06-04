@@ -136,6 +136,33 @@ fn verify_sha256(data: &[u8], manifest: &str, archive_name: &str) -> std::result
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAction {
+    UpToDate,
+    ReportAvailable,
+    Confirm,
+    Perform,
+}
+
+/// Pure decision: given versions and flags, what should `run` do?
+/// `check` = report only; `yes` = skip prompt; `json` = non-interactive.
+fn decide(latest: &str, current: &str, check: bool, yes: bool, json: bool) -> UpdateAction {
+    if !is_newer(latest, current) {
+        return UpdateAction::UpToDate;
+    }
+    if check {
+        return UpdateAction::ReportAvailable;
+    }
+    if yes {
+        return UpdateAction::Perform;
+    }
+    if json {
+        // No interactive prompt in JSON mode; require -y to actually replace.
+        return UpdateAction::ReportAvailable;
+    }
+    UpdateAction::Confirm
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +250,32 @@ mod tests {
         let manifest = "deadbeef  some-other-file.tar.gz\n";
         let err = verify_sha256(b"x", manifest, "rwa-x86_64-apple-darwin.tar.gz").unwrap_err();
         assert_eq!(err.kind, UpdateErrorKind::ChecksumMismatch);
+    }
+
+    #[test]
+    fn decide_up_to_date_when_not_newer() {
+        assert_eq!(decide("0.2.9", "0.2.9", false, false, false), UpdateAction::UpToDate);
+        assert_eq!(decide("0.2.8", "0.2.9", false, true, true), UpdateAction::UpToDate);
+    }
+
+    #[test]
+    fn decide_check_only_reports() {
+        assert_eq!(decide("0.3.0", "0.2.9", true, false, false), UpdateAction::ReportAvailable);
+    }
+
+    #[test]
+    fn decide_json_without_yes_reports_only() {
+        assert_eq!(decide("0.3.0", "0.2.9", false, false, true), UpdateAction::ReportAvailable);
+    }
+
+    #[test]
+    fn decide_yes_performs() {
+        assert_eq!(decide("0.3.0", "0.2.9", false, true, false), UpdateAction::Perform);
+        assert_eq!(decide("0.3.0", "0.2.9", false, true, true), UpdateAction::Perform);
+    }
+
+    #[test]
+    fn decide_human_without_yes_asks_to_confirm() {
+        assert_eq!(decide("0.3.0", "0.2.9", false, false, false), UpdateAction::Confirm);
     }
 }
