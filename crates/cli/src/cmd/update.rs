@@ -672,7 +672,7 @@ mod tests {
         let server = MockServer::start_async().await;
         let _a = server.mock_async(|when, then| {
             when.method(GET).path(format!("/{archive_name}"));
-            then.status(200).body(b"not a real archive".to_vec());
+            then.status(200).body(b"not a real archive");
         }).await;
         let bad_hash = "0".repeat(64);
         let _s = server.mock_async(|when, then| {
