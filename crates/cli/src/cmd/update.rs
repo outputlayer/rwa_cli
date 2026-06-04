@@ -97,6 +97,15 @@ fn asset_spec(target: &str) -> std::result::Result<AssetSpec, UpdateError> {
     })
 }
 
+/// Extract `tag_name` from a GitHub `releases/latest` response body.
+fn parse_latest_tag(body: &str) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_str(body)?;
+    v.get("tag_name")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| eyre::eyre!("GitHub API response had no tag_name"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +155,16 @@ mod tests {
     fn asset_spec_rejects_unsupported_triple() {
         let err = asset_spec("aarch64-pc-windows-msvc").unwrap_err();
         assert_eq!(err.kind, UpdateErrorKind::NoReleaseAsset);
+    }
+
+    #[test]
+    fn parse_latest_tag_extracts_tag_name() {
+        let body = r#"{"tag_name":"v0.2.9","name":"v0.2.9","draft":false}"#;
+        assert_eq!(parse_latest_tag(body).unwrap(), "v0.2.9");
+    }
+
+    #[test]
+    fn parse_latest_tag_errors_without_tag_name() {
+        assert!(parse_latest_tag(r#"{"message":"Not Found"}"#).is_err());
     }
 }
