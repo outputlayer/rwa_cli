@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.11] — 2026-06-05 — Cost in bps on previews
+
+### Added
+
+- **Dry-run / `--quote-only` previews now show cost in basis points.** `buy` and `sell` previews print the spread in bps, the Jupiter fee in bps, and an estimated all-in cost (`Est. all-in`), so trade cost is readable at a glance. Human output only — the JSON contract is unchanged (it already carries `fee_bps` and `slippage_pct`).
+
+---
+
 ## [0.2.10] — 2026-06-05 — Quote-only previews + docs drift guard
 
 ### Added
