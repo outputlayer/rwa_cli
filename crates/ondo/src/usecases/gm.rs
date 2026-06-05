@@ -62,15 +62,17 @@ impl std::error::Error for GmTradeError {}
 /// failures bubble up as opaque `eyre` errors today and return `None`.
 #[must_use]
 pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
-    if let Some(g) = err.downcast_ref::<GmTradeError>() {
-        return Some(match g.kind {
-            GmTradeErrorKind::MarketClosed => "market_closed",
-            GmTradeErrorKind::NotTradable => "not_tradable",
-            GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
-        });
-    }
-    if let Some(f) = err.downcast_ref::<jupiter::ExecuteFailure>() {
-        return Some(f.kind.label());
+    for cause in err.chain() {
+        if let Some(g) = cause.downcast_ref::<GmTradeError>() {
+            return Some(match g.kind {
+                GmTradeErrorKind::MarketClosed => "market_closed",
+                GmTradeErrorKind::NotTradable => "not_tradable",
+                GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
+            });
+        }
+        if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
+            return Some(f.kind.label());
+        }
     }
     None
 }
@@ -653,5 +655,21 @@ mod tests {
     fn classify_error_returns_none_for_opaque_eyre_error() {
         let err: eyre::Error = eyre::eyre!("unstructured failure");
         assert_eq!(classify_error(&err), None);
+    }
+
+    #[test]
+    fn classify_error_sees_kind_through_wrap_err() {
+        use eyre::WrapErr;
+        let inner: eyre::Error = jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::QuoteExpired,
+            code: Some(-2003),
+            message: "expired".to_string(),
+        }
+        .into();
+        // Reproduce the real path: execute error wrapped with human context.
+        let wrapped = Err::<(), eyre::Error>(inner)
+            .wrap_err("swap execution failed")
+            .unwrap_err();
+        assert_eq!(classify_error(&wrapped), Some("quote_expired"));
     }
 }
