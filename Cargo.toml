@@ -4,7 +4,7 @@ default-members = ["bin/rwa"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.18"
+version = "0.2.19"
 edition = "2024"
 license = "MIT"
 rust-version = "1.91"
@@ -66,6 +66,7 @@ rpassword = "7"
 httpmock = "0.7"
 proptest = "1"
 zeroize = "1"
+criterion = "0.5"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

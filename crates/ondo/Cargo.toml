@@ -38,4 +38,9 @@ zeroize.workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 proptest.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+
+[[bench]]
+name = "hot_paths"
+harness = false

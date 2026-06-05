@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.19] — 2026-06-05 — Fix all-in cost sign; performance tests
+
+### Fixed
+
+- **`buy`/`sell` `--dry-run` "Est. all-in" now reconciles with the lines above it.** The "Spread/cost" line printed a *favorable* spread as a positive number while "Est. all-in" subtracted it, so the figures didn't visibly add up (a favorable 13.6 bps spread + 10 bps fee printed as `-3.6`, which looked wrong). Both lines now use one signed-cost convention — **positive = costs you, negative = in your favor** — so Spread + Fee = Est. all-in. JSON `slippage_pct` keeps its raw sign; only the human preview changed.
+
+### Added
+
+- **Performance test suite.** Criterion microbenchmarks for hot CPU paths (`cargo bench -p rwa-ondo`: amount formatting, address validation, the sign-time tx parser `decode_and_verify`); deterministic unit tests for `/order` retry classification and exponential backoff; a semaphore-concurrency timing test; and `scripts/bench-latency.sh` for real command latency (p50/p95) and basket sequential-vs-parallel. The full end-to-end retry test (~12 s of real backoff) is `#[ignore]`d — run with `--ignored`.
+
+---
+
 ## [0.2.18] — 2026-06-05 — `RWA_EXCLUDE_ROUTERS` escape hatch
 
 ### Added
