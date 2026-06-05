@@ -103,6 +103,7 @@ pub enum ExecuteFailureKind {
     QuoteExpired,
     SwapRejected,
     InternalError,
+    Unavailable,
     Unknown,
 }
 
@@ -128,7 +129,7 @@ impl ExecuteFailureKind {
     #[must_use]
     pub fn retry_action(self) -> ExecuteRetryAction {
         match self {
-            Self::MissingCachedOrder | Self::QuoteExpired | Self::SwapRejected | Self::InternalError => ExecuteRetryAction::RefreshOrder,
+            Self::MissingCachedOrder | Self::QuoteExpired | Self::SwapRejected | Self::InternalError | Self::Unavailable => ExecuteRetryAction::RefreshOrder,
             Self::FailedToLand | Self::RfqFailedToLand => ExecuteRetryAction::RetrySameOrder,
             Self::InvalidSignedTransaction
             | Self::InvalidMessageBytes
@@ -155,6 +156,7 @@ impl ExecuteFailureKind {
             Self::QuoteExpired => "quote_expired",
             Self::SwapRejected => "swap_rejected",
             Self::InternalError => "internal_error",
+            Self::Unavailable => "execute_unavailable",
             Self::Unknown => "unknown",
         }
     }
@@ -173,6 +175,7 @@ impl ExecuteFailureKind {
             Self::QuoteExpired => "quote expired — retry",
             Self::SwapRejected => "swap rejected",
             Self::InternalError => "internal error — retry",
+            Self::Unavailable => "unavailable — retry",
             Self::Unknown => "",
         }
     }
@@ -232,5 +235,14 @@ mod tests {
         let msg = failure.to_string();
         assert!(msg.contains("code -1000"));
         assert!(msg.contains("failed to land"));
+    }
+
+    #[test]
+    fn unavailable_kind_is_retryable_with_refresh() {
+        assert_eq!(
+            ExecuteFailureKind::Unavailable.retry_action(),
+            ExecuteRetryAction::RefreshOrder
+        );
+        assert_eq!(ExecuteFailureKind::Unavailable.label(), "execute_unavailable");
     }
 }
