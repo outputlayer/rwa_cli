@@ -31,10 +31,13 @@ pub const USDC_DECIMALS: u8 = 6;
 /// Ondo GM tokens on Solana use 9 decimals (Solana standard).
 pub const GM_SOL_DECIMALS: u8 = 9;
 
-const SWAP_V2_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v2";
+// Jupiter is deprecating `lite-api.jup.ag` and throttling it to force migration;
+// `api.jup.ag` serves the same paths. Const names keep the `_LITE_` suffix for
+// import stability — they now point at api.jup.ag.
+const SWAP_V2_LITE_API_BASE: &str = "https://api.jup.ag/swap/v2";
 const ULTRA_API_BASE: &str = "https://ultra-api.jup.ag";
-const ULTRA_LITE_API_BASE: &str = "https://lite-api.jup.ag/ultra/v1";
-const METIS_LITE_API_BASE: &str = "https://lite-api.jup.ag/swap/v1";
+const ULTRA_LITE_API_BASE: &str = "https://api.jup.ag/ultra/v1";
+const METIS_LITE_API_BASE: &str = "https://api.jup.ag/swap/v1";
 const JUPITER_CLIENT_PLATFORM: &str = "jupiter.cli";
 
 /// Concurrency limit for `/order` (quote) requests.
@@ -49,4 +52,17 @@ static EXECUTE_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 
 fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     request.header("x-client-platform", JUPITER_CLIENT_PLATFORM)
+}
+
+#[cfg(test)]
+mod base_url_tests {
+    use super::{METIS_LITE_API_BASE, SWAP_V2_LITE_API_BASE, ULTRA_LITE_API_BASE};
+
+    #[test]
+    fn jupiter_bases_use_api_host_not_deprecated_lite() {
+        for base in [SWAP_V2_LITE_API_BASE, ULTRA_LITE_API_BASE, METIS_LITE_API_BASE] {
+            assert!(base.starts_with("https://api.jup.ag/"), "still on a non-api host: {base}");
+            assert!(!base.contains("lite-api"), "still on deprecated lite-api: {base}");
+        }
+    }
 }
