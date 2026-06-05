@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.18] — 2026-06-05 — `RWA_EXCLUDE_ROUTERS` escape hatch
+
+### Added
+
+- **`RWA_EXCLUDE_ROUTERS`** — comma-separated list of Jupiter routers (e.g. `jupiterz,dflow`) to avoid when quoting. Complements the automatic route-around-unfillable behavior (v0.2.17) with a manual pin for a router that is persistently bad for you. Applies to `buy`, `sell`, and the auto-retry refetch; merged (deduped) with any routers the retry loop already excluded. Verified with a real round-trip forced onto `metis`.
+
+---
+
 ## [0.2.17] — 2026-06-05 — Route around unfillable quotes
 
 ### Fixed
