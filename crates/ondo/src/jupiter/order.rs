@@ -155,7 +155,7 @@ async fn get_order_with_retries(
             Err(e) => {
                 let msg = format!("{e}");
                 if attempt < ORDER_MAX_RETRIES && is_retryable_order_error(&msg) {
-                    let backoff = std::time::Duration::from_millis(800 * 2u64.pow(attempt));
+                    let backoff = order_backoff(attempt);
                     tokio::time::sleep(backoff).await;
                     last_err = e;
                     continue;
@@ -259,6 +259,12 @@ async fn get_order_inner(
     }
 
     Ok(resp)
+}
+
+/// Exponential backoff before the `attempt`-th `/order` retry: 800ms · 2^attempt
+/// (0.8s, 1.6s, 3.2s, 6.4s …).
+fn order_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(800 * 2u64.pow(attempt))
 }
 
 /// Errors from Jupiter /order that should be retried with backoff.
@@ -421,6 +427,41 @@ async fn get_metis_order(
 mod tests {
     use super::*;
     use crate::USDC_MINT;
+
+    #[test]
+    fn order_backoff_is_exponential() {
+        use std::time::Duration;
+        assert_eq!(order_backoff(0), Duration::from_millis(800));
+        assert_eq!(order_backoff(1), Duration::from_millis(1_600));
+        assert_eq!(order_backoff(2), Duration::from_millis(3_200));
+        assert_eq!(order_backoff(3), Duration::from_millis(6_400));
+        // Sum of the 4 waits before giving up after ORDER_MAX_RETRIES.
+        let total: u128 = (0..ORDER_MAX_RETRIES).map(|a| order_backoff(a).as_millis()).sum();
+        assert_eq!(total, 12_000);
+    }
+
+    #[test]
+    fn retryable_order_errors_are_classified() {
+        // Transient → retry with backoff.
+        assert!(is_retryable_order_error("Jupiter /order server error (500)"));
+        assert!(is_retryable_order_error("Jupiter /order rate limited (429)"));
+        assert!(is_retryable_order_error("Jupiter /order network error: connection reset"));
+        assert!(is_retryable_order_error("not available from market maker"));
+        assert!(is_retryable_order_error("Winning quote has no transaction"));
+        // Hard → fail fast, no retry.
+        assert!(!is_retryable_order_error("Jupiter API error (HTTP 400): bad input"));
+        assert!(!is_retryable_order_error("No swap route found — TOKEN_NOT_TRADABLE"));
+    }
+
+    #[test]
+    fn route_like_errors_are_classified() {
+        // Route-not-found → fall through to the next backend, not a hard stop.
+        assert!(is_route_like_order_error("No swap route found — x"));
+        assert!(is_route_like_order_error("Failed to get quotes"));
+        assert!(is_route_like_order_error("COULD_NOT_FIND_ANY_ROUTE"));
+        assert!(is_route_like_order_error("TOKEN_NOT_TRADABLE"));
+        assert!(!is_route_like_order_error("Jupiter /order server error (500)"));
+    }
 
     #[test]
     fn merge_excluded_routers_combines_and_dedups() {

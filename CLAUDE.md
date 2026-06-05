@@ -9,6 +9,8 @@ cargo build
 cargo build --release
 cargo clippy --all-targets
 cargo test --workspace
+cargo bench -p rwa-ondo            # criterion microbenchmarks (hot CPU paths)
+bash scripts/bench-latency.sh      # real command latency p50/p95 (network-bound)
 cargo run -- gm hours
 cargo install --path bin/rwa
 ```
