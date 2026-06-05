@@ -17,10 +17,38 @@
 //! unreachable the check fails closed (we do not sign what we cannot verify).
 
 use base64::Engine;
-use eyre::{Result, eyre};
+use eyre::Result;
 
 use super::rpc::{RpcMode, rpc_call_simple};
 use super::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, derive_ata_pubkey};
+
+/// Why a pre-sign swap simulation refused. The execute layer maps each to the
+/// right action: an unfillable route is retried (with that router excluded), an
+/// unsafe balance delta is a hard security refusal, and an unreachable RPC fails
+/// closed.
+#[derive(Debug)]
+pub enum SwapSimError {
+    /// The transaction would fail on-chain (e.g. an RFQ market maker that can't
+    /// fill). Not a safety problem with *our* intent — a different route may work.
+    OnChainWouldFail(String),
+    /// The simulated balance deltas violate the swap intent (overspend, or the
+    /// expected output mint not credited). A hard refusal — never retried.
+    UnsafeDelta(String),
+    /// Could not reach an RPC to simulate. We do not sign what we cannot verify.
+    RpcUnavailable(String),
+}
+
+impl std::fmt::Display for SwapSimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OnChainWouldFail(s) => write!(f, "swap would fail on-chain: {s}"),
+            Self::UnsafeDelta(s) => write!(f, "swap simulation rejected: {s}"),
+            Self::RpcUnavailable(s) => write!(f, "could not simulate swap (RPC unavailable): {s}"),
+        }
+    }
+}
+
+impl std::error::Error for SwapSimError {}
 
 /// SPL token `Account` layout: `mint[32] | owner[32] | amount[u64 LE] | …`.
 /// The `amount` field sits at byte offset 64 for both classic Token and
@@ -54,20 +82,24 @@ fn token_amount_from_account(account: Option<&serde_json::Value>) -> u128 {
 /// `Ok(())` only when the input debit is positive and within the expected
 /// amount, and the output mint was credited. Separated from I/O so it is unit
 /// tested directly — this is the money-safety invariant.
-fn deltas_are_safe(input_debited: u128, expected_input: u128, output_credited: u128) -> Result<()> {
+fn deltas_are_safe(
+    input_debited: u128,
+    expected_input: u128,
+    output_credited: u128,
+) -> std::result::Result<(), SwapSimError> {
     if input_debited == 0 {
-        return Err(eyre!(
-            "swap simulation debited nothing from the input mint — refusing to sign"
+        return Err(SwapSimError::UnsafeDelta(
+            "debited nothing from the input mint".into(),
         ));
     }
     if input_debited > expected_input {
-        return Err(eyre!(
-            "swap simulation would debit {input_debited} raw units, more than the expected {expected_input} — refusing to sign"
-        ));
+        return Err(SwapSimError::UnsafeDelta(format!(
+            "would debit {input_debited} raw units, more than the expected {expected_input}"
+        )));
     }
     if output_credited == 0 {
-        return Err(eyre!(
-            "swap simulation does not credit this wallet's expected output mint — refusing to sign"
+        return Err(SwapSimError::UnsafeDelta(
+            "does not credit this wallet's expected output mint".into(),
         ));
     }
     Ok(())
@@ -110,7 +142,7 @@ pub async fn verify_swap_simulation(
         RpcMode::Race,
     )
     .await
-    .map_err(|e| eyre!("could not read pre-swap balances for simulation: {e}"))?;
+    .map_err(|e| SwapSimError::RpcUnavailable(format!("reading pre-swap balances: {e}")))?;
 
     // Simulate the exact Jupiter transaction. sigVerify=false because the
     // market-maker fee-payer signature is absent pre-submit; we only want the
@@ -131,7 +163,7 @@ pub async fn verify_swap_simulation(
         RpcMode::Race,
     )
     .await
-    .map_err(|e| eyre!("swap simulation RPC call failed: {e}"))?;
+    .map_err(|e| SwapSimError::RpcUnavailable(format!("simulateTransaction call: {e}")))?;
 
     let value = sim.get("value").unwrap_or(&serde_json::Value::Null);
     if let Some(err) = value.get("err")
@@ -147,9 +179,7 @@ pub async fn verify_swap_simulation(
                     .join(" | ")
             })
             .unwrap_or_default();
-        return Err(eyre!(
-            "swap would fail on-chain (simulation error {err}): {logs}"
-        ));
+        return Err(SwapSimError::OnChainWouldFail(format!("simulation error {err}: {logs}")).into());
     }
 
     let pre_accounts = pre.get("value").and_then(|v| v.as_array());
@@ -169,7 +199,7 @@ pub async fn verify_swap_simulation(
     let input_debited = input_pre.saturating_sub(input_post);
     let output_credited = output_post.saturating_sub(output_pre);
 
-    deltas_are_safe(input_debited, input_amount as u128, output_credited)
+    deltas_are_safe(input_debited, input_amount as u128, output_credited).map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "rwa"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "eyre",
  "rwa-cli",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "rwa-cli"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "rwa-ondo"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "age",
  "base64 0.22.1",

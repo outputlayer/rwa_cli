@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.17] — 2026-06-05 — Route around unfillable quotes
+
+### Fixed
+
+- **`gm buy`/`gm sell` could fail when the quoted router couldn't fill.** Jupiter's aggregator sometimes returns an RFQ route (e.g. `jupiterz`) whose market maker lacks inventory at execution time; the pre-sign simulation correctly caught that the transaction would fail on-chain, but the CLI gave up instead of trying another route. Now an unfillable route is excluded (`excludeRouters`) and the quote is refetched, so a fillable router (metis, dflow, …) is chosen automatically. An *unsafe* simulation (would overspend, or the expected output mint isn't credited) remains a hard, non-retried refusal.
+
+### Changed
+
+- New `route_unfillable` error kind: surfaced only if every retry is exhausted; transient by nature, so the CLI retries it for you.
+
+---
+
 ## [0.2.16] — 2026-06-05 — Swap simulation guard (fixes all swap/v2 trades)
 
 ### Fixed
