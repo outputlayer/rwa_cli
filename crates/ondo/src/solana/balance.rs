@@ -311,6 +311,16 @@ pub async fn get_portfolio_balances_with_urls(
     portfolio_balances_against(wallet, tokens, urls).await
 }
 
+/// True if the error (or any source in its chain) is a Solana RPC `Unavailable`
+/// — the "all endpoints failed" signal that warrants the Jupiter fallback.
+fn is_rpc_unavailable(err: &eyre::Error) -> bool {
+    use super::rpc::{SolanaRpcError, SolanaRpcErrorKind};
+    err.chain().any(|c| {
+        c.downcast_ref::<SolanaRpcError>()
+            .is_some_and(|e| e.kind == SolanaRpcErrorKind::Unavailable)
+    })
+}
+
 async fn portfolio_balances_against(
     wallet: &str,
     tokens: &[GmTokenEntry],
@@ -343,7 +353,15 @@ async fn portfolio_balances_against(
         },
     ];
 
-    let results = rpc_batch_with_retry(client, urls, &reqs, RpcMode::Race).await?;
+    let results = match rpc_batch_with_retry(client, urls, &reqs, RpcMode::Race).await {
+        Ok(r) => r,
+        Err(e) if is_rpc_unavailable(&e) => {
+            return crate::jupiter::holdings::get_holdings_balances(wallet, tokens)
+                .await
+                .map_err(|je| eyre!("Solana RPC unavailable and Jupiter holdings fallback failed: {je} (rpc: {e})"));
+        }
+        Err(e) => return Err(e),
+    };
 
     // Parse SOL + USDC from getMultipleAccounts
     let multi_resp: RpcResponse<GetMultipleAccountsResult> = serde_json::from_value(results[0].clone())
@@ -379,6 +397,12 @@ async fn portfolio_balances_against(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_rpc_unavailable_false_for_opaque_error() {
+        let other: eyre::Error = eyre!("some other failure");
+        assert!(!super::is_rpc_unavailable(&other));
+    }
 
     #[test]
     fn parse_gm_balances_merges_multiple_accounts_for_same_mint() {
