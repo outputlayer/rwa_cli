@@ -161,6 +161,10 @@ pub(crate) async fn execute_with_retry(
 ) -> Result<jupiter::ExecuteResponse> {
     let mut current_order_owned: Option<jupiter::OrderResponse> = None;
     let mut last_err = None;
+    // Routers whose quote passed quoting but would fail on-chain (RFQ MM can't
+    // fill). We refetch excluding these so a fillable route (metis, dflow, …) is
+    // chosen instead.
+    let mut excluded_routers: Vec<String> = Vec::new();
 
     let raw_amount: u64 = params
         .raw_amount
@@ -180,13 +184,23 @@ pub(crate) async fn execute_with_retry(
         match execute_result {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                let retry_action = e
+                let kind = e
                     .downcast_ref::<jupiter::ExecuteFailure>()
-                    .map(|failure| failure.kind.retry_action())
+                    .map(|failure| failure.kind);
+                let retry_action = kind
+                    .map(|k| k.retry_action())
                     .unwrap_or(jupiter::ExecuteRetryAction::None);
 
                 if retry_action == jupiter::ExecuteRetryAction::None || attempt == MAX_SWAP_RETRIES {
                     return Err(e);
+                }
+                // A route that quoted fine but would fail on-chain: exclude it so
+                // the refetch picks a fillable router.
+                if kind == Some(jupiter::ExecuteFailureKind::RouteUnfillable)
+                    && let Some(router) = ord.router.clone()
+                    && !excluded_routers.contains(&router)
+                {
+                    excluded_routers.push(router);
                 }
                 if !json {
                     eprintln!(
@@ -198,13 +212,14 @@ pub(crate) async fn execute_with_retry(
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 if retry_action == jupiter::ExecuteRetryAction::RefreshOrder {
                     current_order_owned = Some(
-                        jupiter::get_order(
+                        jupiter::get_order_excluding(
                             None,
                             params.input_mint,
                             params.output_mint,
                             params.raw_amount,
                             params.taker,
                             params.slippage_bps,
+                            &excluded_routers,
                         )
                         .await
                         .wrap_err("failed to refresh quote after transient error")?,

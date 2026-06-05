@@ -30,6 +30,33 @@ pub async fn get_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
+    get_order_impl(base_url, input_mint, output_mint, amount, taker, slippage_bps, &[]).await
+}
+
+/// Like [`get_order`], but asks Jupiter to avoid the given routers (by their
+/// `router` label, e.g. `jupiterz`). Used to route around a quote that passed
+/// quoting but would fail on-chain (an RFQ market maker that can't fill).
+pub async fn get_order_excluding(
+    base_url: Option<&str>,
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+    excluded_routers: &[String],
+) -> Result<OrderResponse> {
+    get_order_impl(base_url, input_mint, output_mint, amount, taker, slippage_bps, excluded_routers).await
+}
+
+async fn get_order_impl(
+    base_url: Option<&str>,
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    taker: &str,
+    slippage_bps: Option<u32>,
+    excluded_routers: &[String],
+) -> Result<OrderResponse> {
     if let Some(base_url) = base_url {
         let backend = infer_backend_from_base_url(base_url);
         return get_order_with_retries(
@@ -40,6 +67,7 @@ pub async fn get_order(
             amount,
             taker,
             slippage_bps,
+            excluded_routers,
         )
         .await;
     }
@@ -60,6 +88,7 @@ pub async fn get_order(
             amount,
             taker,
             slippage_bps,
+            excluded_routers,
         )
         .await
         {
@@ -89,6 +118,7 @@ pub async fn get_order(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn get_order_with_retries(
     base_url: &str,
     backend: OrderBackend,
@@ -97,6 +127,7 @@ async fn get_order_with_retries(
     amount: &str,
     taker: &str,
     slippage_bps: Option<u32>,
+    excluded_routers: &[String],
 ) -> Result<OrderResponse> {
     let order_url = format!("{base_url}/order");
     let mut last_err = eyre!("Jupiter /order failed");
@@ -114,6 +145,7 @@ async fn get_order_with_retries(
                 amount,
                 taker,
                 slippage_bps,
+                excluded_routers,
             )
             .await
         }; // permit released here
@@ -137,6 +169,7 @@ async fn get_order_with_retries(
 }
 
 /// Single /order attempt — no retries, no semaphore.
+#[allow(clippy::too_many_arguments)]
 async fn get_order_inner(
     order_url: &str,
     backend: OrderBackend,
@@ -145,6 +178,7 @@ async fn get_order_inner(
     amount: &str,
     taker: &str,
     slippage_bps: Option<u32>,
+    excluded_routers: &[String],
 ) -> Result<OrderResponse> {
     let mut request = HTTP.get(order_url).query(&[
         ("inputMint", input_mint),
@@ -157,6 +191,12 @@ async fn get_order_inner(
 
     if let Some(bps) = slippage_bps {
         request = request.query(&[("slippageBps", bps.to_string())]);
+    }
+    if !excluded_routers.is_empty() {
+        // Jupiter swap/v2 accepts a comma-separated `excludeRouters` list; this
+        // lets us avoid a router whose quote would fail on-chain (e.g. an RFQ MM
+        // that can't fill) and fall to one that can (metis, dflow, …).
+        request = request.query(&[("excludeRouters", excluded_routers.join(","))]);
     }
 
     let response = request.send().await

@@ -21,7 +21,7 @@ pub use balance::{
 pub use balance::get_portfolio_balances_with_urls;
 pub use fee::{estimate_gas_needed, estimate_tx_fee, estimate_tx_fee_lamports};
 pub use transaction::{TransactionResult, confirm_transaction, send_signed_transaction};
-pub use swap_verify::verify_swap_simulation;
+pub use swap_verify::{SwapSimError, verify_swap_simulation};
 pub use transfer::{
     transfer_sol, transfer_spl,
     EmptyTokenAccount, get_empty_token_accounts, close_empty_accounts,

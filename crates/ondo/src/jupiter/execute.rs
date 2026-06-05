@@ -69,7 +69,7 @@ async fn execute_managed_order(
     // the router program, so the static byte-parser cannot see the swap legs.
     // Simulate the exact transaction and confirm the real balance deltas before
     // signing — debit ≤ expected input, expected output mint credited.
-    solana::verify_swap_simulation(
+    if let Err(e) = solana::verify_swap_simulation(
         tx_b64,
         &expected.input_mint,
         expected.input_amount,
@@ -78,7 +78,21 @@ async fn execute_managed_order(
         None,
     )
     .await
-    .wrap_err("pre-sign swap simulation check failed")?;
+    {
+        // An unfillable route (RFQ MM can't fill) is retryable with a different
+        // router; an unsafe delta or unreachable RPC is a hard, non-retryable
+        // refusal. Map accordingly so `execute_with_retry` can route around it.
+        let kind = match e.downcast_ref::<solana::SwapSimError>() {
+            Some(solana::SwapSimError::OnChainWouldFail(_)) => ExecuteFailureKind::RouteUnfillable,
+            _ => ExecuteFailureKind::Unknown,
+        };
+        return Err(ExecuteFailure {
+            kind,
+            code: None,
+            message: format!("pre-sign swap simulation check failed: {e}"),
+        }
+        .into());
+    }
 
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;

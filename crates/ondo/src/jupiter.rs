@@ -18,7 +18,7 @@ mod order;
 pub mod types;
 
 pub use execute::execute_order;
-pub use order::get_order;
+pub use order::{get_order, get_order_excluding};
 pub use types::{
     ExecuteFailure, ExecuteFailureKind, ExecuteResponse, ExecuteRetryAction, OrderBackend,
     OrderResponse,

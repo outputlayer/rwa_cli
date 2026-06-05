@@ -104,6 +104,10 @@ pub enum ExecuteFailureKind {
     SwapRejected,
     InternalError,
     Unavailable,
+    /// The quoted route would fail on-chain (caught by pre-sign simulation, e.g.
+    /// an RFQ market maker that can't fill). Synthetic — not a Jupiter code.
+    /// Retried by refetching the quote with that router excluded.
+    RouteUnfillable,
     Unknown,
 }
 
@@ -129,7 +133,7 @@ impl ExecuteFailureKind {
     #[must_use]
     pub fn retry_action(self) -> ExecuteRetryAction {
         match self {
-            Self::MissingCachedOrder | Self::QuoteExpired | Self::SwapRejected | Self::InternalError | Self::Unavailable => ExecuteRetryAction::RefreshOrder,
+            Self::MissingCachedOrder | Self::QuoteExpired | Self::SwapRejected | Self::InternalError | Self::Unavailable | Self::RouteUnfillable => ExecuteRetryAction::RefreshOrder,
             Self::FailedToLand | Self::RfqFailedToLand => ExecuteRetryAction::RetrySameOrder,
             Self::InvalidSignedTransaction
             | Self::InvalidMessageBytes
@@ -157,6 +161,7 @@ impl ExecuteFailureKind {
             Self::SwapRejected => "swap_rejected",
             Self::InternalError => "internal_error",
             Self::Unavailable => "execute_unavailable",
+            Self::RouteUnfillable => "route_unfillable",
             Self::Unknown => "unknown",
         }
     }
@@ -176,6 +181,7 @@ impl ExecuteFailureKind {
             Self::SwapRejected => "swap rejected",
             Self::InternalError => "internal error — retry",
             Self::Unavailable => "unavailable — retry",
+            Self::RouteUnfillable => "quoted route can't fill — trying another",
             Self::Unknown => "",
         }
     }
