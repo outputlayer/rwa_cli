@@ -237,7 +237,7 @@ fn infer_backend_from_base_url(base_url: &str) -> OrderBackend {
         OrderBackend::SwapV2Lite
     } else if base_url.contains("/swap/v1") {
         OrderBackend::MetisV1Lite
-    } else if base_url.contains("lite-api.jup.ag/ultra/v1") {
+    } else if base_url.contains("/ultra/v1") {
         OrderBackend::UltraLite
     } else {
         OrderBackend::Ultra
