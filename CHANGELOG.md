@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.12] — 2026-06-05 — Jupiter api.jup.ag migration + execute resilience
+
+### Fixed
+
+- **Swaps no longer fail when Jupiter throttles the deprecated `lite-api.jup.ag` host.** All Jupiter calls now use `api.jup.ag` (same paths; `lite-api.jup.ag` is deprecated and rate-limited to ~1 req/s). Transient `/execute` failures (HTTP 429/5xx, or a connection error before the request reached Jupiter) are now typed `execute_unavailable` and auto-retried with a fresh order, surfacing a stable `error_kind` (previously these transient failures were untyped and showed only an opaque `swap execution failed`). Ambiguous post-send timeouts are deliberately not retried, to avoid double-submitting a swap.
+
+### Added
+
+- **`RWA_JUPITER_API_KEY`** — sends `x-api-key` to `api.jup.ag` for higher rate limits (the free keyless tier is ~1 req/s; a key raises it). Trade-side analog of `RWA_RPC_URL`.
+
+---
+
 ## [0.2.11] — 2026-06-05 — Cost in bps on previews
 
 ### Added

@@ -97,6 +97,12 @@ export RWA_RPC_URL="https://<your-endpoint>"   # or pass --rpc-url
 
 When set, the CLI uses only that endpoint (no silent fallback).
 
+Jupiter calls use `api.jup.ag` (the public `lite-api.jup.ag` host is deprecated and throttled to ~1 request/second). Under heavy load, set a free Jupiter API key for higher limits:
+
+```bash
+export RWA_JUPITER_API_KEY="<your-jupiter-key>"
+```
+
 <details>
 <summary><b>Performance & parallel speedup</b></summary>
 

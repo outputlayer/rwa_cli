@@ -111,12 +111,13 @@ rwa update -y
 ## Jupiter behavior
 
 - Jupiter handles gas for swaps in many cases; users still need SOL for transfers
+- Jupiter requests use `api.jup.ag` (deprecated `lite-api.jup.ag` retired); set `RWA_JUPITER_API_KEY` to raise limits. Transient `/execute` failures surface as `execute_unavailable` and auto-retry; ambiguous timeouts are not retried.
 - Public routing order is `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback
 - Default slippage is 100 bps
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
-- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, and `on_chain_failure`
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, `on_chain_failure`, and `execute_unavailable`
 
 ## Wallet behavior
 
