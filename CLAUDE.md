@@ -48,6 +48,7 @@ cargo install --path bin/rwa
 - `send` and `sell` are different actions
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape
+- `--max-bps <N>` (buy/sell) rejects trades whose quoted all-in cost (spread + fee) exceeds N bps; `RWA_MAX_BPS` is the env default; surfaced as `cost_too_high`
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
 - Legacy flat `portfolio` fields should be treated as obsolete
@@ -117,7 +118,7 @@ rwa update -y
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
-- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, `on_chain_failure`, and `execute_unavailable`
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, and `execute_unavailable`
 - `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.
 
 ## Wallet behavior

@@ -53,6 +53,7 @@ Fund your wallet with **SOL** (network fees) and **USDC** (trading) before your 
 - **Preview first.** There's no `quote` command — use `--dry-run` on `buy`/`sell` to validate and see a quote without executing.
 - **`-y`** skips the confirmation prompt (required for non-interactive/agent use).
 - **`--quote-only`** (on `buy`) previews a quote for *any* size, skipping the wallet-balance check — useful to size a trade before funding. It never executes (combining with `-y` is rejected) and still blocks on a closed market or >3% slippage. Output uses the same `dry_run` shape.
+- **`--max-bps <N>`** (buy/sell) rejects the trade if the quoted all-in cost (spread + Jupiter fee) exceeds N basis points — a tunable ceiling tighter than the 3% slippage block. Set a global default with `RWA_MAX_BPS`. Applies in `--dry-run`/`--quote-only` too, so agents can use it as a pass/fail cost check.
 - **Amounts**: exact (`100`), percentage (`50%`), or `all`. Converted with exact on-chain precision — too many decimals is rejected, never silently rounded.
 - **`send` ≠ `sell`.** `sell` swaps a token to USDC; `send` transfers assets to another wallet. `send USDC all` sends your *entire* USDC balance, not just recent proceeds.
 - **`close-all`** is the canonical way to exit many positions; it skips dust (< $1.50) and reports it. Use `--parallel` to run all swaps at once.
