@@ -80,8 +80,17 @@ async fn execute_managed_order(
     {
         Ok(r) => r,
         Err(e) => {
+            // Only a connection-phase failure proves Jupiter never received the
+            // request — safe to retry. A timeout is ambiguous (Jupiter may have
+            // already received and executed the swap), so do NOT retry it:
+            // retrying with a fresh order could double-submit the trade.
+            let kind = if e.is_connect() {
+                ExecuteFailureKind::Unavailable
+            } else {
+                ExecuteFailureKind::Unknown
+            };
             return Err(ExecuteFailure {
-                kind: ExecuteFailureKind::Unavailable,
+                kind,
                 code: None,
                 message: format!("Jupiter /execute request failed: {e}"),
             }
@@ -90,7 +99,10 @@ async fn execute_managed_order(
     };
 
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|e| format!("<body read error: {e}>"));
 
     if !status.is_success() {
         return Err(ExecuteFailure {
