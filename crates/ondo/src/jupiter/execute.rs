@@ -7,6 +7,16 @@
 use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
 
+/// Map a non-success `/execute` HTTP status to a failure kind. 429 and 5xx are
+/// transient (retryable via a fresh order); everything else is a hard error.
+fn execute_http_error_kind(status: reqwest::StatusCode) -> ExecuteFailureKind {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        ExecuteFailureKind::Unavailable
+    } else {
+        ExecuteFailureKind::Unknown
+    }
+}
+
 use crate::solana;
 use crate::wallet::{ExpectedSwap, Wallet};
 use crate::HTTP;
@@ -62,19 +72,33 @@ async fn execute_managed_order(
         signed_transaction: signed_tx,
     };
 
-    let response = with_jupiter_headers(HTTP.post(format!("{base_url}/execute")))
+    let response = match with_jupiter_headers(HTTP.post(format!("{base_url}/execute")))
         .json(&req)
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .wrap_err("Jupiter /execute request failed")?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(ExecuteFailure {
+                kind: ExecuteFailureKind::Unavailable,
+                code: None,
+                message: format!("Jupiter /execute request failed: {e}"),
+            }
+            .into());
+        }
+    };
 
     let status = response.status();
-    let body = response.text().await
-        .wrap_err("failed to read Jupiter /execute response")?;
+    let body = response.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        return Err(eyre!("Jupiter execute error (HTTP {status}): {body}"));
+        return Err(ExecuteFailure {
+            kind: execute_http_error_kind(status),
+            code: None,
+            message: format!("Jupiter execute HTTP {status}: {body}"),
+        }
+        .into());
     }
 
     let resp: ExecuteResponse = serde_json::from_str(&body)
@@ -131,7 +155,12 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
             .as_deref()
             .or(resp.error.as_deref())
             .unwrap_or("No signature returned — transaction may have failed");
-        return Err(eyre!("Swap failed: {msg}"));
+        return Err(ExecuteFailure {
+            kind: ExecuteFailureKind::Unknown,
+            code: None,
+            message: format!("Swap failed: {msg}"),
+        }
+        .into());
     }
     Ok(())
 }
@@ -139,6 +168,15 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execute_http_error_kind_maps_transient_vs_hard() {
+        use reqwest::StatusCode;
+        assert_eq!(execute_http_error_kind(StatusCode::TOO_MANY_REQUESTS), ExecuteFailureKind::Unavailable);
+        assert_eq!(execute_http_error_kind(StatusCode::INTERNAL_SERVER_ERROR), ExecuteFailureKind::Unavailable);
+        assert_eq!(execute_http_error_kind(StatusCode::BAD_GATEWAY), ExecuteFailureKind::Unavailable);
+        assert_eq!(execute_http_error_kind(StatusCode::BAD_REQUEST), ExecuteFailureKind::Unknown);
+    }
 
     #[test]
     fn failed_execute_response_preserves_structured_kind() {
