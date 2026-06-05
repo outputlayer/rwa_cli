@@ -13,6 +13,11 @@ use eyre::Result;
 use rwa_ondo::usecases;
 
 use helpers::*;
+
+/// Resolve `RWA_MAX_BPS` from its raw env value: a valid `u32`, else `None`.
+fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+}
 pub(super) use types::{
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
@@ -50,6 +55,9 @@ pub enum GmAction {
         /// Preview a quote for any size, skipping the balance check (implies dry-run, never executes; a wallet is still required as the swap taker)
         #[arg(long, conflicts_with = "yes")]
         quote_only: bool,
+        /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
+        #[arg(long)]
+        max_bps: Option<u32>,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -67,6 +75,9 @@ pub enum GmAction {
         /// Show quote and validate without executing the swap
         #[arg(long)]
         dry_run: bool,
+        /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
+        #[arg(long)]
+        max_bps: Option<u32>,
     },
 
     /// Portfolio positions and P&L (Solana)
@@ -189,14 +200,8 @@ pub enum GmAction {
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Buy {
-            symbol,
-            amount,
-            yes,
-            slippage,
-            dry_run,
-            quote_only,
-        } => {
+        GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps } => {
+            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
             trade::buy(
                 &symbol,
                 &amount,
@@ -206,26 +211,13 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 rpc_url,
                 Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
                 quote_only,
+                max_bps,
             )
             .await
         }
-        GmAction::Sell {
-            symbol,
-            amount,
-            yes,
-            slippage,
-            dry_run,
-        } => {
-            trade::sell(
-                &symbol,
-                &amount,
-                yes,
-                dry_run,
-                json,
-                rpc_url,
-                slippage,
-            )
-            .await
+        GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps } => {
+            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps).await
         }
         GmAction::Portfolio { wallet } => {
             portfolio::portfolio(wallet.as_deref(), json, rpc_url).await
@@ -273,6 +265,14 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn parse_max_bps_env_reads_valid_u32_only() {
+        assert_eq!(parse_max_bps_env(Some("50".to_string())), Some(50));
+        assert_eq!(parse_max_bps_env(Some("  75 ".to_string())), Some(75));
+        assert_eq!(parse_max_bps_env(Some("abc".to_string())), None);
+        assert_eq!(parse_max_bps_env(None), None);
+    }
 
     #[test]
     fn quote_only_conflicts_with_yes_at_parse_time() {

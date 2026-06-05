@@ -137,6 +137,7 @@ pub struct BuyOrderReady {
     pub slippage_pct: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_buy(
     wallet: &wallet::Wallet,
     symbol: &Symbol,
@@ -145,6 +146,7 @@ pub async fn prepare_buy(
     slippage_bps: Option<u32>,
     json: bool,
     quote_only: bool,
+    max_bps: Option<u32>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -179,6 +181,17 @@ pub async fn prepare_buy(
     )
     .await?;
 
+    if let Some(max) = max_bps
+        && let Some(cost) = all_in_cost_bps(slippage_pct, order.fee_bps)
+        && cost > max as f64
+    {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
+
     Ok(SwapPlan {
         symbol,
         amount: amounts::format_amount(&order.out_amount, jupiter::GM_SOL_DECIMALS),
@@ -196,6 +209,7 @@ pub async fn prepare_buy(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_sell(
     wallet: &wallet::Wallet,
     symbol: &Symbol,
@@ -203,6 +217,7 @@ pub async fn prepare_sell(
     rpc_url: Option<&str>,
     slippage_bps: Option<u32>,
     json: bool,
+    max_bps: Option<u32>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -273,6 +288,17 @@ pub async fn prepare_sell(
         None,
     )
     .await?;
+
+    if let Some(max) = max_bps
+        && let Some(cost) = all_in_cost_bps(slippage_pct, order.fee_bps)
+        && cost > max as f64
+    {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
 
     Ok(SwapPlan {
         symbol,
