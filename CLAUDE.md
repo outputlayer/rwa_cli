@@ -118,6 +118,7 @@ rwa update -y
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
 - Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, `on_chain_failure`, and `execute_unavailable`
+- `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.
 
 ## Wallet behavior
 

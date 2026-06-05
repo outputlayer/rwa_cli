@@ -103,6 +103,8 @@ Jupiter calls use `api.jup.ag` (the public `lite-api.jup.ag` host is deprecated 
 export RWA_JUPITER_API_KEY="<your-jupiter-key>"
 ```
 
+If the Solana RPC read fails entirely, `gm portfolio` automatically falls back to Jupiter's Ultra holdings API (`api.jup.ag/ultra/v1/holdings`) so it still returns your balances; the JSON output then includes `"source":"jupiter"`.
+
 <details>
 <summary><b>Performance & parallel speedup</b></summary>
 

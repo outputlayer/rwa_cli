@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.13] — 2026-06-05 — Portfolio Jupiter fallback
+
+### Added
+
+- **`gm portfolio` falls back to Jupiter Ultra holdings when Solana RPC is unavailable.** When every Solana endpoint rate-limits/fails, balances are read from `api.jup.ag/ultra/v1/holdings` instead (honoring `RWA_JUPITER_API_KEY`), so the command keeps working with no config. The JSON output includes `"source":"jupiter"` only on fallback (absent on the normal RPC path); human mode prints a one-line note. Swaps continue to use Swap V2; only the holdings read uses Ultra v1.
+
+---
+
 ## [0.2.12] — 2026-06-05 — Jupiter api.jup.ag migration + execute resilience
 
 ### Fixed

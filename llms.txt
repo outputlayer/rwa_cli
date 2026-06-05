@@ -167,3 +167,4 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 - `on_chain_failure` → treat as real chain failure, not a preview issue
 - `execute_unavailable` (swap) → Jupiter `/execute` was rate-limited/unavailable; the CLI already auto-retries with a fresh order. On repeats, set `RWA_JUPITER_API_KEY` for higher limits.
 - `Solana RPC ... unavailable` / `all RPC endpoints failed` / `HTTP 429` → public nodes are rate-limited; the CLI already retries transient errors and 429s with backoff. On repeated failures, wait a few seconds, or set `RWA_RPC_URL` to a dedicated endpoint (free API key from Alchemy/Helius/QuickNode/Chainstack/dRPC) — the canonical fix per Solana's own docs.
+- `gm portfolio` auto-falls back to Jupiter Ultra holdings when Solana RPC is unavailable; the JSON gains `"source":"jupiter"` (absent on the normal RPC path).
