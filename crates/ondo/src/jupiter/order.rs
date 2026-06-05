@@ -169,6 +169,21 @@ async fn get_order_with_retries(
 }
 
 /// Single /order attempt — no retries, no semaphore.
+/// Combine the routers the retry loop excluded with any pinned via
+/// `RWA_EXCLUDE_ROUTERS` (comma-separated). Pure (env value passed in) for
+/// testability; deduped, blanks trimmed, order preserved.
+fn merge_excluded_routers(passed: &[String], env_raw: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = passed.to_vec();
+    if let Some(raw) = env_raw {
+        for r in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !out.iter().any(|x| x == r) {
+                out.push(r.to_string());
+            }
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn get_order_inner(
     order_url: &str,
@@ -192,11 +207,14 @@ async fn get_order_inner(
     if let Some(bps) = slippage_bps {
         request = request.query(&[("slippageBps", bps.to_string())]);
     }
-    if !excluded_routers.is_empty() {
-        // Jupiter swap/v2 accepts a comma-separated `excludeRouters` list; this
-        // lets us avoid a router whose quote would fail on-chain (e.g. an RFQ MM
-        // that can't fill) and fall to one that can (metis, dflow, …).
-        request = request.query(&[("excludeRouters", excluded_routers.join(","))]);
+    // Jupiter swap/v2 accepts a comma-separated `excludeRouters` list: avoid a
+    // router whose quote would fail on-chain (e.g. an RFQ MM that can't fill) so
+    // a fillable one (metis, dflow, …) is chosen. The list combines routers the
+    // retry loop excluded with any pinned via `RWA_EXCLUDE_ROUTERS` (a manual
+    // escape hatch for a persistently bad router).
+    let excluded = merge_excluded_routers(excluded_routers, std::env::var("RWA_EXCLUDE_ROUTERS").ok().as_deref());
+    if !excluded.is_empty() {
+        request = request.query(&[("excludeRouters", excluded.join(","))]);
     }
 
     let response = request.send().await
@@ -403,6 +421,28 @@ async fn get_metis_order(
 mod tests {
     use super::*;
     use crate::USDC_MINT;
+
+    #[test]
+    fn merge_excluded_routers_combines_and_dedups() {
+        // retry-excluded only
+        assert_eq!(
+            merge_excluded_routers(&["jupiterz".to_string()], None),
+            vec!["jupiterz"]
+        );
+        // env adds, trims blanks, dedups against passed
+        assert_eq!(
+            merge_excluded_routers(&["jupiterz".to_string()], Some(" jupiterz , dflow ,")),
+            vec!["jupiterz", "dflow"]
+        );
+        // env only
+        assert_eq!(
+            merge_excluded_routers(&[], Some("okx")),
+            vec!["okx"]
+        );
+        // nothing
+        assert!(merge_excluded_routers(&[], None).is_empty());
+        assert!(merge_excluded_routers(&[], Some("   ")).is_empty());
+    }
 
     #[test]
     fn infer_backend_from_base_url_matches_public_paths() {
