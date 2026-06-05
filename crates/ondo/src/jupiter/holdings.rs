@@ -5,11 +5,14 @@
 
 use std::collections::HashMap;
 
+use eyre::{eyre, Result};
 use serde::Deserialize;
 
+use super::{with_jupiter_headers, ULTRA_LITE_API_BASE};
 use crate::solana::{BalanceSource, PortfolioBalances, SolanaTokenBalance};
 use crate::token_list::GmTokenEntry;
 use crate::types::Mint;
+use crate::HTTP;
 use crate::USDC_MINT;
 
 #[derive(Debug, Deserialize)]
@@ -68,9 +71,65 @@ pub(crate) fn holdings_to_balances(
     PortfolioBalances { sol, usdc, gm_tokens, source: BalanceSource::Jupiter }
 }
 
+/// Fetch Ultra holdings for `wallet` and map to balances. Public entry uses the
+/// real Ultra base; `_at` takes the base for tests.
+pub(crate) async fn get_holdings_balances(
+    wallet: &str,
+    tokens: &[GmTokenEntry],
+) -> Result<PortfolioBalances> {
+    get_holdings_balances_at(ULTRA_LITE_API_BASE, wallet, tokens).await
+}
+
+async fn get_holdings_balances_at(
+    base: &str,
+    wallet: &str,
+    tokens: &[GmTokenEntry],
+) -> Result<PortfolioBalances> {
+    let url = format!("{base}/holdings/{wallet}");
+    let resp = with_jupiter_headers(HTTP.get(&url))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| eyre!("Jupiter holdings request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(eyre!("Jupiter holdings HTTP {}", resp.status()));
+    }
+    let body: HoldingsResponse = resp
+        .json()
+        .await
+        .map_err(|e| eyre!("Failed to parse Jupiter holdings: {e}"))?;
+    Ok(holdings_to_balances(&body, tokens))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn get_holdings_balances_fetches_and_maps() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(GET).path("/holdings/WALLET123");
+            then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+                "amount": "1000000000",
+                "tokens": { USDC_MINT: [{ "amount": "2000000", "decimals": 6 }] }
+            }));
+        }).await;
+
+        let b = get_holdings_balances_at(&server.base_url(), "WALLET123", &[]).await.unwrap();
+        assert!((b.sol - 1.0).abs() < 1e-9);
+        assert!((b.usdc - 2.0).abs() < 1e-9);
+        assert_eq!(b.source, BalanceSource::Jupiter);
+    }
+
+    #[tokio::test]
+    async fn get_holdings_balances_errors_on_http_500() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| { when.method(GET); then.status(500); }).await;
+        assert!(get_holdings_balances_at(&server.base_url(), "W", &[]).await.is_err());
+    }
 
     fn sample() -> HoldingsResponse {
         serde_json::from_value(serde_json::json!({
