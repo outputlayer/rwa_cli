@@ -113,6 +113,8 @@ pub struct PortfolioJson {
     pub gm_positions: PortfolioGmPositionsJson,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unavailable: Vec<PortfolioUnavailableJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<&'static str>,
 }
 
 #[derive(Serialize)]

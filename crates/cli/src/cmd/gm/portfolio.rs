@@ -19,6 +19,7 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     );
     let portfolio_bal = portfolio_bal?;
     let assets = assets?;
+    let balance_source = portfolio_bal.source;
     let sol_bal = portfolio_bal.sol;
     let usdc_bal = portfolio_bal.usdc;
     let balances = portfolio_bal.gm_tokens;
@@ -79,6 +80,15 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
         0.0
     };
 
+    let source = if balance_source == solana::BalanceSource::Jupiter {
+        if !json {
+            eprintln!("Note: Solana RPC unavailable — balances via Jupiter holdings.");
+        }
+        Some("jupiter")
+    } else {
+        None
+    };
+
     if json {
         return json_out(&PortfolioJson {
             wallet: pubkey.clone(),
@@ -93,6 +103,7 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
                 change_24h_pct: gm_positions_change_pct,
             },
             unavailable,
+            source,
         });
     }
 

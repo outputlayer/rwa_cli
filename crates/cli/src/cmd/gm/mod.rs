@@ -314,6 +314,7 @@ mod tests {
                 change_24h_pct: 1.23,
             },
             unavailable: vec![],
+            source: None,
         })
         .unwrap();
 
@@ -344,6 +345,7 @@ mod tests {
                 change_24h_pct: 0.0,
             },
             unavailable: vec![],
+            source: None,
         })
         .unwrap();
         assert!(json.get("unavailable").is_none());
@@ -364,6 +366,7 @@ mod tests {
                 symbol: "TSLAon".into(),
                 reason: "market data unavailable: not found".into(),
             }],
+            source: None,
         })
         .unwrap();
         assert_eq!(
@@ -458,6 +461,27 @@ mod tests {
         let json = serde_json::to_value(&skip).unwrap();
         assert_eq!(json.pointer("/token"), Some(&serde_json::Value::from("TSLAon")));
         assert_eq!(json.pointer("/reason"), Some(&serde_json::Value::from("market data unavailable")));
+    }
+
+    #[test]
+    fn portfolio_json_includes_source_only_when_set() {
+        let with = serde_json::to_value(PortfolioJson {
+            wallet: "w".into(),
+            cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
+            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0 },
+            unavailable: vec![],
+            source: Some("jupiter"),
+        }).unwrap();
+        assert_eq!(with.pointer("/source"), Some(&serde_json::Value::from("jupiter")));
+
+        let without = serde_json::to_value(PortfolioJson {
+            wallet: "w".into(),
+            cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
+            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0 },
+            unavailable: vec![],
+            source: None,
+        }).unwrap();
+        assert!(without.get("source").is_none());
     }
 
     #[test]
