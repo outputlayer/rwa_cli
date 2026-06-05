@@ -7,8 +7,18 @@
 //! compromised or malicious quote endpoint substituting recipient/amount.
 //!
 //! The parser is intentionally tolerant: unknown instructions (compute-budget
-//! tweaks, ALT extends, route-specific helpers) are allowed. We only fail when
-//! a *required* swap leg is missing or contradicts the expected swap.
+//! tweaks, ALT extends, route-specific helpers) are allowed. We fail only when a
+//! *visible* swap leg contradicts the expected swap (wrong amount, wrong mint,
+//! foreign recipient, or the user not signing).
+//!
+//! This is one of **two** layers. Modern Jupiter routes (jupiterz, dflow, metis,
+//! okx, …) settle the swap via CPI inside the router program, so there is no
+//! top-level SPL transfer for this parser to inspect. When the static layer sees
+//! no contradiction but also no visible input leg, it defers: the execute path
+//! then runs [`crate::solana::verify_swap_simulation`], which simulates the exact
+//! transaction and confirms the real balance deltas (debit ≤ expected input,
+//! expected output mint credited). Together they refuse to sign anything that
+//! would overspend or send funds to the wrong place.
 
 use base64::Engine;
 use eyre::{Result, eyre};
@@ -352,9 +362,17 @@ fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
         if input_mint_seen_other {
             return Err(VerifyError::InputMintMismatch.into());
         }
-        return Err(VerifyError::MissingInputTransfer.into());
+        // No top-level transfer debits our input ATA and nothing contradicts the
+        // intent. This is a CPI/RFQ route (jupiterz, dflow, metis, okx, …) whose
+        // swap legs settle inside the router program and are invisible to a
+        // static byte-parser. The execute path verifies the real economic effect
+        // via on-chain simulation (`solana::verify_swap_simulation`) before
+        // signing, so the static layer defers rather than false-rejecting.
+        return Ok(());
     }
 
+    // A visible top-level transfer debits our input ATA (classic route): enforce
+    // that an output ATA we own for the expected mint is present/credited.
     // Output ATA must appear as a writable static account. (If ALTs are in
     // play, we additionally accept "any output ATA referenced anywhere" since
     // Jupiter sometimes places the output ATA in a lookup table for hot pools.)
@@ -927,6 +945,84 @@ mod tests {
             input_mint,
             input_amount,
             output_mint,
+            owner_pubkey: real_owner,
+        };
+        assert_err_kind(decode_and_verify(&b64, &expected), VerifyError::OwnerMismatch);
+    }
+
+    // ── CPI/RFQ route: no top-level transfer → static layer defers (Ok) ──
+    //
+    // jupiterz/dflow/metis settle the swap inside the router program via CPI,
+    // so there is no top-level SPL transfer debiting the user's ATA. With the
+    // user signing and nothing contradicting the intent, the static check must
+    // NOT false-reject — the economic effect is verified by simulation in the
+    // execute path. A malicious CPI tx is caught there (no output credited /
+    // overspend), not here.
+
+    #[test]
+    fn tolerates_cpi_route_without_toplevel_transfer() {
+        let owner = filled(0x11);
+        let input_mint = filled(0x22);
+        let output_mint = filled(0x33);
+        let router_program = filled(0x61); // opaque RFQ/router program
+        let some_account = filled(0x44);
+        let blockhash = filled(0x55);
+
+        // keys: [owner(signer), router_program, some_account]
+        let keys: Vec<[u8; 32]> = vec![owner, router_program, some_account];
+        let header = (1u8, 0u8, 2u8); // owner signs; router+account readonly
+
+        // A single opaque router instruction — NOT an SPL token transfer.
+        let ix = ParsedInstruction {
+            program_id_index: 1,
+            account_indices: vec![0, 2],
+            data: vec![168u8, 1, 2, 3, 4],
+        };
+
+        let msg_bytes = serialize_v0_message(header, &keys, &blockhash, &[ix]);
+        let mut tx = Vec::new();
+        encode_compact_u16(1, &mut tx);
+        tx.extend_from_slice(&[0u8; 64]);
+        tx.extend_from_slice(&msg_bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount: 1_000_000,
+            output_mint,
+            owner_pubkey: owner,
+        };
+        decode_and_verify(&b64, &expected)
+            .expect("CPI route with no top-level transfer should defer to simulation, not reject");
+    }
+
+    // ── CPI route still rejects when the user is not a signer ────────────
+
+    #[test]
+    fn cpi_route_rejects_when_owner_not_signer() {
+        let attacker = filled(0xAA);
+        let real_owner = filled(0x11);
+        let router_program = filled(0x61);
+        let blockhash = filled(0x55);
+
+        let keys: Vec<[u8; 32]> = vec![attacker, router_program];
+        let header = (1u8, 0u8, 1u8);
+        let ix = ParsedInstruction {
+            program_id_index: 1,
+            account_indices: vec![0],
+            data: vec![168u8],
+        };
+        let msg_bytes = serialize_v0_message(header, &keys, &blockhash, &[ix]);
+        let mut tx = Vec::new();
+        encode_compact_u16(1, &mut tx);
+        tx.extend_from_slice(&[0u8; 64]);
+        tx.extend_from_slice(&msg_bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        let expected = ExpectedSwap {
+            input_mint: filled(0x22),
+            input_amount: 1_000_000,
+            output_mint: filled(0x33),
             owner_pubkey: real_owner,
         };
         assert_err_kind(decode_and_verify(&b64, &expected), VerifyError::OwnerMismatch);
