@@ -181,10 +181,7 @@ pub async fn prepare_buy(
     )
     .await?;
 
-    if let Some(max) = max_bps
-        && let Some(cost) = all_in_cost_bps(slippage_pct, order.fee_bps)
-        && cost > max as f64
-    {
+    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
         return Err(GmTradeError::new(
             GmTradeErrorKind::CostTooHigh,
             format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
@@ -289,10 +286,7 @@ pub async fn prepare_sell(
     )
     .await?;
 
-    if let Some(max) = max_bps
-        && let Some(cost) = all_in_cost_bps(slippage_pct, order.fee_bps)
-        && cost > max as f64
-    {
+    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
         return Err(GmTradeError::new(
             GmTradeErrorKind::CostTooHigh,
             format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
@@ -409,6 +403,19 @@ pub(crate) fn all_in_cost_bps(slippage_pct: Option<f64>, fee_bps: Option<u32>) -
         (None, None) => None,
         (s, f) => Some(f.unwrap_or(0) as f64 - s.unwrap_or(0.0) * 100.0),
     }
+}
+
+/// The cost gate decision: returns `Some((cost_bps, max))` when a `max_bps` is
+/// set, the all-in cost is computable, and it strictly exceeds `max` (→ reject);
+/// `None` otherwise (→ allow). Pure, so the money-path decision is unit-tested.
+pub(crate) fn cost_exceeds_max_bps(
+    slippage_pct: Option<f64>,
+    fee_bps: Option<u32>,
+    max_bps: Option<u32>,
+) -> Option<(f64, u32)> {
+    let max = max_bps?;
+    let cost = all_in_cost_bps(slippage_pct, fee_bps)?;
+    (cost > max as f64).then_some((cost, max))
 }
 
 #[cfg(test)]
@@ -709,6 +716,20 @@ mod tests {
             .wrap_err("swap execution failed")
             .unwrap_err();
         assert_eq!(classify_error(&wrapped), Some("quote_expired"));
+    }
+
+    #[test]
+    fn cost_exceeds_max_bps_decision() {
+        // cost 55 (fee10, slip -0.45%) > max 30 -> reject, returns (cost, max)
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(30)), Some((55.0, 30)));
+        // cost 55 <= max 100 -> allow
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(100)), None);
+        // no max set -> allow
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), None), None);
+        // favorable cost (-10 bps) never exceeds, even at max 0
+        assert_eq!(cost_exceeds_max_bps(Some(0.20), Some(10), Some(0)), None);
+        // no cost data -> allow
+        assert_eq!(cost_exceeds_max_bps(None, None, Some(5)), None);
     }
 
     #[test]
