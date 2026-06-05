@@ -14,6 +14,7 @@ pub use balance::{
     get_usdc_balance, get_usdc_balance_raw,
     get_all_balances, get_balance,
     SolanaTokenBalance, PortfolioBalances, get_portfolio_balances,
+    BalanceSource,
 };
 #[cfg(any(test, feature = "test-util"))]
 pub use balance::get_portfolio_balances_with_urls;

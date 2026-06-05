@@ -272,6 +272,15 @@ pub async fn get_balance(
     })
 }
 
+/// Where a `PortfolioBalances` came from. `Jupiter` means the Solana RPC read
+/// failed and we fell back to the Jupiter Ultra holdings API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BalanceSource {
+    #[default]
+    SolanaRpc,
+    Jupiter,
+}
+
 /// Portfolio balances — SOL + USDC + all GM tokens.
 /// Uses sequential RPC calls to avoid rate limiting on public Solana endpoints.
 #[derive(Debug)]
@@ -279,6 +288,7 @@ pub struct PortfolioBalances {
     pub sol: f64,
     pub usdc: f64,
     pub gm_tokens: Vec<SolanaTokenBalance>,
+    pub source: BalanceSource,
 }
 
 pub async fn get_portfolio_balances(
@@ -363,7 +373,7 @@ async fn portfolio_balances_against(
         .map(|accounts| parse_gm_balances(&accounts.accounts(), &mint_map))
         .unwrap_or_default();
 
-    Ok(PortfolioBalances { sol, usdc, gm_tokens })
+    Ok(PortfolioBalances { sol, usdc, gm_tokens, source: BalanceSource::SolanaRpc })
 }
 
 #[cfg(test)]
