@@ -399,8 +399,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_rpc_unavailable_false_for_opaque_error() {
-        let other: eyre::Error = eyre!("some other failure");
+    fn is_rpc_unavailable_detects_unavailable_through_chain() {
+        use eyre::WrapErr;
+        use super::super::rpc::{SolanaRpcError, SolanaRpcErrorKind};
+
+        // Unavailable, even wrapped, is detected via the chain walk.
+        let err: eyre::Error = SolanaRpcError::new(
+            SolanaRpcErrorKind::Unavailable, None, None, None::<reqwest::StatusCode>, None, "all endpoints failed",
+        )
+        .into();
+        let wrapped = Err::<(), eyre::Error>(err).wrap_err("portfolio batch").unwrap_err();
+        assert!(super::is_rpc_unavailable(&wrapped));
+
+        // A DIFFERENT kind must NOT match (guards against checking the wrong variant).
+        let net: eyre::Error = SolanaRpcError::new(
+            SolanaRpcErrorKind::Network, None, None, None::<reqwest::StatusCode>, None, "net blip",
+        )
+        .into();
+        assert!(!super::is_rpc_unavailable(&net));
+
+        // An opaque non-RPC error must NOT match.
+        let other: eyre::Error = eyre::eyre!("some other failure");
         assert!(!super::is_rpc_unavailable(&other));
     }
 

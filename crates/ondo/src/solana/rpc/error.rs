@@ -29,7 +29,7 @@ pub(in crate::solana) struct SolanaRpcError {
 }
 
 impl SolanaRpcError {
-    pub(in crate::solana::rpc) fn new(
+    pub(in crate::solana) fn new(
         kind: SolanaRpcErrorKind,
         method: Option<&str>,
         url: Option<&str>,
