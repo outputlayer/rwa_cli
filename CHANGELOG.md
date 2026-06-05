@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.14] — 2026-06-05 — Max-bps cost gate
+
+### Added
+
+- **`--max-bps <N>` on `gm buy`/`gm sell`** — rejects a trade whose quoted all-in cost (spread + Jupiter fee, the "Est. all-in" shown in previews) exceeds N basis points, with `error_kind: "cost_too_high"`. A tunable ceiling tighter than the 3% slippage block. `RWA_MAX_BPS` sets a global default (the flag overrides it). The gate runs in `--dry-run`/`--quote-only` too, so it doubles as an agent pass/fail cost check.
+
+---
+
 ## [0.2.13] — 2026-06-05 — Portfolio Jupiter fallback
 
 ### Added

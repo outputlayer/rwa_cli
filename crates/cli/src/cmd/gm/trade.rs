@@ -13,6 +13,7 @@ pub async fn buy(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     quote_only: bool,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     // `--quote-only` previews any size by skipping the funds pre-flight; it still
     // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
@@ -20,7 +21,7 @@ pub async fn buy(
     let dry_run = dry_run || quote_only;
     let w = load_wallet()?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps).await?;
 
     if !json {
         println!(
@@ -99,6 +100,7 @@ pub async fn buy(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn sell(
     symbol: &str,
     amount: &str,
@@ -107,10 +109,11 @@ pub async fn sell(
     json: bool,
     rpc_url: Option<&str>,
     slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     let w = load_wallet()?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json).await?;
+    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps).await?;
 
     if !json {
         println!(

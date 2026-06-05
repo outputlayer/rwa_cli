@@ -18,6 +18,7 @@ pub enum GmTradeErrorKind {
     MarketClosed,
     NotTradable,
     SlippageTooHigh,
+    CostTooHigh,
 }
 
 #[derive(Debug)]
@@ -47,6 +48,7 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::MarketClosed => "market_closed",
             Self::NotTradable => "not_tradable",
             Self::SlippageTooHigh => "slippage_too_high",
+            Self::CostTooHigh => "cost_too_high",
         };
         f.write_str(label)
     }
@@ -68,6 +70,7 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
                 GmTradeErrorKind::MarketClosed => "market_closed",
                 GmTradeErrorKind::NotTradable => "not_tradable",
                 GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
+                GmTradeErrorKind::CostTooHigh => "cost_too_high",
             });
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
@@ -134,6 +137,7 @@ pub struct BuyOrderReady {
     pub slippage_pct: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_buy(
     wallet: &wallet::Wallet,
     symbol: &Symbol,
@@ -142,6 +146,7 @@ pub async fn prepare_buy(
     slippage_bps: Option<u32>,
     json: bool,
     quote_only: bool,
+    max_bps: Option<u32>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -176,6 +181,14 @@ pub async fn prepare_buy(
     )
     .await?;
 
+    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
+
     Ok(SwapPlan {
         symbol,
         amount: amounts::format_amount(&order.out_amount, jupiter::GM_SOL_DECIMALS),
@@ -193,6 +206,7 @@ pub async fn prepare_buy(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_sell(
     wallet: &wallet::Wallet,
     symbol: &Symbol,
@@ -200,6 +214,7 @@ pub async fn prepare_sell(
     rpc_url: Option<&str>,
     slippage_bps: Option<u32>,
     json: bool,
+    max_bps: Option<u32>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -270,6 +285,14 @@ pub async fn prepare_sell(
         None,
     )
     .await?;
+
+    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
 
     Ok(SwapPlan {
         symbol,
@@ -371,6 +394,28 @@ pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::Hash
 
 pub fn ensure_trading_open() -> Result<()> {
     super::gm_internal::check_trading_hours()
+}
+
+/// All-in quoted cost in bps (`fee_bps − slippage_pct·100`), or `None` when no
+/// cost data is available. Mirrors the "Est. all-in" shown in previews.
+pub(crate) fn all_in_cost_bps(slippage_pct: Option<f64>, fee_bps: Option<u32>) -> Option<f64> {
+    match (slippage_pct, fee_bps) {
+        (None, None) => None,
+        (s, f) => Some(f.unwrap_or(0) as f64 - s.unwrap_or(0.0) * 100.0),
+    }
+}
+
+/// The cost gate decision: returns `Some((cost_bps, max))` when a `max_bps` is
+/// set, the all-in cost is computable, and it strictly exceeds `max` (→ reject);
+/// `None` otherwise (→ allow). Pure, so the money-path decision is unit-tested.
+pub(crate) fn cost_exceeds_max_bps(
+    slippage_pct: Option<f64>,
+    fee_bps: Option<u32>,
+    max_bps: Option<u32>,
+) -> Option<(f64, u32)> {
+    let max = max_bps?;
+    let cost = all_in_cost_bps(slippage_pct, fee_bps)?;
+    (cost > max as f64).then_some((cost, max))
 }
 
 #[cfg(test)]
@@ -671,5 +716,37 @@ mod tests {
             .wrap_err("swap execution failed")
             .unwrap_err();
         assert_eq!(classify_error(&wrapped), Some("quote_expired"));
+    }
+
+    #[test]
+    fn cost_exceeds_max_bps_decision() {
+        // cost 55 (fee10, slip -0.45%) > max 30 -> reject, returns (cost, max)
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(30)), Some((55.0, 30)));
+        // cost 55 <= max 100 -> allow
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(100)), None);
+        // no max set -> allow
+        assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), None), None);
+        // favorable cost (-10 bps) never exceeds, even at max 0
+        assert_eq!(cost_exceeds_max_bps(Some(0.20), Some(10), Some(0)), None);
+        // no cost data -> allow
+        assert_eq!(cost_exceeds_max_bps(None, None, Some(5)), None);
+    }
+
+    #[test]
+    fn all_in_cost_bps_matches_preview_formula() {
+        assert_eq!(all_in_cost_bps(Some(-0.45), Some(10)), Some(55.0));
+        assert_eq!(all_in_cost_bps(Some(-0.30), None), Some(30.0));
+        assert_eq!(all_in_cost_bps(None, Some(10)), Some(10.0));
+        assert_eq!(all_in_cost_bps(Some(0.20), Some(10)), Some(-10.0));
+        assert_eq!(all_in_cost_bps(None, None), None);
+    }
+
+    #[test]
+    fn cost_too_high_classifies() {
+        use eyre::WrapErr;
+        let err: eyre::Error = GmTradeError::new(GmTradeErrorKind::CostTooHigh, "x").into();
+        assert_eq!(GmTradeErrorKind::CostTooHigh.to_string(), "cost_too_high");
+        let wrapped = Err::<(), eyre::Error>(err).wrap_err("swap").unwrap_err();
+        assert_eq!(classify_error(&wrapped), Some("cost_too_high"));
     }
 }
