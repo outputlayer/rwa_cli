@@ -13,6 +13,7 @@
 use tokio::sync::Semaphore;
 
 mod execute;
+mod holdings;
 mod order;
 pub mod types;
 
