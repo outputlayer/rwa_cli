@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.15] — 2026-06-05 — Metis fallback honors Jupiter API key
+
+### Changed
+
+- The last-resort **Metis V1** quote/swap fallback (`api.jup.ag/swap/v1`) now sends the same Jupiter headers as the primary path: `x-client-platform` always, plus `x-api-key` when `RWA_JUPITER_API_KEY` is set. Previously these two calls were unauthenticated, so a configured key did not raise their rate limits. No behavior change when no key is set (the header is harmless). Closes the last Jupiter call sites that ignored the key.
+
+---
+
 ## [0.2.14] — 2026-06-05 — Max-bps cost gate
 
 ### Added

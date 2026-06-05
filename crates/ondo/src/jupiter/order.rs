@@ -263,6 +263,7 @@ async fn get_metis_order(
     if let Some(bps) = slippage_bps {
         request = request.query(&[("slippageBps", bps.to_string())]);
     }
+    request = with_jupiter_headers(request);
 
     let quote_response = request
         .send()
@@ -307,9 +308,8 @@ async fn get_metis_order(
             }
         }
     });
-    let swap_response = HTTP
-        .post(&swap_url)
-        .json(&swap_body)
+    let swap_request = with_jupiter_headers(HTTP.post(&swap_url).json(&swap_body));
+    let swap_response = swap_request
         .send()
         .await
         .map_err(|e| eyre!("Metis /swap network error: {e}"))?;
