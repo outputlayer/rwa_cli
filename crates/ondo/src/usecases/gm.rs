@@ -18,6 +18,7 @@ pub enum GmTradeErrorKind {
     MarketClosed,
     NotTradable,
     SlippageTooHigh,
+    CostTooHigh,
 }
 
 #[derive(Debug)]
@@ -47,6 +48,7 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::MarketClosed => "market_closed",
             Self::NotTradable => "not_tradable",
             Self::SlippageTooHigh => "slippage_too_high",
+            Self::CostTooHigh => "cost_too_high",
         };
         f.write_str(label)
     }
@@ -68,6 +70,7 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
                 GmTradeErrorKind::MarketClosed => "market_closed",
                 GmTradeErrorKind::NotTradable => "not_tradable",
                 GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
+                GmTradeErrorKind::CostTooHigh => "cost_too_high",
             });
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
@@ -373,6 +376,15 @@ pub fn ensure_trading_open() -> Result<()> {
     super::gm_internal::check_trading_hours()
 }
 
+/// All-in quoted cost in bps (`fee_bps − slippage_pct·100`), or `None` when no
+/// cost data is available. Mirrors the "Est. all-in" shown in previews.
+pub(crate) fn all_in_cost_bps(slippage_pct: Option<f64>, fee_bps: Option<u32>) -> Option<f64> {
+    match (slippage_pct, fee_bps) {
+        (None, None) => None,
+        (s, f) => Some(f.unwrap_or(0) as f64 - s.unwrap_or(0.0) * 100.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,5 +683,23 @@ mod tests {
             .wrap_err("swap execution failed")
             .unwrap_err();
         assert_eq!(classify_error(&wrapped), Some("quote_expired"));
+    }
+
+    #[test]
+    fn all_in_cost_bps_matches_preview_formula() {
+        assert_eq!(all_in_cost_bps(Some(-0.45), Some(10)), Some(55.0));
+        assert_eq!(all_in_cost_bps(Some(-0.30), None), Some(30.0));
+        assert_eq!(all_in_cost_bps(None, Some(10)), Some(10.0));
+        assert_eq!(all_in_cost_bps(Some(0.20), Some(10)), Some(-10.0));
+        assert_eq!(all_in_cost_bps(None, None), None);
+    }
+
+    #[test]
+    fn cost_too_high_classifies() {
+        use eyre::WrapErr;
+        let err: eyre::Error = GmTradeError::new(GmTradeErrorKind::CostTooHigh, "x").into();
+        assert_eq!(GmTradeErrorKind::CostTooHigh.to_string(), "cost_too_high");
+        let wrapped = Err::<(), eyre::Error>(err).wrap_err("swap").unwrap_err();
+        assert_eq!(classify_error(&wrapped), Some("cost_too_high"));
     }
 }
