@@ -64,6 +64,22 @@ async fn execute_managed_order(
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
+
+    // Authoritative economic guard: modern Jupiter routes settle via CPI inside
+    // the router program, so the static byte-parser cannot see the swap legs.
+    // Simulate the exact transaction and confirm the real balance deltas before
+    // signing — debit ≤ expected input, expected output mint credited.
+    solana::verify_swap_simulation(
+        tx_b64,
+        &expected.input_mint,
+        expected.input_amount,
+        &expected.output_mint,
+        &expected.owner_pubkey,
+        None,
+    )
+    .await
+    .wrap_err("pre-sign swap simulation check failed")?;
+
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
 

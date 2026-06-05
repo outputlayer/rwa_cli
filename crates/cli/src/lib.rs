@@ -53,6 +53,26 @@ fn lock_path() -> Result<PathBuf> {
     Ok(dir.join(".lock"))
 }
 
+/// Render a top-level CLI error, attaching a stable `error_kind` when the error
+/// is a known structured type (e.g. a Jupiter `ExecuteFailure` or a GM trade
+/// error). Centralized here — where `classify_error` is in scope — so every
+/// command, including a single `gm buy`/`sell`, surfaces the same JSON contract
+/// and the full cause chain instead of only the outermost wrap message.
+pub fn render_error(err: &eyre::Error, json: bool) {
+    if json {
+        let obj = serde_json::json!({
+            "status": "error",
+            // `{:#}` joins the full eyre cause chain ("wrap: cause: root"),
+            // so the real failure is visible, not just "swap execution failed".
+            "error": format!("{err:#}"),
+            "error_kind": rwa_ondo::usecases::gm::classify_error(err),
+        });
+        println!("{obj}");
+    } else {
+        eprintln!("Error: {err:#}");
+    }
+}
+
 /// Run the CLI.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -69,8 +89,7 @@ pub async fn run() -> Result<()> {
     if lock_file.try_lock_exclusive().is_err() {
         let msg = "Another rwa process is running. Jupiter rejects concurrent requests from the same wallet — wait for it to finish.";
         if json {
-            let err = serde_json::json!({"status": "error", "error": msg});
-            println!("{err}");
+            render_error(&eyre!(msg), true);
             std::process::exit(1);
         }
         return Err(eyre!(msg));

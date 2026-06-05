@@ -9,6 +9,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.16] — 2026-06-05 — Swap simulation guard (fixes all swap/v2 trades)
+
+### Fixed
+
+- **`gm buy`/`gm sell` failed with "swap execution failed" on every trade.** Jupiter migrated all swap/v2 routes (jupiterz, dflow, metis, okx) to settle the swap via CPI *inside* the router program — there is no longer a top-level SPL token transfer. The sign-time verifier required one and so fail-closed on every route. Trading was fully broken.
+- **Single `buy`/`sell` errors hid their cause.** The top-level JSON error printed only the outermost wrap (`swap execution failed`) with no `error_kind`. Error rendering is now centralized (`rwa_cli::render_error`): JSON carries the full cause chain plus `error_kind`, and human mode prints the chain.
+
+### Changed
+
+- **New sign-time guard: on-chain simulation of balance deltas.** Before signing, the CLI simulates the exact Jupiter transaction (`sigVerify=false`) and confirms the real effect from pre/post balances — the input mint is debited by **no more than** the expected amount, and the expected output mint is credited to this wallet. This is route-agnostic and a stronger guarantee than the previous static byte-parse. The static verifier is retained for the contradiction checks it can still make (wrong amount/mint, foreign recipient, user-not-signing) and defers to simulation on CPI routes. If the RPC is unreachable the check fails closed (refuses to sign).
+
+---
+
 ## [0.2.15] — 2026-06-05 — Metis fallback honors Jupiter API key
 
 ### Changed

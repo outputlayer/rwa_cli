@@ -120,6 +120,7 @@ rwa update -y
 - CLI auto-retries transient swap failures; agents should not retry manually
 - Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, and `execute_unavailable`
 - `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.
+- Modern Jupiter routes settle the swap via CPI inside the router program (no top-level SPL transfer), so swaps are verified before signing by **on-chain simulation** of balance deltas, not static byte-parsing
 
 ## Wallet behavior
 
@@ -127,6 +128,7 @@ rwa update -y
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`
 - `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets
+- Sign-time guard: before signing a swap, the CLI simulates the exact Jupiter transaction and confirms the input mint is debited by no more than expected and the expected output mint is credited to this wallet; fails closed if the RPC is unreachable
 
 ## Agent usage rules
 
