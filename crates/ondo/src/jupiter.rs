@@ -39,6 +39,27 @@ const ULTRA_API_BASE: &str = "https://ultra-api.jup.ag";
 const ULTRA_LITE_API_BASE: &str = "https://api.jup.ag/ultra/v1";
 const METIS_LITE_API_BASE: &str = "https://api.jup.ag/swap/v1";
 const JUPITER_CLIENT_PLATFORM: &str = "jupiter.cli";
+const JUPITER_API_KEY_ENV: &str = "RWA_JUPITER_API_KEY";
+
+/// Jupiter API key from the environment (raises rate limits on api.jup.ag).
+fn jupiter_api_key() -> Option<String> {
+    std::env::var(JUPITER_API_KEY_ENV)
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+}
+
+/// Apply the standard Jupiter headers, plus `x-api-key` when a key is provided.
+/// The key is a parameter (not read from env here) so this is pure and testable.
+fn apply_jupiter_headers(
+    request: reqwest::RequestBuilder,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = request.header("x-client-platform", JUPITER_CLIENT_PLATFORM);
+    match api_key {
+        Some(key) if !key.is_empty() => request.header("x-api-key", key.to_string()),
+        _ => request,
+    }
+}
 
 /// Concurrency limit for `/order` (quote) requests.
 /// Jupiter routes orders per-wallet; too many concurrent `/order` calls from the
@@ -51,7 +72,7 @@ static ORDER_SEMAPHORE: Semaphore = Semaphore::const_new(2);
 static EXECUTE_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 
 fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    request.header("x-client-platform", JUPITER_CLIENT_PLATFORM)
+    apply_jupiter_headers(request, jupiter_api_key().as_deref())
 }
 
 #[cfg(test)]
@@ -64,5 +85,26 @@ mod base_url_tests {
             assert!(base.starts_with("https://api.jup.ag/"), "still on a non-api host: {base}");
             assert!(!base.contains("lite-api"), "still on deprecated lite-api: {base}");
         }
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::apply_jupiter_headers;
+
+    #[test]
+    fn api_key_header_present_only_when_key_set() {
+        let client = reqwest::Client::new();
+        let with = apply_jupiter_headers(client.get("https://api.jup.ag/x"), Some("k123"))
+            .build()
+            .unwrap();
+        assert_eq!(with.headers().get("x-api-key").unwrap(), "k123");
+        assert_eq!(with.headers().get("x-client-platform").unwrap(), "jupiter.cli");
+
+        let without = apply_jupiter_headers(client.get("https://api.jup.ag/x"), None)
+            .build()
+            .unwrap();
+        assert!(without.headers().get("x-api-key").is_none());
+        assert_eq!(without.headers().get("x-client-platform").unwrap(), "jupiter.cli");
     }
 }
