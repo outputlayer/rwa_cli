@@ -154,7 +154,7 @@ pub(crate) async fn check_halt_attestation(
             GmTradeErrorKind::MarketHalted,
             format!(
                 "Headless Oracle attests {mic} = {} (signed attestation overrides local schedule). \
-                 See https://headlessoracle.com/v5/demo?mic={mic} for the receipt.",
+                 Receipt source: https://headlessoracle.com — /v5/status with X-Oracle-Key=RWA_HEADLESS_KEY for production, /v5/demo keyless for eval.",
                 other.label()
             ),
         )

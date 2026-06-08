@@ -177,46 +177,66 @@ pub fn check_ttl(receipt: &VerifiedReceipt, now: DateTime<Utc>) -> Result<()> {
     Ok(())
 }
 
-/// Fetch `/v5/demo?mic={mic}` from Headless Oracle, verify the signature, and
-/// check the TTL against current wall-clock time.
+/// Fetch a signed market-state receipt from Headless Oracle, verify the
+/// signature, and check the TTL against current wall-clock time.
+///
+/// Endpoint selection: if `RWA_HEADLESS_KEY` is set (non-empty), hits the
+/// authenticated production endpoint `/v5/status` with `X-Oracle-Key`.
+/// Otherwise falls back to the keyless `/v5/demo` endpoint — zero-signup
+/// eval path, same signed-receipt shape, identical verifier.
 ///
 /// `base_url` overrides the production host (used by tests via `httpmock`).
 /// Network and HTTP errors surface as retryable `OndoError` so the caller's
 /// soft-vs-strict policy can distinguish them from a signed HALTED response.
 pub async fn verify_market_open(mic: &str, base_url: Option<&str>) -> Result<HaltAttestation> {
-    verify_market_open_with_key(mic, base_url, HEADLESS_ORACLE_PUBKEY_HEX).await
+    // Edge: read `RWA_HEADLESS_KEY` here and thread it down. Keeping the env
+    // read out of `verify_market_open_with_key` lets tests drive the keyed
+    // /v5/status branch deterministically without process-global env mutation.
+    let api_key = std::env::var("RWA_HEADLESS_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty());
+    verify_market_open_with_key(mic, base_url, HEADLESS_ORACLE_PUBKEY_HEX, api_key.as_deref()).await
 }
 
 /// Key-injected variant — `pub(crate)` so sibling test modules can drive the
-/// MIC-mismatch and `status` enum-mapping branches deterministically with an
-/// ephemeral signing key. Production always flows through `verify_market_open`
-/// which pins the published HO key.
+/// MIC-mismatch, header/endpoint routing, and `status` enum-mapping branches
+/// deterministically with an ephemeral signing key. Production always flows
+/// through `verify_market_open` which pins the published HO public key.
+///
+/// `api_key`: `Some(k)` → hits `/v5/status` with `X-Oracle-Key: k`; `None` →
+/// hits the keyless `/v5/demo` fallback.
 pub(crate) async fn verify_market_open_with_key(
     mic: &str,
     base_url: Option<&str>,
     public_key_hex: &str,
+    api_key: Option<&str>,
 ) -> Result<HaltAttestation> {
     let base = base_url.unwrap_or(HEADLESS_ORACLE_BASE_URL);
-    let url = format!("{base}/v5/demo?mic={mic}");
+    // Production: `/v5/status` with X-Oracle-Key. Keyless eval fallback: `/v5/demo`.
+    // Same signed-receipt shape on both, so the verifier path is identical.
+    let (url, op_tag) = match api_key {
+        Some(_) => (format!("{base}/v5/status?mic={mic}"), "headless_oracle/status"),
+        None => (format!("{base}/v5/demo?mic={mic}"), "headless_oracle/demo"),
+    };
 
-    let resp = HTTP
-        .get(&url)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| {
-            OndoError::new(
-                OndoErrorKind::Network,
-                "headless_oracle/demo",
-                None,
-                format!("request failed: {e}"),
-            )
-        })?;
+    let mut req = HTTP.get(&url).timeout(Duration::from_secs(5));
+    if let Some(key) = api_key {
+        req = req.header("X-Oracle-Key", key);
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Network,
+            op_tag,
+            None,
+            format!("request failed: {e}"),
+        )
+    })?;
 
     if !resp.status().is_success() {
         return Err(OndoError::new(
             OndoErrorKind::HttpStatus,
-            "headless_oracle/demo",
+            op_tag,
             Some(resp.status()),
             "non-success response",
         )
@@ -226,7 +246,7 @@ pub(crate) async fn verify_market_open_with_key(
     let value: Value = resp.json().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Decode,
-            "headless_oracle/demo",
+            op_tag,
             None,
             format!("failed to decode response body: {e}"),
         )
@@ -507,7 +527,7 @@ mod tests {
             })
             .await;
 
-        let err = verify_market_open_with_key("XNAS", Some(&server.base_url()), &pk_hex)
+        let err = verify_market_open_with_key("XNAS", Some(&server.base_url()), &pk_hex, None)
             .await
             .expect_err("MIC mismatch must fail");
         let msg = err.to_string();
@@ -519,5 +539,65 @@ mod tests {
             msg.contains("XNAS") && msg.contains("XNYS"),
             "MIC error must name both requested and received MIC, got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn keyed_path_uses_status_endpoint_and_sends_x_oracle_key_header() {
+        use httpmock::prelude::*;
+        // Asserts the new production routing end-to-end: when an API key is
+        // provided, the request hits `/v5/status` (NOT `/v5/demo`) AND carries
+        // `X-Oracle-Key: <key>`. The httpmock matcher only fires when BOTH
+        // conditions hold, and `assert_async()` requires it to have fired
+        // exactly once — so a single passing test pins URL + header together.
+        // The signed OPEN receipt then flows through the full verifier so we
+        // also confirm a successful keyed response maps to HaltAttestation::Open.
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let receipt_no_sig = json!({
+            "expires_at": "2999-01-01T00:00:00.000Z",
+            "halt_detection": "active",
+            "issued_at": "2999-01-01T00:00:00.000Z",
+            "issuer": "headlessoracle.com",
+            "mic": "XNYS",
+            "public_key_id": "test_key",
+            "receipt_id": "00000000-0000-0000-0000-000000000000",
+            "receipt_mode": "live",
+            "schema_version": "v5.0",
+            "source": "SCHEDULE",
+            "status": "OPEN",
+        });
+        let canonical = canonical_payload(&receipt_no_sig).unwrap();
+        let signature = signing_key.sign(canonical.as_bytes());
+        let mut full = receipt_no_sig;
+        full.as_object_mut().unwrap().insert(
+            "signature".to_string(),
+            Value::String(hex::encode(signature.to_bytes())),
+        );
+        let body = serde_json::to_string(&full).unwrap();
+
+        let server = MockServer::start_async().await;
+        let status_mock = server
+            .mock_async(move |when, then| {
+                when.method(GET)
+                    .path("/v5/status")
+                    .header("X-Oracle-Key", "ho_live_test_key_42");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .body(body.clone());
+            })
+            .await;
+
+        let result = verify_market_open_with_key(
+            "XNYS",
+            Some(&server.base_url()),
+            &pk_hex,
+            Some("ho_live_test_key_42"),
+        )
+        .await
+        .expect("keyed request must verify the signed OPEN receipt");
+        assert_eq!(result, HaltAttestation::Open);
+        status_mock.assert_async().await;
     }
 }
