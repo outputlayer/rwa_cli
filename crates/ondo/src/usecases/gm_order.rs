@@ -151,7 +151,7 @@ pub async fn preflight_basket_buy(
     total_usdc_raw: u128,
     rpc_url: Option<&str>,
 ) -> Result<()> {
-    check_trading_hours()?;
+    check_trading_hours().await?;
     check_basket_buy_minimums(items)?;
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),

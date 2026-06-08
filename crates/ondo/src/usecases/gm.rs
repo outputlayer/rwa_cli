@@ -22,6 +22,7 @@ pub enum GmTradeErrorKind {
     AmountBelowMinimum,
     InsufficientFunds,
     NoPosition,
+    MarketHalted,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,7 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::AmountBelowMinimum => "amount_below_minimum",
             Self::InsufficientFunds => "insufficient_funds",
             Self::NoPosition => "no_position",
+            Self::MarketHalted => "market_halted",
         };
         f.write_str(label)
     }
@@ -81,6 +83,7 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
                 GmTradeErrorKind::AmountBelowMinimum => "amount_below_minimum",
                 GmTradeErrorKind::InsufficientFunds => "insufficient_funds",
                 GmTradeErrorKind::NoPosition => "no_position",
+                GmTradeErrorKind::MarketHalted => "market_halted",
             });
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
@@ -259,7 +262,7 @@ pub async fn prepare_sell(
     let is_all = amount.trim().eq_ignore_ascii_case("all");
     let is_pct = amount.trim().ends_with('%');
 
-    preflight_sell()?;
+    preflight_sell().await?;
     let (tradable_res, bal_res) = tokio::join!(
         check_tradable(&symbol, None),
         solana::get_balance(&taker, &gm_mint, rpc_url),
@@ -432,8 +435,8 @@ pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::Hash
         .collect()
 }
 
-pub fn ensure_trading_open() -> Result<()> {
-    super::gm_internal::check_trading_hours()
+pub async fn ensure_trading_open() -> Result<()> {
+    super::gm_internal::check_trading_hours().await
 }
 
 /// All-in quoted cost in bps (`fee_bps − slippage_pct·100`), or `None` when no

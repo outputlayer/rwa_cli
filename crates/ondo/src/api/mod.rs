@@ -1,10 +1,12 @@
 mod assets;
 mod error;
+mod halt_attestation;
 mod history;
 mod session;
 
 pub use assets::*;
 pub use error::{OndoError, OndoErrorKind};
+pub use halt_attestation::*;
 pub use history::*;
 pub use session::*;
 
