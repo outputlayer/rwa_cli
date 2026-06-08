@@ -96,9 +96,12 @@ pub fn verify_receipt_signature(value: &Value) -> Result<VerifiedReceipt> {
     verify_receipt_signature_with_key(value, HEADLESS_ORACLE_PUBKEY_HEX)
 }
 
-/// Verify against an arbitrary hex-encoded Ed25519 public key. Used by tests
-/// that sign with an ephemeral key for round-trip coverage.
-pub fn verify_receipt_signature_with_key(
+/// Verify against an arbitrary hex-encoded Ed25519 public key. `pub(crate)`
+/// because only tests use this — production `verify_receipt_signature` is
+/// pinned to the published HO key. Exposing it crate-wide lets sibling test
+/// modules (e.g. `usecases::gm_internal`) inject an ephemeral key for
+/// deterministic round-trip coverage without bypassing the production binding.
+pub(crate) fn verify_receipt_signature_with_key(
     value: &Value,
     public_key_hex: &str,
 ) -> Result<VerifiedReceipt> {
@@ -181,6 +184,18 @@ pub fn check_ttl(receipt: &VerifiedReceipt, now: DateTime<Utc>) -> Result<()> {
 /// Network and HTTP errors surface as retryable `OndoError` so the caller's
 /// soft-vs-strict policy can distinguish them from a signed HALTED response.
 pub async fn verify_market_open(mic: &str, base_url: Option<&str>) -> Result<HaltAttestation> {
+    verify_market_open_with_key(mic, base_url, HEADLESS_ORACLE_PUBKEY_HEX).await
+}
+
+/// Key-injected variant — `pub(crate)` so sibling test modules can drive the
+/// MIC-mismatch and `status` enum-mapping branches deterministically with an
+/// ephemeral signing key. Production always flows through `verify_market_open`
+/// which pins the published HO key.
+pub(crate) async fn verify_market_open_with_key(
+    mic: &str,
+    base_url: Option<&str>,
+    public_key_hex: &str,
+) -> Result<HaltAttestation> {
     let base = base_url.unwrap_or(HEADLESS_ORACLE_BASE_URL);
     let url = format!("{base}/v5/demo?mic={mic}");
 
@@ -217,7 +232,7 @@ pub async fn verify_market_open(mic: &str, base_url: Option<&str>) -> Result<Hal
         )
     })?;
 
-    let receipt = verify_receipt_signature(&value)?;
+    let receipt = verify_receipt_signature_with_key(&value, public_key_hex)?;
     check_ttl(&receipt, Utc::now())?;
 
     if !receipt.mic.eq_ignore_ascii_case(mic) {
@@ -403,19 +418,13 @@ mod tests {
     // ── Fetch + verify via httpmock ────────────────────────────────────────
 
     #[tokio::test]
-    async fn fetch_and_verify_open_status() {
+    async fn fetch_returns_ttl_error_for_expired_live_receipt() {
         use httpmock::prelude::*;
-
-        // Sign a fresh receipt for an arbitrary future expiry with an
-        // ephemeral key, and verify against the matching public key by
-        // hot-patching the canonicalization path. To exercise the real
-        // `verify_market_open` we need a receipt signed with the *production*
-        // key — which we obviously can't do. So the fetch-and-verify path is
-        // covered by serving a tampered-then-real production receipt and
-        // asserting either side independently. Here we just exercise the
-        // HTTP plumbing + parse path with a body whose signature genuinely
-        // verifies (the live production receipt captured above, with TTL
-        // intentionally bypassed in a follow-up test).
+        // Serves the live production receipt (long expired). The signature
+        // verifies against the pinned HO key — execution only reaches the
+        // TTL check if signature verification passed. Asserts: full
+        // fetch → JSON parse → signature verify → TTL check pipeline runs
+        // end-to-end against the production key.
         let server = MockServer::start_async().await;
         server
             .mock_async(|when, then| {
@@ -426,9 +435,6 @@ mod tests {
             })
             .await;
 
-        // verify_market_open enforces TTL — for a long-expired live receipt
-        // this must error on TTL, which proves we walked all the way through
-        // signature verification AND the MIC match before tripping TTL.
         let err = verify_market_open("XNYS", Some(&server.base_url()))
             .await
             .expect_err("TTL must reject the expired live receipt");
@@ -458,27 +464,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_with_mic_mismatch_fails_verification() {
+    async fn fetch_for_wrong_mic_returns_mic_mismatch_error() {
         use httpmock::prelude::*;
+        // Drive the MIC-mismatch branch deterministically: sign a fresh
+        // (non-expired) receipt for XNYS with an ephemeral key, then ask
+        // verify_market_open_with_key to verify it for XNAS. Signature must
+        // verify and TTL must pass, so the only remaining rejection path
+        // is the MIC check at the end of verify_market_open_with_key.
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let receipt_no_sig = json!({
+            "expires_at": "2999-01-01T00:00:00.000Z",
+            "halt_detection": "active",
+            "issued_at": "2999-01-01T00:00:00.000Z",
+            "issuer": "headlessoracle.com",
+            "mic": "XNYS",
+            "public_key_id": "test_key",
+            "receipt_id": "00000000-0000-0000-0000-000000000000",
+            "receipt_mode": "live",
+            "schema_version": "v5.0",
+            "source": "SCHEDULE",
+            "status": "OPEN",
+        });
+        let canonical = canonical_payload(&receipt_no_sig).unwrap();
+        let signature = signing_key.sign(canonical.as_bytes());
+        let mut full = receipt_no_sig;
+        full.as_object_mut().unwrap().insert(
+            "signature".to_string(),
+            Value::String(hex::encode(signature.to_bytes())),
+        );
+        let body = serde_json::to_string(&full).unwrap();
+
         let server = MockServer::start_async().await;
         server
-            .mock_async(|when, then| {
+            .mock_async(move |when, then| {
                 when.method(GET).path("/v5/demo");
                 then.status(200)
                     .header("content-type", "application/json")
-                    .body(LIVE_RECEIPT_2026_06_08);
+                    .body(body.clone());
             })
             .await;
 
-        let err = verify_market_open("XNAS", Some(&server.base_url()))
+        let err = verify_market_open_with_key("XNAS", Some(&server.base_url()), &pk_hex)
             .await
             .expect_err("MIC mismatch must fail");
         let msg = err.to_string();
-        // The live receipt is for XNYS and is expired; either error is correct
-        // as long as the response was rejected (we never returned Ok).
         assert!(
-            msg.contains("MIC mismatch") || msg.contains("expired"),
-            "expected MIC or TTL rejection, got: {msg}"
+            msg.contains("MIC mismatch"),
+            "expected MIC mismatch error, got: {msg}"
+        );
+        assert!(
+            msg.contains("XNAS") && msg.contains("XNYS"),
+            "MIC error must name both requested and received MIC, got: {msg}"
         );
     }
 }
