@@ -68,22 +68,33 @@ async fn execute_managed_order(
     // Authoritative economic guard: modern Jupiter routes settle via CPI inside
     // the router program, so the static byte-parser cannot see the swap legs.
     // Simulate the exact transaction and confirm the real balance deltas before
-    // signing — debit ≤ expected input, expected output mint credited.
+    // signing — debit ≤ expected input, expected output mint credited at least
+    // the quoted amount minus slippage tolerance (an RFQ MM can otherwise bake
+    // a far worse fill into the tx than its own quote claimed).
+    let min_output = solana::min_output_floor(
+        order.out_amount.parse().unwrap_or(0),
+        order.slippage_bps,
+    );
     if let Err(e) = solana::verify_swap_simulation(
         tx_b64,
         &expected.input_mint,
         expected.input_amount,
         &expected.output_mint,
+        min_output,
         &expected.owner_pubkey,
         None,
     )
     .await
     {
-        // An unfillable route (RFQ MM can't fill) is retryable with a different
-        // router; an unsafe delta or unreachable RPC is a hard, non-retryable
-        // refusal. Map accordingly so `execute_with_retry` can route around it.
+        // An unfillable route (RFQ MM can't fill) or a dishonest fill (credits
+        // materially less than quoted) is retryable with that router excluded;
+        // an unsafe delta or unreachable RPC is a hard, non-retryable refusal.
+        // Map accordingly so `execute_with_retry` can route around it.
         let kind = match e.downcast_ref::<solana::SwapSimError>() {
-            Some(solana::SwapSimError::OnChainWouldFail(_)) => ExecuteFailureKind::RouteUnfillable,
+            Some(solana::SwapSimError::OnChainWouldFail(_))
+            | Some(solana::SwapSimError::OutputBelowQuote(_)) => {
+                ExecuteFailureKind::RouteUnfillable
+            }
             _ => ExecuteFailureKind::Unknown,
         };
         return Err(ExecuteFailure {

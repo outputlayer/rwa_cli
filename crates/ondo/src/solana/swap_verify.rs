@@ -34,6 +34,10 @@ pub enum SwapSimError {
     /// The simulated balance deltas violate the swap intent (overspend, or the
     /// expected output mint not credited). A hard refusal — never retried.
     UnsafeDelta(String),
+    /// The transaction credits the right mint but materially less than the quote
+    /// promised (beyond the slippage tolerance) — a dishonest fill. Retryable
+    /// with that router excluded; a different route may quote honestly.
+    OutputBelowQuote(String),
     /// Could not reach an RPC to simulate. We do not sign what we cannot verify.
     RpcUnavailable(String),
 }
@@ -43,6 +47,7 @@ impl std::fmt::Display for SwapSimError {
         match self {
             Self::OnChainWouldFail(s) => write!(f, "swap would fail on-chain: {s}"),
             Self::UnsafeDelta(s) => write!(f, "swap simulation rejected: {s}"),
+            Self::OutputBelowQuote(s) => write!(f, "swap under-delivers vs quote: {s}"),
             Self::RpcUnavailable(s) => write!(f, "could not simulate swap (RPC unavailable): {s}"),
         }
     }
@@ -80,12 +85,15 @@ fn token_amount_from_account(account: Option<&serde_json::Value>) -> u128 {
 /// Pure safety decision over the simulated balance deltas.
 ///
 /// `Ok(())` only when the input debit is positive and within the expected
-/// amount, and the output mint was credited. Separated from I/O so it is unit
-/// tested directly — this is the money-safety invariant.
+/// amount, and the output mint was credited at least `min_output` (the quoted
+/// amount minus slippage tolerance; `0` disables the floor when the quote had
+/// no parseable out-amount). Separated from I/O so it is unit tested directly —
+/// this is the money-safety invariant.
 fn deltas_are_safe(
     input_debited: u128,
     expected_input: u128,
     output_credited: u128,
+    min_output: u128,
 ) -> std::result::Result<(), SwapSimError> {
     if input_debited == 0 {
         return Err(SwapSimError::UnsafeDelta(
@@ -102,18 +110,36 @@ fn deltas_are_safe(
             "does not credit this wallet's expected output mint".into(),
         ));
     }
+    if output_credited < min_output {
+        return Err(SwapSimError::OutputBelowQuote(format!(
+            "would credit {output_credited} raw units, below the quote floor {min_output} \
+             (quote minus slippage tolerance)"
+        )));
+    }
     Ok(())
 }
 
+/// Minimum acceptable output for a quote: `quoted_out × (1 − tolerance)`.
+/// `slippage_bps` comes from the order; when absent we allow up to 300 bps —
+/// the same ceiling as the CLI's hard slippage block — rather than trusting
+/// the route blindly. Returns 0 (floor disabled) when the quote amount is 0.
+pub(crate) fn min_output_floor(quoted_out: u64, slippage_bps: Option<u32>) -> u64 {
+    let tolerance = slippage_bps.unwrap_or(300).min(10_000) as u128;
+    ((quoted_out as u128) * (10_000 - tolerance) / 10_000) as u64
+}
+
 /// Simulate `tx_base64` and verify it credibly performs the intended swap for
-/// `owner`, debiting at most `input_amount` of `input_mint` and crediting
-/// `output_mint`. Returns `Err` (refuse to sign) on any contradiction, an
-/// on-chain simulation failure, or an unreachable RPC.
+/// `owner`: debiting at most `input_amount` of `input_mint`, and crediting
+/// `output_mint` by at least `min_output` (0 disables the floor). Returns `Err`
+/// (refuse to sign) on any contradiction, an on-chain simulation failure, or an
+/// unreachable RPC.
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_swap_simulation(
     tx_base64: &str,
     input_mint: &[u8; 32],
     input_amount: u64,
     output_mint: &[u8; 32],
+    min_output: u64,
     owner: &[u8; 32],
     rpc_url: Option<&str>,
 ) -> Result<()> {
@@ -199,7 +225,13 @@ pub async fn verify_swap_simulation(
     let input_debited = input_pre.saturating_sub(input_post);
     let output_credited = output_post.saturating_sub(output_pre);
 
-    deltas_are_safe(input_debited, input_amount as u128, output_credited).map_err(Into::into)
+    deltas_are_safe(
+        input_debited,
+        input_amount as u128,
+        output_credited,
+        min_output as u128,
+    )
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -209,29 +241,68 @@ mod tests {
     #[test]
     fn safe_when_exact_input_and_output_credited() {
         // -40 USDC, +191203991 NVDA (the empirically observed deltas).
-        assert!(deltas_are_safe(40_000_000, 40_000_000, 191_203_991).is_ok());
+        assert!(deltas_are_safe(40_000_000, 40_000_000, 191_203_991, 0).is_ok());
     }
 
     #[test]
     fn safe_when_input_slightly_under_expected() {
-        assert!(deltas_are_safe(39_900_000, 40_000_000, 1_000).is_ok());
+        assert!(deltas_are_safe(39_900_000, 40_000_000, 1_000, 0).is_ok());
     }
 
     #[test]
     fn rejects_overspend() {
         // Debiting more than expected is the core attack we must block.
-        assert!(deltas_are_safe(40_000_001, 40_000_000, 1_000).is_err());
+        assert!(deltas_are_safe(40_000_001, 40_000_000, 1_000, 0).is_err());
     }
 
     #[test]
     fn rejects_no_input_debit() {
-        assert!(deltas_are_safe(0, 40_000_000, 1_000).is_err());
+        assert!(deltas_are_safe(0, 40_000_000, 1_000, 0).is_err());
     }
 
     #[test]
     fn rejects_no_output_credit() {
         // Funds leave but nothing of the expected output mint arrives.
-        assert!(deltas_are_safe(40_000_000, 40_000_000, 0).is_err());
+        assert!(deltas_are_safe(40_000_000, 40_000_000, 0, 0).is_err());
+    }
+
+    #[test]
+    fn rejects_output_below_quote_tolerance() {
+        // Live incident (2026-06-12): jupiterz quoted 40_273_156 raw AAPLon for
+        // 12 USDC but the signed tx credited only 33_272_886 (−17.3%). With a
+        // 100 bps tolerance, min acceptable = 39_870_424 — must refuse to sign
+        // and be retryable with the router excluded.
+        let err = deltas_are_safe(12_000_000, 12_000_000, 33_272_886, 39_870_424)
+            .expect_err("under-delivery must be refused");
+        assert!(
+            matches!(err, SwapSimError::OutputBelowQuote(_)),
+            "wrong error kind: {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_output_within_tolerance() {
+        // Credited slightly above the floor → fine.
+        assert!(deltas_are_safe(12_000_000, 12_000_000, 39_900_000, 39_870_424).is_ok());
+        // Credited exactly at the floor → fine.
+        assert!(deltas_are_safe(12_000_000, 12_000_000, 39_870_424, 39_870_424).is_ok());
+    }
+
+    #[test]
+    fn zero_min_output_disables_floor_check() {
+        // Degraded mode (quote had no parseable out_amount): legacy invariants only.
+        assert!(deltas_are_safe(12_000_000, 12_000_000, 1, 0).is_ok());
+    }
+
+    #[test]
+    fn min_output_floor_from_quote_applies_tolerance() {
+        // 40_273_156 quoted, 100 bps tolerance → floor 39_870_424 (rounded down).
+        assert_eq!(min_output_floor(40_273_156, Some(100)), 39_870_424);
+        // No slippage on the order → conservative 300 bps (the hard-block ceiling).
+        assert_eq!(min_output_floor(40_273_156, None), 39_064_961);
+        // Nonsense tolerance is clamped, never underflows.
+        assert_eq!(min_output_floor(40_273_156, Some(20_000)), 0);
+        assert_eq!(min_output_floor(0, Some(100)), 0);
     }
 
     #[test]
