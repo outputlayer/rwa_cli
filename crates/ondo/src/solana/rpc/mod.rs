@@ -21,7 +21,7 @@ mod error;
 mod race;
 mod sequential;
 
-pub(super) use error::{SolanaRpcError, SolanaRpcErrorKind};
+pub(crate) use error::{SolanaRpcError, SolanaRpcErrorKind};
 
 /// How to distribute RPC calls across the configured URLs.
 ///

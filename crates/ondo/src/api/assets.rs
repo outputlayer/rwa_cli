@@ -90,8 +90,16 @@ async fn fetch_assets_live() -> Result<Vec<OndoAsset>> {
     super::retry_with_backoff(3, fetch_assets_attempt).await
 }
 
+/// Assets endpoint; `RWA_ONDO_API_URL` overrides it (test seam — not user-facing).
+fn ondo_assets_url() -> String {
+    std::env::var("RWA_ONDO_API_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| ONDO_API_URL.to_string())
+}
+
 async fn fetch_assets_attempt() -> Result<Vec<OndoAsset>> {
-    let resp = HTTP.get(ONDO_API_URL).send().await.map_err(|e| {
+    let resp = HTTP.get(ondo_assets_url()).send().await.map_err(|e| {
         OndoError::new(
             OndoErrorKind::Network,
             "assets",

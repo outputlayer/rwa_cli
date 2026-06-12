@@ -2797,7 +2797,9 @@ name = "rwa"
 version = "0.2.19"
 dependencies = [
  "eyre",
+ "httpmock",
  "rwa-cli",
+ "serde_json",
  "tokio",
 ]
 

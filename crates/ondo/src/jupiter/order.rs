@@ -57,6 +57,11 @@ async fn get_order_impl(
     slippage_bps: Option<u32>,
     excluded_routers: &[String],
 ) -> Result<OrderResponse> {
+    // `RWA_JUPITER_URL` pins all quoting to one base URL (test seam — not user-facing).
+    let env_url = std::env::var("RWA_JUPITER_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let base_url = base_url.or(env_url.as_deref());
     if let Some(base_url) = base_url {
         let backend = infer_backend_from_base_url(base_url);
         return get_order_with_retries(
