@@ -188,7 +188,11 @@ pub(crate) async fn preflight_buy_raw(
         .map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
     let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
     if requested < minimum {
-        return Err(eyre!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::AmountBelowMinimum,
+            format!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC"),
+        )
+        .into());
     }
     if !check_funds {
         return Ok(());
