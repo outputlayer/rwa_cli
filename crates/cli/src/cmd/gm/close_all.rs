@@ -1,8 +1,6 @@
 use eyre::Result;
 use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::task::JoinSet;
 
 use super::*;
 
@@ -147,64 +145,6 @@ async fn process_close_item(
     }
 }
 
-/// Orchestrate close: sequential (with 3s delay) or parallel (JoinSet).
-async fn run_close_items(
-    wallet: Arc<rwa_ondo::wallet::Wallet>,
-    taker: String,
-    candidates: Vec<CloseCandidate>,
-    parallel: bool,
-    json: bool,
-) -> (Vec<CloseItemJson>, Vec<CloseFailJson>, f64) {
-    let mut sold: Vec<CloseItemJson> = Vec::new();
-    let mut failed: Vec<CloseFailJson> = Vec::new();
-    let mut total: f64 = 0.0;
-
-    if parallel {
-        if !json {
-            println!("Processing {} positions in parallel...", candidates.len());
-        }
-        let mut joinset: JoinSet<std::result::Result<(CloseItemJson, f64), CloseFailJson>> =
-            JoinSet::new();
-        for c in candidates {
-            let w = wallet.clone();
-            let tk = taker.clone();
-            joinset.spawn(async move { process_close_item(w, tk, c, json).await });
-        }
-        while let Some(res) = joinset.join_next().await {
-            match res {
-                Ok(Ok((item, value))) => {
-                    sold.push(item);
-                    total += value;
-                }
-                Ok(Err(fail)) => failed.push(fail),
-                Err(e) => {
-                    if !json {
-                        eprintln!("  ✗ join error: {}", e);
-                    }
-                }
-            }
-        }
-    } else {
-        for (i, c) in candidates.into_iter().enumerate() {
-            if i > 0 {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-            if !json {
-                println!("Selling {} {} ...", c.sell_display, c.symbol);
-            }
-            match process_close_item(wallet.clone(), taker.clone(), c, json).await {
-                Ok((item, value)) => {
-                    sold.push(item);
-                    total += value;
-                }
-                Err(fail) => failed.push(fail),
-            }
-        }
-    }
-
-    (sold, failed, total)
-}
-
 /// Dry-run: fetch-only, no execute. Sequential (Jupiter rate-limit conservatism).
 async fn run_close_dry_run(
     taker: &str,
@@ -337,7 +277,15 @@ pub async fn close_all(
         (sold, failed, 0.0)
     } else {
         let wallet_arc = Arc::new(w);
-        run_close_items(wallet_arc, taker, candidates, parallel, json).await
+        run_swap_items(
+            candidates,
+            parallel,
+            json,
+            "positions",
+            |c| format!("Selling {} {} ...", c.sell_display, c.symbol),
+            |c| process_close_item(wallet_arc.clone(), taker.clone(), c, json),
+        )
+        .await
     };
 
     if json {
