@@ -58,6 +58,7 @@ pub async fn fetch_sell_order(
         display_amount,
         order,
         slippage_pct,
+        slippage_bps,
     })
 }
 
@@ -208,6 +209,7 @@ pub async fn fetch_buy_order(
         usdc_display,
         order,
         slippage_pct,
+        slippage_bps: Some(slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
     })
 }
 

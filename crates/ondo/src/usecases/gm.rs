@@ -127,6 +127,9 @@ pub struct SellOrderReady {
     pub display_amount: String,
     pub order: jupiter::OrderResponse,
     pub slippage_pct: Option<f64>,
+    /// Slippage setting the quote was fetched with — reused when the execute
+    /// retry loop refetches, so reroutes honor the user's tolerance.
+    pub slippage_bps: Option<u32>,
 }
 
 pub(crate) struct SwapParamsOwned {
@@ -145,6 +148,9 @@ pub struct BuyOrderReady {
     pub usdc_display: String,
     pub order: jupiter::OrderResponse,
     pub slippage_pct: Option<f64>,
+    /// Slippage setting the quote was fetched with — reused when the execute
+    /// retry loop refetches, so reroutes honor the user's tolerance.
+    pub slippage_bps: Option<u32>,
 }
 
 #[allow(clippy::too_many_arguments)]
