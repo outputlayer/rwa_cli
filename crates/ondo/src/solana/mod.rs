@@ -20,7 +20,13 @@ pub use balance::{
 #[cfg(any(test, feature = "test-util"))]
 pub use balance::get_portfolio_balances_with_urls;
 pub use fee::{estimate_gas_needed, estimate_tx_fee, estimate_tx_fee_lamports};
-pub use transaction::{TransactionResult, confirm_transaction, send_signed_transaction};
+pub use transaction::{
+    TransactionError, TransactionErrorKind, TransactionResult, confirm_transaction,
+    send_signed_transaction,
+};
+pub(crate) use rpc::SolanaRpcError;
+#[cfg(test)]
+pub(crate) use rpc::SolanaRpcErrorKind;
 pub use swap_verify::{SwapSimError, verify_swap_simulation};
 pub use transfer::{
     transfer_sol, transfer_spl,

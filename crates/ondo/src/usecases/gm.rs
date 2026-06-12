@@ -60,8 +60,9 @@ impl std::error::Error for GmTradeError {}
 /// `error_kind` fields consumed by agents/scripts. Returns `None` for opaque
 /// errors that aren't one of the known structured types.
 ///
-/// Currently recognizes `GmTradeError` and Jupiter `ExecuteFailure`. RPC-layer
-/// failures bubble up as opaque `eyre` errors today and return `None`.
+/// Recognizes `GmTradeError`, Jupiter `ExecuteFailure`, Solana `TransactionError`
+/// (e.g. `confirmation_timeout`, `on_chain_failure`), and Solana RPC failures
+/// (surfaced as `rpc_unavailable`).
 #[must_use]
 pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
     for cause in err.chain() {
@@ -75,6 +76,12 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
             return Some(f.kind.label());
+        }
+        if let Some(t) = cause.downcast_ref::<crate::solana::TransactionError>() {
+            return Some(t.kind.label());
+        }
+        if cause.downcast_ref::<crate::solana::SolanaRpcError>().is_some() {
+            return Some("rpc_unavailable");
         }
     }
     None
@@ -502,6 +509,41 @@ mod tests {
         let lamports = (MIN_SOL_FOR_FEES * 1_000_000_000.0) as u64;
         assert_eq!(lamports, 2_000_000);
         assert!(lamports > 0);
+    }
+
+    #[test]
+    fn classify_error_recognizes_transaction_error() {
+        use crate::solana::{TransactionError, TransactionErrorKind};
+        // Wrapped the way callers do: typed error inside an eyre chain.
+        let err = eyre::Report::new(TransactionError {
+            kind: TransactionErrorKind::ConfirmationTimeout,
+            detail: "transaction may still land: abc123".into(),
+        })
+        .wrap_err("swap execution failed");
+        assert_eq!(classify_error(&err), Some("confirmation_timeout"));
+
+        let err: eyre::Report = TransactionError {
+            kind: TransactionErrorKind::OnChainFailure,
+            detail: "program failed".into(),
+        }
+        .into();
+        assert_eq!(classify_error(&err), Some("on_chain_failure"));
+    }
+
+    #[test]
+    fn classify_error_maps_rpc_failures_to_rpc_unavailable() {
+        use crate::solana::SolanaRpcError;
+        use crate::solana::SolanaRpcErrorKind;
+        let err: eyre::Report = SolanaRpcError {
+            kind: SolanaRpcErrorKind::Unavailable,
+            method: Some("getBalance".into()),
+            url: None,
+            status: None,
+            code: None,
+            detail: "all RPC endpoints failed".into(),
+        }
+        .into();
+        assert_eq!(classify_error(&err), Some("rpc_unavailable"));
     }
 
     #[test]

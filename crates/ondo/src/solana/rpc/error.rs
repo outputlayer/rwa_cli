@@ -7,7 +7,7 @@
 use reqwest::StatusCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::solana) enum SolanaRpcErrorKind {
+pub(crate) enum SolanaRpcErrorKind {
     Network,
     RateLimited,
     HttpStatus,
@@ -19,7 +19,7 @@ pub(in crate::solana) enum SolanaRpcErrorKind {
 }
 
 #[derive(Debug)]
-pub(in crate::solana) struct SolanaRpcError {
+pub(crate) struct SolanaRpcError {
     pub kind: SolanaRpcErrorKind,
     pub method: Option<String>,
     pub url: Option<String>,

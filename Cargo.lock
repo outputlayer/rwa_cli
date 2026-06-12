@@ -2794,16 +2794,18 @@ dependencies = [
 
 [[package]]
 name = "rwa"
-version = "0.2.19"
+version = "0.2.20"
 dependencies = [
  "eyre",
+ "httpmock",
  "rwa-cli",
+ "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "rwa-cli"
-version = "0.2.19"
+version = "0.2.20"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2828,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "rwa-ondo"
-version = "0.2.19"
+version = "0.2.20"
 dependencies = [
  "age",
  "base64 0.22.1",

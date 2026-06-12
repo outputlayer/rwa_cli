@@ -138,7 +138,7 @@ If the Solana RPC read fails entirely, `gm portfolio` automatically falls back t
 - Ondo GM tokens are **total-return trackers** (dividends reinvested, so 1 token ≠ 1 share). Both `TSLA` and `TSLAon` symbol forms are accepted.
 - Swaps route through [Jupiter](https://jup.ag/): `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback. Jupiter covers gas for many swaps; you still need SOL for transfers.
 - `portfolio` JSON separates cash from positions: `cash.{sol,usdc}` and `gm_positions.{value_usd, change_24h_usd, change_24h_pct, positions[].gm_alloc_pct}`. Symbols with unavailable market data are listed under `unavailable[]`.
-- Trade/send/close-all JSON shapes are covered by regression tests and kept stable. Surfaced `error_kind` values include `market_closed`, `not_tradable`, `slippage_too_high`, `confirmation_timeout`, `on_chain_failure`.
+- Trade/send/close-all JSON shapes are covered by regression tests and kept stable. Surfaced `error_kind` values include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable`.
 
 </details>
 

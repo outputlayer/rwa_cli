@@ -300,8 +300,12 @@ struct SessionResponse {
 }
 
 /// Fetch session limits from Ondo status API.
+/// `RWA_ONDO_SESSION_URL` overrides the endpoint (test seam — not user-facing).
 pub async fn fetch_session_limits(base_url: Option<&str>) -> Result<Vec<SessionLimits>> {
-    let url = base_url.unwrap_or(ONDO_SESSION_URL);
+    let env_url = std::env::var("RWA_ONDO_SESSION_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let url = base_url.or(env_url.as_deref()).unwrap_or(ONDO_SESSION_URL);
     super::retry_with_backoff(3, || fetch_session_limits_attempt(url)).await
 }
 

@@ -33,16 +33,23 @@ impl std::fmt::Display for TransactionError {
     }
 }
 
-impl std::fmt::Display for TransactionErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
+impl TransactionErrorKind {
+    /// Stable label surfaced as JSON `error_kind` for agents/scripts.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
             Self::ConfirmationTimeout => "confirmation_timeout",
             Self::OnChainFailure => "on_chain_failure",
             Self::MissingBlockhash => "missing_blockhash",
             Self::InvalidBlockhash => "invalid_blockhash",
             Self::SimulationFailure => "simulation_failure",
-        };
-        f.write_str(label)
+        }
+    }
+}
+
+impl std::fmt::Display for TransactionErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
 }
 
