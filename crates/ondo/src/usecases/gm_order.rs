@@ -5,7 +5,10 @@ use super::gm::{
     SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS, GmTradeError, GmTradeErrorKind,
     cost_exceeds_max_bps,
 };
-use super::gm_internal::{resolve_gm_mint, get_order_checked, check_trading_hours, check_tradable, MIN_SOL_FOR_FEES};
+use super::gm_internal::{
+    MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, check_trading_hours, get_order_checked,
+    resolve_gm_mint,
+};
 use crate::types::Symbol;
 
 /// Reject the quote when its all-in cost (spread + fee) exceeds `max_bps`.
@@ -118,13 +121,31 @@ pub async fn fetch_sell_order_by_symbol(
         })
 }
 
-/// Preflight for basket buy: verify trading is open, total USDC coverage, and SOL for fees.
+/// Per-item minimum for basket buys — the same floor as single `buy`
+/// (`MIN_USDC_AMOUNT`): Jupiter MMs reject tiny orders outright, so fail fast
+/// locally and name the offending symbol instead of burning a quote round-trip.
+fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
+    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
+    for (sym, raw) in items {
+        if *raw < minimum {
+            return Err(eyre!(
+                "Minimum buy amount is {MIN_USDC_AMOUNT} USDC per token; {sym} is below it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Preflight for basket buy: verify trading is open, each item meets the buy
+/// minimum, total USDC coverage, and SOL for fees.
 pub async fn preflight_basket_buy(
     pubkey: &str,
+    items: &[(String, u128)],
     total_usdc_raw: u128,
     rpc_url: Option<&str>,
 ) -> Result<()> {
     check_trading_hours()?;
+    check_basket_buy_minimums(items)?;
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),
         solana::get_sol_balance_raw(pubkey, rpc_url),
@@ -186,4 +207,33 @@ pub async fn fetch_buy_order(
         order,
         slippage_pct,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basket_buy_rejects_items_below_minimum() {
+        // Same floor as single `buy` (MIN_USDC_AMOUNT = 1 USDC): a basket item
+        // below it must fail fast, naming the offending symbol — Jupiter MMs
+        // reject tiny orders outright.
+        let items = vec![
+            ("AAPLon".to_string(), 12_000_000u128), // 12 USDC — fine
+            ("TSLAon".to_string(), 999_999u128),    // 0.999999 USDC — below min
+        ];
+        let err = check_basket_buy_minimums(&items).expect_err("sub-minimum item must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("TSLAon"), "must name the offending symbol: {msg}");
+        assert!(msg.contains("Minimum buy amount"), "must explain the floor: {msg}");
+    }
+
+    #[test]
+    fn basket_buy_accepts_items_at_or_above_minimum() {
+        let items = vec![
+            ("AAPLon".to_string(), 1_000_000u128), // exactly 1 USDC
+            ("SPYon".to_string(), 12_000_000u128),
+        ];
+        assert!(check_basket_buy_minimums(&items).is_ok());
+    }
 }
