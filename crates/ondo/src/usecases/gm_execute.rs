@@ -1,10 +1,32 @@
 use eyre::{Result, WrapErr, eyre};
 
-use crate::{amounts, audit, jupiter, wallet};
+use crate::{amounts, audit, jupiter, solana, wallet};
 use crate::types::Mint;
 use crate::wallet::ExpectedSwap;
-use super::gm::{SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS};
+use super::gm::{
+    SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS, GmTradeError,
+    GmTradeErrorKind,
+};
 use super::gm_internal::MAX_SWAP_RETRIES;
+
+/// A refreshed (post-retry) quote must stay within slippage tolerance of the
+/// quote the user previewed/confirmed — auto-rerouting must never silently
+/// accept a materially worse price. Returns `Some((refreshed_out, floor))`
+/// when the refreshed quote is below the floor; `None` when acceptable or the
+/// original amount is unparseable (degraded mode: no floor).
+fn refreshed_quote_too_poor(
+    original_out: &str,
+    refreshed_out: &str,
+    slippage_bps: Option<u32>,
+) -> Option<(u64, u64)> {
+    let original: u64 = original_out.parse().ok()?;
+    let floor = solana::min_output_floor(original, slippage_bps);
+    if floor == 0 {
+        return None;
+    }
+    let refreshed: u64 = refreshed_out.parse().unwrap_or(0);
+    (refreshed < floor).then_some((refreshed, floor))
+}
 
 pub(crate) struct SwapParams<'a> {
     pub(crate) input_mint: &'a Mint,
@@ -211,19 +233,36 @@ pub(crate) async fn execute_with_retry(
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 if retry_action == jupiter::ExecuteRetryAction::RefreshOrder {
-                    current_order_owned = Some(
-                        jupiter::get_order_excluding(
-                            None,
-                            params.input_mint,
-                            params.output_mint,
-                            params.raw_amount,
-                            params.taker,
-                            params.slippage_bps,
-                            &excluded_routers,
+                    let refreshed = jupiter::get_order_excluding(
+                        None,
+                        params.input_mint,
+                        params.output_mint,
+                        params.raw_amount,
+                        params.taker,
+                        params.slippage_bps,
+                        &excluded_routers,
+                    )
+                    .await
+                    .wrap_err("failed to refresh quote after transient error")?;
+                    // The user previewed/confirmed the ORIGINAL quote. A reroute
+                    // that prices materially worse (premarket spread, lone MM)
+                    // must abort, not silently execute.
+                    if let Some((got, floor)) = refreshed_quote_too_poor(
+                        &order.out_amount,
+                        &refreshed.out_amount,
+                        params.slippage_bps,
+                    ) {
+                        return Err(GmTradeError::new(
+                            GmTradeErrorKind::SlippageTooHigh,
+                            format!(
+                                "rerouted quote would deliver {got} raw units, below {floor} \
+                                 (the previewed quote minus slippage tolerance) — refusing to \
+                                 execute a materially worse route"
+                            ),
                         )
-                        .await
-                        .wrap_err("failed to refresh quote after transient error")?,
-                    );
+                        .into());
+                    }
+                    current_order_owned = Some(refreshed);
                 }
                 last_err = Some(e);
             }
@@ -256,6 +295,24 @@ pub(crate) fn calc_actual_slippage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refreshed_quote_floor_blocks_materially_worse_quote() {
+        // Live incident #2 (2026-06-12, tx 3zGonGJv…): the previewed quote said
+        // 40_305_761 raw AAPLon for 12 USDC; the jupiterz route was unfillable,
+        // and the auto-refetched quote offered only ~33_002_140 (−18%) — which
+        // executed without re-running any slippage gate. The refresh path must
+        // refuse quotes below the previewed quote minus slippage tolerance.
+        assert_eq!(
+            refreshed_quote_too_poor("40305761", "33002140", Some(100)),
+            Some((33_002_140, 39_902_703)),
+        );
+        // Within tolerance → allowed.
+        assert_eq!(refreshed_quote_too_poor("40305761", "40000000", Some(100)), None);
+        // Unparseable/zero original disables the floor (degraded mode).
+        assert_eq!(refreshed_quote_too_poor("0", "1", Some(100)), None);
+        assert_eq!(refreshed_quote_too_poor("garbage", "1", Some(100)), None);
+    }
 
     #[test]
     fn calc_actual_slippage_zero_when_exact_match() {
