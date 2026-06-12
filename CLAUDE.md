@@ -133,7 +133,7 @@ rwa update -y
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`
 - `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets
-- Sign-time guard: before signing a swap, the CLI simulates the exact Jupiter transaction and confirms the input mint is debited by no more than expected and the expected output mint is credited to this wallet; fails closed if the RPC is unreachable
+- Sign-time guard: before signing a swap, the CLI simulates the exact Jupiter transaction and confirms the input mint is debited by no more than expected and the expected output mint is credited to this wallet by **at least the quoted amount minus slippage tolerance** (an under-delivering fill is refused, the router excluded, and the quote refetched — surfaced as `route_unfillable` if retries run out); fails closed if the RPC is unreachable
 
 ## Agent usage rules
 
