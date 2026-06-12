@@ -1,9 +1,30 @@
 use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, jupiter, solana, token_list};
-use super::gm::{SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS};
+use super::gm::{
+    SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS, GmTradeError, GmTradeErrorKind,
+    cost_exceeds_max_bps,
+};
 use super::gm_internal::{resolve_gm_mint, get_order_checked, check_trading_hours, check_tradable, MIN_SOL_FOR_FEES};
 use crate::types::Symbol;
+
+/// Reject the quote when its all-in cost (spread + fee) exceeds `max_bps`.
+/// Single chokepoint for close-all and both baskets, mirroring the gate in
+/// `prepare_buy`/`prepare_sell`.
+fn check_cost_gate(
+    slippage_pct: Option<f64>,
+    fee_bps: Option<u32>,
+    max_bps: Option<u32>,
+) -> Result<()> {
+    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, fee_bps, max_bps) {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// Phase 1 for parallel close-all: fetch + validate a sell order without executing.
 pub async fn fetch_sell_order(
@@ -12,6 +33,8 @@ pub async fn fetch_sell_order(
     raw_amount: &str,
     taker: &str,
     json: bool,
+    slippage_bps: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<SellOrderReady> {
     let display_amount = amounts::format_amount(raw_amount, jupiter::GM_SOL_DECIMALS);
     let (order, slippage_pct) = get_order_checked(
@@ -19,11 +42,12 @@ pub async fn fetch_sell_order(
         jupiter::USDC_MINT,
         raw_amount,
         taker,
-        None,
+        slippage_bps,
         json,
         None,
     )
     .await?;
+    check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
     Ok(SellOrderReady {
         symbol: symbol.to_string(),
         mint: mint.to_string(),
@@ -36,12 +60,15 @@ pub async fn fetch_sell_order(
 
 /// High-level phase 1 for sell-basket: resolve symbol, compute raw amount from user input
 /// (exact token amount, "50%", or "all"), check tradable, fetch + validate sell order.
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_sell_order_by_symbol(
     symbol_str: &str,
     amount_str: &str,
     taker: &str,
     json: bool,
     rpc_url: Option<&str>,
+    slippage_bps: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<SellOrderReady> {
     let tokens = token_list::get_token_list();
     let sym = Symbol::from(symbol_str);
@@ -83,10 +110,12 @@ pub async fn fetch_sell_order_by_symbol(
     };
 
     let mint_str = gm_mint.to_string();
-    fetch_sell_order(&sym, &mint_str, &raw_amount, taker, json).await.map(|mut r| {
-        r.display_amount = display_amount;
-        r
-    })
+    fetch_sell_order(&sym, &mint_str, &raw_amount, taker, json, slippage_bps, max_bps)
+        .await
+        .map(|mut r| {
+            r.display_amount = display_amount;
+            r
+        })
 }
 
 /// Preflight for basket buy: verify trading is open, total USDC coverage, and SOL for fees.
@@ -130,6 +159,8 @@ pub async fn fetch_buy_order(
     usdc_raw: &str,
     taker: &str,
     json: bool,
+    slippage_bps: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<BuyOrderReady> {
     let tokens = token_list::get_token_list();
     let sym = Symbol::from(symbol);
@@ -141,11 +172,12 @@ pub async fn fetch_buy_order(
         &gm_mint,
         usdc_raw,
         taker,
-        Some(DEFAULT_SLIPPAGE_BPS),
+        Some(slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
         json,
         None,
     )
     .await?;
+    check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
     Ok(BuyOrderReady {
         symbol: sym.to_string(),
         gm_mint,

@@ -257,6 +257,107 @@ fn rpc_failure_emits_error_envelope_with_kind() {
     assert!(v["error"].as_str().unwrap().contains("Method not found"));
 }
 
+/// `buy-basket --dry-run --max-bps N` rejects quotes whose all-in cost exceeds
+/// the ceiling: items land in `failed[]` with `error_kind: "cost_too_high"`.
+/// Market-closed windows emit the `market_closed` envelope instead — both are
+/// stable contracts.
+#[test]
+fn buy_basket_dry_run_enforces_max_bps() {
+    let home = test_home("basket-max-bps");
+    let server = MockServer::start();
+
+    // preflight_basket_buy: SOL via getBalance, USDC via getTokenAccountsByOwner.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!(
+                { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+            ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 }, "value": [{
+                    "pubkey": "SomePubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "owner": WALLET,
+                                    "tokenAmount": {
+                                        "amount": "1000000000",
+                                        "decimals": 6,
+                                        "uiAmount": 1000.0,
+                                        "uiAmountString": "1000"
+                                    }
+                                },
+                                "type": "account"
+                            },
+                            "program": "spl-token",
+                            "space": 165
+                        },
+                        "executable": false,
+                        "lamports": 2039280,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "rentEpoch": 0
+                    }
+                }] }
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(500);
+    });
+    // Quote: spread −0.5% (50 bps) + fee 50 bps = 100 bps all-in, over the 10 bps cap.
+    server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-1",
+                "inAmount": "10000000",
+                "outAmount": "1000000000",
+                "inUsdValue": 10.0,
+                "outUsdValue": 9.95,
+                "feeBps": 50,
+                "router": "iris",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success(), "keys generate failed: {}", String::from_utf8_lossy(&keygen.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "AAL", "10", "--dry-run", "--max-bps", "10"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    let v = stdout_json(&out);
+    match v["status"].as_str() {
+        Some("dry_run") => {
+            assert!(v["bought"].as_array().unwrap().is_empty(), "over-budget quote must not pass: {v}");
+            let failed = v["failed"].as_array().unwrap();
+            assert_eq!(failed.len(), 1, "expected one cost_too_high failure: {v}");
+            // failed[].token echoes the user's input symbol (existing fail_json convention)
+            assert_eq!(failed[0]["token"], "AAL");
+            assert_eq!(failed[0]["error_kind"], "cost_too_high");
+        }
+        Some("error") => {
+            assert_eq!(v["error_kind"], "market_closed", "unexpected error: {v}");
+        }
+        other => panic!("unexpected status {other:?}: {v}"),
+    }
+}
+
 /// `gm buy --quote-only --json` emits the `dry_run` TradeJson shape without
 /// touching the RPC (no funds check). Sessions are wall-clock dependent, so
 /// when the market is closed the same invocation must emit the error envelope

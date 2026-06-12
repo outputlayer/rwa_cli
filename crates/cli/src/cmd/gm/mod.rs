@@ -153,6 +153,12 @@ pub enum GmAction {
         /// Fetch all orders and execute all swaps in parallel (faster for many positions)
         #[arg(long)]
         parallel: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
+        #[arg(long)]
+        slippage: Option<u32>,
+        /// Skip positions whose quoted all-in cost (spread + fee) exceeds this many bps
+        #[arg(long)]
+        max_bps: Option<u32>,
     },
 
     /// Close empty token accounts and reclaim SOL rent
@@ -177,6 +183,12 @@ pub enum GmAction {
         /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
         #[arg(long)]
         parallel: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
+        #[arg(long)]
+        slippage: Option<u32>,
+        /// Reject items whose quoted all-in cost (spread + fee) exceeds this many bps
+        #[arg(long)]
+        max_bps: Option<u32>,
     },
 
     /// Sell multiple GM tokens for USDC in one go (basket sell).
@@ -194,6 +206,12 @@ pub enum GmAction {
         /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
         #[arg(long)]
         parallel: bool,
+        /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
+        #[arg(long)]
+        slippage: Option<u32>,
+        /// Reject items whose quoted all-in cost (spread + fee) exceeds this many bps
+        #[arg(long)]
+        max_bps: Option<u32>,
     },
 }
 
@@ -252,12 +270,21 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             yes,
             dry_run,
             parallel,
-        } => close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url).await,
+            slippage,
+            max_bps,
+        } => {
+            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+        }
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url).await,
-        GmAction::BuyBasket { tokens, yes, dry_run, parallel } =>
-            basket::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url).await,
-        GmAction::SellBasket { tokens, yes, dry_run, parallel } =>
-            basket::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url).await,
+        GmAction::BuyBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
+            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            basket::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+        }
+        GmAction::SellBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
+            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            basket::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+        }
     }
 }
 
@@ -281,6 +308,19 @@ mod tests {
             "rwa", "gm", "buy", "TSLA", "100", "--quote-only", "--yes",
         ]);
         assert!(res.is_err(), "--quote-only with -y must be rejected by clap");
+    }
+
+    #[test]
+    fn basket_and_close_all_accept_slippage_and_max_bps() {
+        use clap::Parser;
+        for cmd in [
+            ["rwa", "gm", "close-all", "--slippage", "50", "--max-bps", "30"].as_slice(),
+            ["rwa", "gm", "buy-basket", "AAPL", "10", "--slippage", "50", "--max-bps", "30"].as_slice(),
+            ["rwa", "gm", "sell-basket", "SPY", "5", "--slippage", "50", "--max-bps", "30"].as_slice(),
+        ] {
+            let res = crate::Cli::try_parse_from(cmd);
+            assert!(res.is_ok(), "should parse {cmd:?}: {:?}", res.err());
+        }
     }
 
     #[test]

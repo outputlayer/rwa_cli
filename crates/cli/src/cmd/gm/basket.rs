@@ -46,8 +46,10 @@ async fn process_buy_item(
     sym: String,
     raw: String,
     json: bool,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> std::result::Result<(BuyBasketItemJson, f64), CloseFailJson> {
-    let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await {
+    let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps).await {
         Ok(o) => o,
         Err(e) => {
             if !json {
@@ -90,6 +92,7 @@ async fn process_buy_item(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_sell_item(
     wallet: Arc<rwa_ondo::wallet::Wallet>,
     taker: String,
@@ -97,8 +100,10 @@ async fn process_sell_item(
     amt: String,
     json: bool,
     rpc_url: Option<String>,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> std::result::Result<(SellBasketItemJson, f64), CloseFailJson> {
-    let order = match usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc_url.as_deref()).await {
+    let order = match usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc_url.as_deref(), slippage, max_bps).await {
         Ok(o) => o,
         Err(e) => {
             if !json {
@@ -142,6 +147,7 @@ async fn process_sell_item(
 
 // ── Buy basket ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn buy_basket(
     tokens: &[String],
     yes: bool,
@@ -149,6 +155,8 @@ pub async fn buy_basket(
     parallel: bool,
     json: bool,
     rpc_url: Option<&str>,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
     usecases::gm::ensure_trading_open()?;
@@ -195,7 +203,7 @@ pub async fn buy_basket(
         .collect();
 
     if dry_run {
-        return buy_basket_dry_run(&taker, &symbol_raw, json).await;
+        return buy_basket_dry_run(&taker, &symbol_raw, json, slippage, max_bps).await;
     }
 
     let wallet_arc = Arc::new(w);
@@ -207,7 +215,7 @@ pub async fn buy_basket(
         |(sym, raw)| {
             format!("Buying {} {} USDC ...", sym, amounts::format_amount(raw, jupiter::USDC_DECIMALS))
         },
-        |(sym, raw)| process_buy_item(wallet_arc.clone(), taker.clone(), sym, raw, json),
+        |(sym, raw)| process_buy_item(wallet_arc.clone(), taker.clone(), sym, raw, json, slippage, max_bps),
     )
     .await;
 
@@ -234,6 +242,8 @@ async fn buy_basket_dry_run(
     taker: &str,
     symbol_raw: &[(String, String)],
     json: bool,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     let taker = taker.to_string();
     let (ready_orders, failed) = fetch_orders_parallel(
@@ -251,7 +261,7 @@ async fn buy_basket_dry_run(
         |(sym, raw)| {
             let taker = taker.clone();
             async move {
-                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json).await;
+                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps).await;
                 (sym, result)
             }
         },
@@ -296,6 +306,7 @@ async fn buy_basket_dry_run(
 
 // ── Sell basket ────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn sell_basket(
     tokens: &[String],
     yes: bool,
@@ -303,6 +314,8 @@ pub async fn sell_basket(
     parallel: bool,
     json: bool,
     rpc_url: Option<&str>,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
     usecases::gm::ensure_trading_open()?;
@@ -329,7 +342,7 @@ pub async fn sell_basket(
     }
 
     if dry_run {
-        return sell_basket_dry_run(&taker, &pairs, json, rpc_url).await;
+        return sell_basket_dry_run(&taker, &pairs, json, rpc_url, slippage, max_bps).await;
     }
 
     let wallet_arc = Arc::new(w);
@@ -340,7 +353,7 @@ pub async fn sell_basket(
         json,
         "sell orders",
         |(sym, amt)| format!("Selling {} {} ...", sym, amt),
-        |(sym, amt)| process_sell_item(wallet_arc.clone(), taker.clone(), sym, amt, json, rpc.clone()),
+        |(sym, amt)| process_sell_item(wallet_arc.clone(), taker.clone(), sym, amt, json, rpc.clone(), slippage, max_bps),
     )
     .await;
 
@@ -368,6 +381,8 @@ async fn sell_basket_dry_run(
     pairs: &[(String, String)],
     json: bool,
     rpc_url: Option<&str>,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     let taker = taker.to_string();
     let rpc = rpc_url.map(str::to_string);
@@ -387,7 +402,7 @@ async fn sell_basket_dry_run(
             let rpc = rpc.clone();
             async move {
                 let result =
-                    usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref()).await;
+                    usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref(), slippage, max_bps).await;
                 (sym, result)
             }
         },
