@@ -1,6 +1,8 @@
 use chrono::Datelike;
 use eyre::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::HTTP;
 use super::error::{OndoError, OndoErrorKind};
@@ -244,7 +246,7 @@ fn easter_sunday(year: i32) -> chrono::NaiveDate {
 }
 
 /// Session limits for a single token from Ondo status API.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimits {
     pub symbol: String,
@@ -258,7 +260,7 @@ pub struct SessionLimits {
     pub overnight: Option<SessionInfo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub tradable: bool,
@@ -299,14 +301,66 @@ struct SessionResponse {
     limits: Vec<SessionLimits>,
 }
 
-/// Fetch session limits from Ondo status API.
-/// `RWA_ONDO_SESSION_URL` overrides the endpoint (test seam — not user-facing).
+/// Fresh TTL for the session-limits disk cache. Limits change between trading
+/// sessions, not second-to-second; `hours`/`tradable` and every buy/sell
+/// preflight hit this endpoint, so 60s of staleness buys ~0.5s per command.
+const SESSION_CACHE_FRESH: Duration = Duration::from_secs(60);
+/// Stale fallback window when the live fetch fails (gates fail open anyway).
+const SESSION_CACHE_STALE: Duration = Duration::from_secs(600);
+
+fn session_cache_path() -> Option<PathBuf> {
+    let dir = dirs::config_dir()?.join("rwa").join(".cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("session_limits.json"))
+}
+
+fn read_session_cache(path: &Path, max_age: Duration) -> Option<Vec<SessionLimits>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.modified().ok()?.elapsed().ok()? > max_age {
+        return None;
+    }
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_session_cache(path: &Path, limits: &[SessionLimits]) -> Option<()> {
+    std::fs::write(path, serde_json::to_string(limits).ok()?).ok()
+}
+
+/// Fetch session limits from Ondo status API, read-through cached for 60s.
+/// `RWA_ONDO_SESSION_URL` overrides the endpoint (test seam — not user-facing);
+/// any explicit URL bypasses the cache entirely so tests always hit their mock.
 pub async fn fetch_session_limits(base_url: Option<&str>) -> Result<Vec<SessionLimits>> {
     let env_url = std::env::var("RWA_ONDO_SESSION_URL")
         .ok()
         .filter(|v| !v.trim().is_empty());
+    let overridden = base_url.is_some() || env_url.is_some();
     let url = base_url.or(env_url.as_deref()).unwrap_or(ONDO_SESSION_URL);
-    super::retry_with_backoff(3, || fetch_session_limits_attempt(url)).await
+
+    let cache = if overridden { None } else { session_cache_path() };
+    if let Some(limits) = cache
+        .as_deref()
+        .and_then(|p| read_session_cache(p, SESSION_CACHE_FRESH))
+    {
+        return Ok(limits);
+    }
+
+    match super::retry_with_backoff(3, || fetch_session_limits_attempt(url)).await {
+        Ok(limits) => {
+            if let Some(p) = cache.as_deref() {
+                let _ = write_session_cache(p, &limits);
+            }
+            Ok(limits)
+        }
+        Err(e) => {
+            if let Some(limits) = cache
+                .as_deref()
+                .and_then(|p| read_session_cache(p, SESSION_CACHE_STALE))
+            {
+                return Ok(limits);
+            }
+            Err(e)
+        }
+    }
 }
 
 async fn fetch_session_limits_attempt(url: &str) -> Result<Vec<SessionLimits>> {

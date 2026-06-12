@@ -73,6 +73,17 @@ pub fn render_error(err: &eyre::Error, json: bool) {
     }
 }
 
+/// Exit code for a top-level error: 75 (EX_TEMPFAIL) for transient failures
+/// worth retrying (RPC/exchange hiccups, confirmation timeouts), 1 otherwise.
+/// Documented contract for scripts/agents alongside the JSON `error_kind`.
+#[must_use]
+pub fn exit_code_for(err: &eyre::Error) -> i32 {
+    match rwa_ondo::usecases::gm::classify_error(err) {
+        Some(kind) if rwa_ondo::usecases::gm::is_transient_kind(kind) => 75,
+        _ => 1,
+    }
+}
+
 /// Run the CLI.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -90,7 +101,9 @@ pub async fn run() -> Result<()> {
         let msg = "Another rwa process is running. Jupiter rejects concurrent requests from the same wallet — wait for it to finish.";
         if json {
             render_error(&eyre!(msg), true);
-            std::process::exit(1);
+            // Lock contention is transient by definition — retry when the
+            // other process finishes.
+            std::process::exit(75);
         }
         return Err(eyre!(msg));
     }
@@ -105,4 +118,24 @@ pub async fn run() -> Result<()> {
     // Explicit unlock (also happens on drop, but be clear)
     let _ = lock_file.unlock();
     result
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::exit_code_for;
+
+    #[test]
+    fn transient_kinds_exit_75() {
+        let err: eyre::Report = rwa_ondo::solana::TransactionError {
+            kind: rwa_ondo::solana::TransactionErrorKind::ConfirmationTimeout,
+            detail: "tx may still land".into(),
+        }
+        .into();
+        assert_eq!(exit_code_for(&err), 75);
+    }
+
+    #[test]
+    fn permanent_and_unclassified_exit_1() {
+        assert_eq!(exit_code_for(&eyre::eyre!("No wallet found")), 1);
+    }
 }

@@ -109,6 +109,7 @@ rwa update -y
 ## Trading / market behavior
 
 - Trading sessions are ET-based: Pre-Market, Regular, Post-Market, Overnight, Closed
+- Ondo assets and session-limits responses are disk-cached read-through for 60s (`~/.config/rwa/.cache/`); stale fallback on network failure (assets 1h, limits 10m). Explicit URL overrides bypass the cache
 - `buy` and `sell` check tradability before calling Jupiter
 - `close-all` skips tiny positions and non-tradable tokens
 - `close-all` and basket trading default to sequential (3s spacing); use `--parallel` for concurrent swaps
@@ -122,7 +123,7 @@ rwa update -y
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
-- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), and `amount_below_minimum`
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), `amount_below_minimum`, `insufficient_funds`, and `no_position`
 - If a quoted route would fail on-chain (RFQ MM can't fill) or under-delivers vs its own quote, the CLI excludes that router and refetches a quote (auto-routing to metis/dflow/…); `route_unfillable` surfaces only if all retries are exhausted. A rerouted quote materially worse than the previewed one (beyond slippage tolerance) aborts with `slippage_too_high` instead of executing silently
 - `RWA_EXCLUDE_ROUTERS` (comma-separated, e.g. `jupiterz,dflow`) manually pins routers to avoid when quoting buy/sell; merged with the auto-excluded set
 - `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.
@@ -143,6 +144,7 @@ rwa update -y
 - Use `--dry-run` for large or uncertain actions
 - Never run wallet-changing commands in parallel
 - Treat JSON output as a stable contract for scripts and agents
+- Exit codes: 75 (EX_TEMPFAIL) for transient failures worth retrying (`rpc_unavailable`, `execute_unavailable`, `confirmation_timeout`, lock contention); 1 for everything else
 - Use `gm tradable <SYM...>` to check one or many symbols
 - Use `gm search --tradable-only ...` for bulk scans without Python
 - Use `hours --tradable` only when the user wants the full currently tradable set

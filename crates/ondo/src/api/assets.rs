@@ -60,13 +60,30 @@ struct AssetsResponse {
     assets: Vec<OndoAsset>,
 }
 
-/// Fetch all assets from the official Ondo API (free, no auth required).
-/// Caches result to `~/.config/rwa/.cache/assets.json` (5-min TTL).
-/// On network failure, falls back to cached data if available.
-pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
-    let cache = assets_cache_path();
+/// Fresh TTL for read-through: asset metadata (names, sectors) is static and
+/// prices tolerate a minute of staleness in displays — trading decisions use
+/// Jupiter quotes, never these prices.
+const ASSETS_CACHE_FRESH: Duration = Duration::from_secs(60);
 
-    // Try live fetch first
+/// Fetch all assets from the official Ondo API (free, no auth required).
+/// Read-through cached at `~/.config/rwa/.cache/assets.json`: a cache younger
+/// than 60s serves directly; otherwise fetch live and refresh it. On network
+/// failure, falls back to cached data up to 1 hour old. An explicit
+/// `RWA_ONDO_API_URL` override (test seam) bypasses the cache entirely.
+pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
+    let overridden = std::env::var("RWA_ONDO_API_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some();
+    let cache = if overridden { None } else { assets_cache_path() };
+
+    if let Some(assets) = cache
+        .as_deref()
+        .and_then(|p| read_cache_aged(p, ASSETS_CACHE_FRESH))
+    {
+        return Ok(assets);
+    }
+
     match fetch_assets_live().await {
         Ok(assets) => {
             // Update cache in background (best-effort)
@@ -77,7 +94,11 @@ pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
         }
         Err(live_err) => {
             // Live fetch failed — try disk cache
-            if let Some(assets) = cache.as_deref().and_then(read_cache) {
+            // Stale fallback: up to 1 hour old beats a hard failure.
+            if let Some(assets) = cache
+                .as_deref()
+                .and_then(|p| read_cache_aged(p, Duration::from_secs(3600)))
+            {
                 Ok(assets)
             } else {
                 Err(live_err)
@@ -138,11 +159,9 @@ fn write_cache(path: &Path, assets: &[OndoAsset]) -> Option<()> {
     std::fs::write(path, data).ok()
 }
 
-fn read_cache(path: &Path) -> Option<Vec<OndoAsset>> {
+fn read_cache_aged(path: &Path, max_age: Duration) -> Option<Vec<OndoAsset>> {
     let meta = std::fs::metadata(path).ok()?;
-    let age = meta.modified().ok()?.elapsed().ok()?;
-    // Accept cache up to 1 hour as fallback (fresh TTL is 5 min)
-    if age > Duration::from_secs(3600) {
+    if meta.modified().ok()?.elapsed().ok()? > max_age {
         return None;
     }
     let data = std::fs::read_to_string(path).ok()?;

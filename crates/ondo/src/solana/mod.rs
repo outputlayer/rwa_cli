@@ -11,6 +11,7 @@ use eyre::{Result, eyre};
 pub use crate::USDC_MINT;
 use balance::TOKEN_2022_PROGRAM;
 pub use balance::{
+    NoTokenAccount,
     get_sol_balance, get_sol_balance_raw,
     get_usdc_balance, get_usdc_balance_raw,
     get_all_balances, get_balance,
