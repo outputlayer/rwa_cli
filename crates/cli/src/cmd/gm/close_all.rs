@@ -92,6 +92,8 @@ async fn process_close_item(
     taker: String,
     candidate: CloseCandidate,
     json: bool,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> std::result::Result<(CloseItemJson, f64), CloseFailJson> {
     let order = match usecases::gm::fetch_sell_order(
         &candidate.symbol,
@@ -99,6 +101,8 @@ async fn process_close_item(
         &candidate.sell_raw,
         &taker,
         json,
+        slippage,
+        max_bps,
     )
     .await
     {
@@ -150,12 +154,14 @@ async fn run_close_dry_run(
     taker: &str,
     candidates: Vec<CloseCandidate>,
     json: bool,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> (Vec<CloseItemJson>, Vec<CloseFailJson>) {
     let mut sold = Vec::new();
     let mut failed = Vec::new();
 
     for c in candidates {
-        match usecases::gm::fetch_sell_order(&c.symbol, &c.mint, &c.sell_raw, taker, json).await {
+        match usecases::gm::fetch_sell_order(&c.symbol, &c.mint, &c.sell_raw, taker, json, slippage, max_bps).await {
             Ok(order) => {
                 let quoted_usdc =
                     amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS);
@@ -184,6 +190,7 @@ async fn run_close_dry_run(
     (sold, failed)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn close_all(
     amount: Option<&str>,
     yes: bool,
@@ -191,6 +198,8 @@ pub async fn close_all(
     parallel: bool,
     json: bool,
     rpc_url: Option<&str>,
+    slippage: Option<u32>,
+    max_bps: Option<u32>,
 ) -> Result<()> {
     usecases::gm::ensure_trading_open()?;
     let sell_pct = usecases::gm::parse_sell_pct(amount)?;
@@ -273,7 +282,7 @@ pub async fn close_all(
     }
 
     let (sold, failed, total_usdc) = if dry_run {
-        let (sold, failed) = run_close_dry_run(&taker, candidates, json).await;
+        let (sold, failed) = run_close_dry_run(&taker, candidates, json, slippage, max_bps).await;
         (sold, failed, 0.0)
     } else {
         let wallet_arc = Arc::new(w);
@@ -283,7 +292,7 @@ pub async fn close_all(
             json,
             "positions",
             |c| format!("Selling {} {} ...", c.sell_display, c.symbol),
-            |c| process_close_item(wallet_arc.clone(), taker.clone(), c, json),
+            |c| process_close_item(wallet_arc.clone(), taker.clone(), c, json, slippage, max_bps),
         )
         .await
     };
