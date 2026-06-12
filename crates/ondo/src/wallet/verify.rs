@@ -23,6 +23,7 @@
 use base64::Engine;
 use eyre::{Result, eyre};
 
+use super::parser::{ParsedInstruction, ParsedMessage, parse_message};
 use crate::solana::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, derive_ata_pubkey};
 
 /// What the caller intended to swap. Built once from user input
@@ -109,173 +110,6 @@ pub fn decode_and_verify(tx_base64: &str, expected: &ExpectedSwap) -> Result<()>
     let parsed = parse_message(&tx_bytes)
         .map_err(|e| VerifyError::MalformedTransaction(e.to_string()))?;
     verify_parsed(&parsed, expected)
-}
-
-// ── Internal types ────────────────────────────────────────────────────────
-
-/// What we managed to extract from the v0/legacy message.
-#[derive(Debug)]
-struct ParsedMessage {
-    /// Static account keys, in message order. (Address-table-lookup keys are
-    /// appended after these but we don't know their values without the table —
-    /// for verification we only rely on static keys; ALT-only writes never
-    /// carry the user's ATA.)
-    keys: Vec<[u8; 32]>,
-    /// `keys` index ranges that are signer / writable, derived from the header.
-    num_required_sigs: u8,
-    num_readonly_signed: u8,
-    num_readonly_unsigned: u8,
-    /// True if ALT lookups are present — extra writable/readonly account slots.
-    /// We don't resolve them, but we do treat `OutputAtaMissing` more leniently
-    /// when ALTs are in play.
-    has_alt: bool,
-    /// Instructions in declared order.
-    ixs: Vec<ParsedInstruction>,
-}
-
-#[derive(Debug)]
-struct ParsedInstruction {
-    program_id_index: u8,
-    account_indices: Vec<u8>,
-    data: Vec<u8>,
-}
-
-impl ParsedMessage {
-    fn program_id(&self, ix: &ParsedInstruction) -> Option<&[u8; 32]> {
-        self.keys.get(ix.program_id_index as usize)
-    }
-    fn account_key(&self, idx: u8) -> Option<&[u8; 32]> {
-        self.keys.get(idx as usize)
-    }
-    fn writable_static_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        // Writable signers: 0..num_required_sigs - num_readonly_signed
-        // Writable unsigned: num_required_sigs..(keys.len() - num_readonly_unsigned)
-        let n_keys = self.keys.len();
-        let writable_signed_end =
-            (self.num_required_sigs as usize).saturating_sub(self.num_readonly_signed as usize);
-        let writable_unsigned_start = self.num_required_sigs as usize;
-        let writable_unsigned_end =
-            n_keys.saturating_sub(self.num_readonly_unsigned as usize);
-        (0..writable_signed_end)
-            .chain(writable_unsigned_start..writable_unsigned_end)
-    }
-}
-
-// ── Parser (v0 + legacy) ──────────────────────────────────────────────────
-
-fn parse_message(tx_bytes: &[u8]) -> Result<ParsedMessage> {
-    // Skip signatures: compact-u16 count + 64*count bytes
-    let (num_sigs, sig_count_len) = decode_compact_u16(tx_bytes)?;
-    let sigs_end = sig_count_len + (num_sigs as usize) * 64;
-    if tx_bytes.len() < sigs_end + 4 {
-        return Err(eyre!("transaction too short"));
-    }
-    let msg = &tx_bytes[sigs_end..];
-
-    // V0 message starts with 0x80 (tag), legacy starts with the header byte (< 0x80).
-    let mut cur = 0usize;
-    let is_v0 = msg[0] & 0x80 != 0;
-    if is_v0 {
-        cur += 1;
-    }
-
-    // Header: 3 bytes
-    if msg.len() < cur + 3 {
-        return Err(eyre!("truncated header"));
-    }
-    let num_required_sigs = msg[cur];
-    let num_readonly_signed = msg[cur + 1];
-    let num_readonly_unsigned = msg[cur + 2];
-    cur += 3;
-
-    // Static account keys
-    let (num_keys, n) = decode_compact_u16(&msg[cur..])?;
-    cur += n;
-    let mut keys = Vec::with_capacity(num_keys as usize);
-    for _ in 0..num_keys {
-        if msg.len() < cur + 32 {
-            return Err(eyre!("truncated account keys"));
-        }
-        let mut k = [0u8; 32];
-        k.copy_from_slice(&msg[cur..cur + 32]);
-        keys.push(k);
-        cur += 32;
-    }
-
-    // Recent blockhash (32 bytes)
-    if msg.len() < cur + 32 {
-        return Err(eyre!("truncated blockhash"));
-    }
-    cur += 32;
-
-    // Instructions
-    let (num_ix, n) = decode_compact_u16(&msg[cur..])?;
-    cur += n;
-    let mut ixs = Vec::with_capacity(num_ix as usize);
-    for _ in 0..num_ix {
-        if msg.len() <= cur {
-            return Err(eyre!("truncated instructions"));
-        }
-        let program_id_index = msg[cur];
-        cur += 1;
-        let (n_acc, n_consumed) = decode_compact_u16(&msg[cur..])?;
-        cur += n_consumed;
-        if msg.len() < cur + n_acc as usize {
-            return Err(eyre!("truncated instruction account indices"));
-        }
-        let account_indices = msg[cur..cur + n_acc as usize].to_vec();
-        cur += n_acc as usize;
-        let (data_len, n_consumed) = decode_compact_u16(&msg[cur..])?;
-        cur += n_consumed;
-        if msg.len() < cur + data_len as usize {
-            return Err(eyre!("truncated instruction data"));
-        }
-        let data = msg[cur..cur + data_len as usize].to_vec();
-        cur += data_len as usize;
-        ixs.push(ParsedInstruction {
-            program_id_index,
-            account_indices,
-            data,
-        });
-    }
-
-    // Address table lookups (V0 only). We ignore their resolved keys but record
-    // their presence so callers know not to enforce strict output-ATA checks
-    // against static keys alone.
-    let mut has_alt = false;
-    if is_v0 && cur < msg.len() {
-        let (n_alt, n_consumed) = decode_compact_u16(&msg[cur..])?;
-        cur += n_consumed;
-        for _ in 0..n_alt {
-            // 32 bytes table account + writable indices vec + readonly indices vec
-            if msg.len() < cur + 32 {
-                return Err(eyre!("truncated ALT entry"));
-            }
-            cur += 32;
-            let (n_w, n_consumed) = decode_compact_u16(&msg[cur..])?;
-            cur += n_consumed;
-            cur += n_w as usize;
-            if msg.len() < cur {
-                return Err(eyre!("truncated ALT writable indices"));
-            }
-            let (n_r, n_consumed) = decode_compact_u16(&msg[cur..])?;
-            cur += n_consumed;
-            cur += n_r as usize;
-            if msg.len() < cur {
-                return Err(eyre!("truncated ALT readonly indices"));
-            }
-            has_alt = true;
-        }
-    }
-
-    Ok(ParsedMessage {
-        keys,
-        num_required_sigs,
-        num_readonly_signed,
-        num_readonly_unsigned,
-        has_alt,
-        ixs,
-    })
 }
 
 // ── Verifier ──────────────────────────────────────────────────────────────
@@ -438,30 +272,6 @@ fn parse_token_transfer(ix: &ParsedInstruction) -> Option<TokenTransfer> {
     }
 }
 
-// ── compact-u16 ───────────────────────────────────────────────────────────
-
-fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {
-    if data.is_empty() {
-        return Err(eyre!("empty compact-u16"));
-    }
-    let b0 = data[0] as u16;
-    if b0 < 0x80 {
-        return Ok((b0, 1));
-    }
-    if data.len() < 2 {
-        return Err(eyre!("truncated compact-u16"));
-    }
-    let b1 = data[1] as u16;
-    if b1 < 0x80 {
-        return Ok(((b0 & 0x7f) | (b1 << 7), 2));
-    }
-    if data.len() < 3 {
-        return Err(eyre!("truncated compact-u16"));
-    }
-    let b2 = data[2] as u16;
-    Ok(((b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), 3))
-}
-
 fn decode_b58_32(s: &str, label: &str) -> Result<[u8; 32]> {
     let v = bs58::decode(s)
         .into_vec()
@@ -473,22 +283,8 @@ fn decode_b58_32(s: &str, label: &str) -> Result<[u8; 32]> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::parser::test_fixtures::{encode_compact_u16, serialize_v0_message};
     use super::*;
-
-    // ── compact-u16 helpers (mirrors the wallet decoder) ──────────────────
-
-    fn encode_compact_u16(val: u16, out: &mut Vec<u8>) {
-        if val < 0x80 {
-            out.push(val as u8);
-        } else if val < 0x4000 {
-            out.push((val & 0x7f) as u8 | 0x80);
-            out.push((val >> 7) as u8);
-        } else {
-            out.push((val & 0x7f) as u8 | 0x80);
-            out.push(((val >> 7) & 0x7f) as u8 | 0x80);
-            out.push((val >> 14) as u8);
-        }
-    }
 
     /// Build a synthetic v0 Jupiter-like swap transaction.
     ///
@@ -594,31 +390,6 @@ mod tests {
 
     fn filled(byte: u8) -> [u8; 32] {
         [byte; 32]
-    }
-
-    fn serialize_v0_message(
-        header: (u8, u8, u8),
-        keys: &[[u8; 32]],
-        blockhash: &[u8; 32],
-        ixs: &[ParsedInstruction],
-    ) -> Vec<u8> {
-        let mut out = vec![0x80, header.0, header.1, header.2];
-        encode_compact_u16(keys.len() as u16, &mut out);
-        for k in keys {
-            out.extend_from_slice(k);
-        }
-        out.extend_from_slice(blockhash);
-        encode_compact_u16(ixs.len() as u16, &mut out);
-        for ix in ixs {
-            out.push(ix.program_id_index);
-            encode_compact_u16(ix.account_indices.len() as u16, &mut out);
-            out.extend_from_slice(&ix.account_indices);
-            encode_compact_u16(ix.data.len() as u16, &mut out);
-            out.extend_from_slice(&ix.data);
-        }
-        // Zero address-table-lookups for V0 messages without ALT.
-        encode_compact_u16(0, &mut out);
-        out
     }
 
     fn assert_err_kind(result: Result<()>, want: VerifyError) {
@@ -1028,15 +799,4 @@ mod tests {
         assert_err_kind(decode_and_verify(&b64, &expected), VerifyError::OwnerMismatch);
     }
 
-    // ── compact-u16 ──────────────────────────────────────────────────────
-
-    #[test]
-    fn compact_u16_roundtrip() {
-        for v in [0u16, 1, 127, 128, 255, 16383, 16384, 65535] {
-            let mut buf = Vec::new();
-            encode_compact_u16(v, &mut buf);
-            let (got, _) = decode_compact_u16(&buf).unwrap();
-            assert_eq!(got, v);
-        }
-    }
 }
