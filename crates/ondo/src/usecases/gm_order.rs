@@ -128,9 +128,11 @@ fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
     let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
     for (sym, raw) in items {
         if *raw < minimum {
-            return Err(eyre!(
-                "Minimum buy amount is {MIN_USDC_AMOUNT} USDC per token; {sym} is below it"
-            ));
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::AmountBelowMinimum,
+                format!("Minimum buy amount is {MIN_USDC_AMOUNT} USDC per token; {sym} is below it"),
+            )
+            .into());
         }
     }
     Ok(())
@@ -226,6 +228,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("TSLAon"), "must name the offending symbol: {msg}");
         assert!(msg.contains("Minimum buy amount"), "must explain the floor: {msg}");
+        // Typed for agents: error_kind must classify as amount_below_minimum.
+        assert_eq!(super::super::gm::classify_error(&err), Some("amount_below_minimum"));
     }
 
     #[test]

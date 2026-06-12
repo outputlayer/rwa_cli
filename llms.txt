@@ -161,6 +161,7 @@ Parallel is safe for different tokens. jupiterz routes through multiple MMs inte
 With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
 
 - `not_tradable` → skip token or check `list --search <SYM>`
+- `amount_below_minimum` → buy below 1 USDC (single or basket item); raise the amount
 - `market_closed` → tell user when trading reopens
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token

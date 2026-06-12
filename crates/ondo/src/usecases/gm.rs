@@ -19,6 +19,7 @@ pub enum GmTradeErrorKind {
     NotTradable,
     SlippageTooHigh,
     CostTooHigh,
+    AmountBelowMinimum,
 }
 
 #[derive(Debug)]
@@ -49,6 +50,7 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::NotTradable => "not_tradable",
             Self::SlippageTooHigh => "slippage_too_high",
             Self::CostTooHigh => "cost_too_high",
+            Self::AmountBelowMinimum => "amount_below_minimum",
         };
         f.write_str(label)
     }
@@ -72,6 +74,7 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
                 GmTradeErrorKind::NotTradable => "not_tradable",
                 GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
                 GmTradeErrorKind::CostTooHigh => "cost_too_high",
+                GmTradeErrorKind::AmountBelowMinimum => "amount_below_minimum",
             });
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
@@ -509,6 +512,16 @@ mod tests {
         let lamports = (MIN_SOL_FOR_FEES * 1_000_000_000.0) as u64;
         assert_eq!(lamports, 2_000_000);
         assert!(lamports > 0);
+    }
+
+    #[test]
+    fn classify_error_recognizes_amount_below_minimum() {
+        let err: eyre::Report = GmTradeError::new(
+            GmTradeErrorKind::AmountBelowMinimum,
+            "Minimum buy amount is 1 USDC",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("amount_below_minimum"));
     }
 
     #[test]
