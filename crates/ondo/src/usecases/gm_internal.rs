@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::{Result, WrapErr, eyre};
 
 use crate::{api, gm, jupiter, solana, token_list};
 use crate::types::{Mint, Symbol};
@@ -161,17 +161,25 @@ fn check_buy_funds(usdc_balance_raw: &str, sol_lamports: u64, requested: u128) -
         .parse()
         .map_err(|_| eyre!("Invalid on-chain USDC amount: {usdc_balance_raw}"))?;
     if balance < requested {
-        return Err(eyre!(
-            "Insufficient USDC: {:.6} USDC (need {:.6})",
-            balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
-            requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient USDC: {:.6} USDC (need {:.6})",
+                balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+                requested as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32)
+            ),
+        )
+        .into());
     }
     let sol = sol_lamports as f64 / 1_000_000_000.0;
     if sol < MIN_SOL_FOR_FEES {
-        return Err(eyre!(
-            "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL."
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL."
+            ),
+        )
+        .into());
     }
     Ok(())
 }
@@ -207,7 +215,7 @@ pub(crate) async fn preflight_buy_raw(
         .parse()
         .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
     check_buy_funds(&balance_raw, sol_lamports, requested)
-        .map_err(|e| eyre!("{e}\n  Fund wallet: {pubkey}"))
+        .wrap_err_with(|| format!("Fund wallet: {pubkey}"))
 }
 
 pub(crate) fn preflight_sell() -> Result<()> {

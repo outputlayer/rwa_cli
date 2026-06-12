@@ -162,6 +162,9 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 
 - `not_tradable` → skip token or check `list --search <SYM>`
 - `amount_below_minimum` → buy below 1 USDC (single or basket item); raise the amount
+- `insufficient_funds` → wallet lacks USDC or SOL for the trade; fund the wallet, do not retry
+- `no_position` → selling a token the wallet does not hold; check `portfolio` first
+- Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock contention); exit 1 = permanent
 - `market_closed` → tell user when trading reopens
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token

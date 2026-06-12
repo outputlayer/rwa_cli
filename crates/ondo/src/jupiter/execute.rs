@@ -54,23 +54,16 @@ pub async fn execute_order(
     }
 }
 
-async fn execute_managed_order(
-    wallet: &Wallet,
+/// Pre-sign economic gate shared by every execute path: simulate the exact
+/// Jupiter transaction and confirm the real balance deltas before signing —
+/// debit ≤ expected input, expected output mint credited at least the quoted
+/// amount minus slippage tolerance (an RFQ MM or a stale route can otherwise
+/// bake a far worse fill into the tx than its own quote claimed).
+async fn presign_simulation_gate(
+    tx_b64: &str,
     order: &OrderResponse,
     expected: &ExpectedSwap,
-    base_url: &str,
-) -> Result<ExecuteResponse> {
-    let tx_b64 = order
-        .transaction
-        .as_deref()
-        .ok_or_else(|| eyre!("No transaction in order"))?;
-
-    // Authoritative economic guard: modern Jupiter routes settle via CPI inside
-    // the router program, so the static byte-parser cannot see the swap legs.
-    // Simulate the exact transaction and confirm the real balance deltas before
-    // signing — debit ≤ expected input, expected output mint credited at least
-    // the quoted amount minus slippage tolerance (an RFQ MM can otherwise bake
-    // a far worse fill into the tx than its own quote claimed).
+) -> Result<()> {
     let min_output = solana::min_output_floor(
         order.out_amount.parse().unwrap_or(0),
         order.slippage_bps,
@@ -104,6 +97,21 @@ async fn execute_managed_order(
         }
         .into());
     }
+    Ok(())
+}
+
+async fn execute_managed_order(
+    wallet: &Wallet,
+    order: &OrderResponse,
+    expected: &ExpectedSwap,
+    base_url: &str,
+) -> Result<ExecuteResponse> {
+    let tx_b64 = order
+        .transaction
+        .as_deref()
+        .ok_or_else(|| eyre!("No transaction in order"))?;
+
+    presign_simulation_gate(tx_b64, order, expected).await?;
 
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
@@ -170,6 +178,9 @@ async fn execute_metis_order(
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
+    // Same economic gate as managed routes: Metis v1 carries minOut on-chain,
+    // but defense-in-depth says verify the simulated deltas before signing too.
+    presign_simulation_gate(tx_b64, order, expected).await?;
     let signed_tx = wallet
         .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;

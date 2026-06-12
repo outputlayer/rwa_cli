@@ -4,7 +4,7 @@ use crate::{amounts, audit, jupiter, solana, wallet};
 use crate::types::Mint;
 use crate::wallet::ExpectedSwap;
 use super::gm::{
-    SwapExecution, SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS, GmTradeError,
+    SwapExecution, SellOrderReady, BuyOrderReady, GmTradeError,
     GmTradeErrorKind,
 };
 use super::gm_internal::MAX_SWAP_RETRIES;
@@ -63,7 +63,7 @@ pub async fn execute_sell_from_order(
         symbol: ready.symbol.clone(),
         raw_amount: ready.raw_amount.clone(),
         taker: taker.clone(),
-        slippage_bps: None,
+        slippage_bps: ready.slippage_bps,
         backend: ready.order.backend.label().to_string(),
     };
     let params = SwapParams {
@@ -71,7 +71,7 @@ pub async fn execute_sell_from_order(
         output_mint: &output_mint,
         raw_amount: &ready.raw_amount,
         taker: &taker,
-        slippage_bps: None,
+        slippage_bps: ready.slippage_bps,
     };
     let outcome = execute_with_retry(wallet, &ready.order, json, &params)
         .await
@@ -107,7 +107,7 @@ pub async fn execute_buy_from_order(
         symbol: ready.symbol.clone(),
         raw_amount: ready.usdc_raw.clone(),
         taker: taker.clone(),
-        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+        slippage_bps: ready.slippage_bps,
         backend: ready.order.backend.label().to_string(),
     };
     let params = SwapParams {
@@ -115,7 +115,7 @@ pub async fn execute_buy_from_order(
         output_mint: &output_mint,
         raw_amount: &ready.usdc_raw,
         taker: &taker,
-        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
+        slippage_bps: ready.slippage_bps,
     };
     let outcome = execute_with_retry(wallet, &ready.order, json, &params)
         .await

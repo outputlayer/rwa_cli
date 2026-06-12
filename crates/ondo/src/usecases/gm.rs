@@ -20,6 +20,8 @@ pub enum GmTradeErrorKind {
     SlippageTooHigh,
     CostTooHigh,
     AmountBelowMinimum,
+    InsufficientFunds,
+    NoPosition,
 }
 
 #[derive(Debug)]
@@ -51,6 +53,8 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::SlippageTooHigh => "slippage_too_high",
             Self::CostTooHigh => "cost_too_high",
             Self::AmountBelowMinimum => "amount_below_minimum",
+            Self::InsufficientFunds => "insufficient_funds",
+            Self::NoPosition => "no_position",
         };
         f.write_str(label)
     }
@@ -75,6 +79,8 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
                 GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
                 GmTradeErrorKind::CostTooHigh => "cost_too_high",
                 GmTradeErrorKind::AmountBelowMinimum => "amount_below_minimum",
+                GmTradeErrorKind::InsufficientFunds => "insufficient_funds",
+                GmTradeErrorKind::NoPosition => "no_position",
             });
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
@@ -86,8 +92,22 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
         if cause.downcast_ref::<crate::solana::SolanaRpcError>().is_some() {
             return Some("rpc_unavailable");
         }
+        if cause.downcast_ref::<crate::solana::NoTokenAccount>().is_some() {
+            return Some("no_position");
+        }
     }
     None
+}
+
+/// Whether an `error_kind` label denotes a transient failure worth retrying
+/// (network/exchange hiccup) vs a permanent one (bad input, no funds, closed
+/// market). Drives the CLI exit code: transient → 75 (EX_TEMPFAIL), else 1.
+#[must_use]
+pub fn is_transient_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "rpc_unavailable" | "execute_unavailable" | "confirmation_timeout"
+    )
 }
 
 /// Default slippage limit in basis points (100 = 1%).
@@ -127,6 +147,9 @@ pub struct SellOrderReady {
     pub display_amount: String,
     pub order: jupiter::OrderResponse,
     pub slippage_pct: Option<f64>,
+    /// Slippage setting the quote was fetched with — reused when the execute
+    /// retry loop refetches, so reroutes honor the user's tolerance.
+    pub slippage_bps: Option<u32>,
 }
 
 pub(crate) struct SwapParamsOwned {
@@ -145,6 +168,9 @@ pub struct BuyOrderReady {
     pub usdc_display: String,
     pub order: jupiter::OrderResponse,
     pub slippage_pct: Option<f64>,
+    /// Slippage setting the quote was fetched with — reused when the execute
+    /// retry loop refetches, so reroutes honor the user's tolerance.
+    pub slippage_bps: Option<u32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -241,7 +267,11 @@ pub async fn prepare_sell(
     tradable_res?;
     let bal = bal_res?;
     if bal.balance <= 0.0 {
-        return Err(eyre!("Balance is 0 — nothing to trade"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::NoPosition,
+            "Balance is 0 — nothing to trade",
+        )
+        .into());
     }
 
     let (sell_amount, raw_gm) = if is_all || is_pct {
@@ -512,6 +542,40 @@ mod tests {
         let lamports = (MIN_SOL_FOR_FEES * 1_000_000_000.0) as u64;
         assert_eq!(lamports, 2_000_000);
         assert!(lamports > 0);
+    }
+
+    #[test]
+    fn classify_error_recognizes_fund_errors() {
+        let err: eyre::Report = GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            "Insufficient USDC: 1.00 (need 12.00)",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("insufficient_funds"));
+
+        let err: eyre::Report = GmTradeError::new(
+            GmTradeErrorKind::NoPosition,
+            "Balance is 0 for TSLAon — nothing to sell",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("no_position"));
+
+        // Missing token account (sell with no ATA) classifies as no_position too.
+        let err: eyre::Report = crate::solana::NoTokenAccount {
+            mint: "k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo".into(),
+        }
+        .into();
+        assert_eq!(classify_error(&err), Some("no_position"));
+    }
+
+    #[test]
+    fn transient_kind_classification_for_exit_codes() {
+        for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout"] {
+            assert!(is_transient_kind(k), "{k} must be transient");
+        }
+        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high"] {
+            assert!(!is_transient_kind(k), "{k} must be permanent");
+        }
     }
 
     #[test]

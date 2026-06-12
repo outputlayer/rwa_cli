@@ -58,6 +58,7 @@ pub async fn fetch_sell_order(
         display_amount,
         order,
         slippage_pct,
+        slippage_bps,
     })
 }
 
@@ -82,7 +83,11 @@ pub async fn fetch_sell_order_by_symbol(
     let bal = solana::get_balance(taker, &gm_mint, rpc_url).await
         .wrap_err_with(|| format!("failed to fetch {sym} balance"))?;
     if bal.balance <= 0.0 {
-        return Err(eyre!("Balance is 0 for {sym} — nothing to sell"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::NoPosition,
+            format!("Balance is 0 for {sym} — nothing to sell"),
+        )
+        .into());
     }
 
     let is_all = amount_str.trim().eq_ignore_ascii_case("all");
@@ -157,11 +162,15 @@ pub async fn preflight_basket_buy(
         .parse()
         .map_err(|_| eyre!("Invalid on-chain USDC amount: {balance_raw}"))?;
     if balance < total_usdc_raw {
-        return Err(eyre!(
-            "Insufficient USDC: {:.2} available, need {:.2} total\n  Fund wallet: {pubkey}",
-            balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
-            total_usdc_raw as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient USDC: {:.2} available, need {:.2} total\n  Fund wallet: {pubkey}",
+                balance as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+                total_usdc_raw as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+            ),
+        )
+        .into());
     }
     let sol_raw = sol_raw_res?;
     let sol_lamports: u64 = sol_raw
@@ -169,9 +178,13 @@ pub async fn preflight_basket_buy(
         .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
     let sol = sol_lamports as f64 / 1_000_000_000.0;
     if sol < MIN_SOL_FOR_FEES {
-        return Err(eyre!(
-            "Insufficient SOL for fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
-        ));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient SOL for fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
+            ),
+        )
+        .into());
     }
     Ok(())
 }
@@ -208,6 +221,7 @@ pub async fn fetch_buy_order(
         usdc_display,
         order,
         slippage_pct,
+        slippage_bps: Some(slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS)),
     })
 }
 

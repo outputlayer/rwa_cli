@@ -262,7 +262,7 @@ pub async fn get_balance(
     let parsed = accounts.accounts();
     let (balance, raw_amount) = sum_matching_raw_amounts(&parsed, mint)?;
     if raw_amount == "0" {
-        return Err(eyre!("No token account found for mint {mint}"));
+        return Err(NoTokenAccount { mint: mint.to_string() }.into());
     }
     Ok(SolanaTokenBalance {
         symbol: String::new(),
@@ -271,6 +271,22 @@ pub async fn get_balance(
         raw_amount,
     })
 }
+
+/// Raised when the wallet has no associated token account for a mint — for
+/// agents this means "no position", not an RPC failure. Typed so
+/// `classify_error` can label it instead of leaving `error_kind: null`.
+#[derive(Debug)]
+pub struct NoTokenAccount {
+    pub mint: String,
+}
+
+impl std::fmt::Display for NoTokenAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No token account found for mint {}", self.mint)
+    }
+}
+
+impl std::error::Error for NoTokenAccount {}
 
 /// Where a `PortfolioBalances` came from. `Jupiter` means the Solana RPC read
 /// failed and we fell back to the Jupiter Ultra holdings API.
