@@ -166,15 +166,17 @@ pub async fn buy_basket(
 
     // Compute total USDC needed and validate each amount is parseable as USDC
     let mut raw_amounts: Vec<String> = Vec::with_capacity(pairs.len());
+    let mut items: Vec<(String, u128)> = Vec::with_capacity(pairs.len());
     let mut total_raw: u128 = 0;
     for (sym, amt) in &pairs {
         let raw = amounts::token_to_raw(amt, jupiter::USDC_DECIMALS)
             .map_err(|e| eyre!("Invalid amount '{amt}' for {sym}: {e}"))?;
         let raw_u: u128 = raw.parse().map_err(|_| eyre!("Invalid USDC amount for {sym}"))?;
         total_raw = total_raw.saturating_add(raw_u);
+        items.push((sym.clone(), raw_u));
         raw_amounts.push(raw);
     }
-    usecases::gm::preflight_basket_buy(&taker, total_raw, rpc_url).await?;
+    usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url).await?;
 
     if !json {
         let mode = if parallel { " (parallel)" } else { "" };
