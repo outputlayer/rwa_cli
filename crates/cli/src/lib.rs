@@ -1,4 +1,5 @@
 pub mod cmd;
+pub mod wallets;
 
 use clap::Parser;
 use eyre::{Result, eyre};
