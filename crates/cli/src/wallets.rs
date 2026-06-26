@@ -287,6 +287,17 @@ fn warn_passphrase_env_once() {
     });
 }
 
+/// Stable JSON shape for `rwa keys list --json`. `pubkey` is `null` for
+/// encrypted wallets (we never prompt for a passphrase just to list).
+#[derive(Debug, Serialize)]
+pub struct WalletListItemJson {
+    pub name: String,
+    pub path: String,
+    pub pubkey: Option<String>,
+    pub active: bool,
+    pub encrypted: bool,
+}
+
 /// What `resolve` decided to load.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTarget {
@@ -549,5 +560,22 @@ mod tests {
         assert!(res.is_err());
         // Wallet: !Debug, so use .err().unwrap() instead of .unwrap_err()
         assert!(res.err().unwrap().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn list_item_json_shape() {
+        let item = WalletListItemJson {
+            name: "cold".into(),
+            path: "/k/b.age".into(),
+            pubkey: None,
+            active: false,
+            encrypted: true,
+        };
+        let v = serde_json::to_value(&item).unwrap();
+        assert_eq!(v.pointer("/name"), Some(&serde_json::Value::from("cold")));
+        assert_eq!(v.pointer("/path"), Some(&serde_json::Value::from("/k/b.age")));
+        assert_eq!(v.pointer("/pubkey"), Some(&serde_json::Value::Null));
+        assert_eq!(v.pointer("/active"), Some(&serde_json::Value::from(false)));
+        assert_eq!(v.pointer("/encrypted"), Some(&serde_json::Value::from(true)));
     }
 }

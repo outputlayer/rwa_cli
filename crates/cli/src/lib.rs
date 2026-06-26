@@ -119,7 +119,9 @@ pub async fn run() -> Result<()> {
         Commands::Gm { action } => {
             cmd::gm::execute(action, json, cli.rpc_url.as_deref(), cli.wallet_name.as_deref()).await
         }
-        Commands::Keys { action } => cmd::keys::execute(action).await,
+        Commands::Keys { action } => {
+            cmd::keys::execute(action, json, cli.wallet_name.as_deref()).await
+        }
         Commands::Update { check, yes } => cmd::update::run(check, yes, json).await,
     };
 

@@ -45,7 +45,7 @@ Fund your wallet with **SOL** (network fees) and **USDC** (trading) before your 
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> [-y] [--dry-run]` | Send SOL/USDC/tokens to another wallet |
 | `rwa gm reclaim [--token <SYM>]` | Close empty token accounts, reclaim SOL rent |
-| `rwa keys generate \| import \| show \| encrypt \| decrypt` | Wallet management |
+| `rwa keys generate \| import \| show \| encrypt \| decrypt \| add \| list \| use \| remove` | Wallet management |
 | `rwa update [--check] [-y]` | Update rwa to the latest release |
 
 ## Key concepts

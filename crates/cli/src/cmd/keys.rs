@@ -46,9 +46,33 @@ pub enum KeysAction {
 
     /// Decrypt the wallet (key.age → key.json, then removes key.age)
     Decrypt,
+
+    /// Register an existing key file under a name
+    Add {
+        /// Name for this wallet (letters, digits, '-', '_')
+        name: String,
+        /// Path to the key file (plaintext key.json or age-encrypted)
+        #[arg(long)]
+        path: String,
+    },
+
+    /// List registered wallets
+    List,
+
+    /// Set the active wallet
+    Use {
+        /// Name of the wallet to activate
+        name: String,
+    },
+
+    /// Remove a wallet from the registry (does not delete the key file)
+    Remove {
+        /// Name of the wallet to remove
+        name: String,
+    },
 }
 
-pub async fn execute(action: KeysAction) -> Result<()> {
+pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> Result<()> {
     match action {
         KeysAction::Generate { allow_plaintext, encrypt } => {
             if encrypt {
@@ -62,9 +86,13 @@ pub async fn execute(action: KeysAction) -> Result<()> {
             }
             import(file, private_key, seed_phrase, allow_plaintext).await
         }
-        KeysAction::Show => show().await,
+        KeysAction::Show => show(selected).await,
         KeysAction::Encrypt => encrypt_wallet().await,
         KeysAction::Decrypt => decrypt_wallet().await,
+        KeysAction::Add { name, path } => add(&name, &path, json).await,
+        KeysAction::List => list(json).await,
+        KeysAction::Use { name } => use_wallet(&name, json).await,
+        KeysAction::Remove { name } => remove(&name, json).await,
     }
 }
 
@@ -145,21 +173,27 @@ async fn import(
     Ok(())
 }
 
-async fn show() -> Result<()> {
-    let json_path = wallet::default_key_path()?;
-    let is_plaintext = json_path.exists() && !wallet::is_wallet_encrypted();
-    if is_plaintext {
-        eprintln!("DEPRECATED: Your wallet is stored as plaintext key.json. \
-            Run `rwa keys encrypt` to secure it with a passphrase.");
-    }
-    let w = load_wallet_for_show()?;
-    let path = if wallet::is_wallet_encrypted() {
-        wallet::encrypted_key_path()?
-    } else {
-        wallet::default_key_path()?
+async fn show(selected: Option<&str>) -> Result<()> {
+    let cfg = config_dir()?;
+    let reg = crate::wallets::WalletRegistry::load(&cfg)?;
+    let target = reg.resolve(selected)?;
+    let w = crate::wallets::load_selected(selected)?;
+    let path_str = match &target {
+        crate::wallets::WalletTarget::Path(p) => p.display().to_string(),
+        crate::wallets::WalletTarget::LegacyDefault => {
+            if wallet::is_wallet_encrypted() {
+                wallet::encrypted_key_path()?.display().to_string()
+            } else {
+                wallet::default_key_path()?.display().to_string()
+            }
+        }
+    };
+    let encrypted = match &target {
+        crate::wallets::WalletTarget::Path(p) => wallet::is_age_encrypted(p).unwrap_or(false),
+        crate::wallets::WalletTarget::LegacyDefault => wallet::is_wallet_encrypted(),
     };
     println!("Address:  {}", w.pubkey());
-    println!("Key file: {} {}", path.display(), if wallet::is_wallet_encrypted() { "(encrypted)" } else { "" });
+    println!("Key file: {path_str} {}", if encrypted { "(encrypted)" } else { "" });
     Ok(())
 }
 
@@ -176,6 +210,13 @@ async fn encrypt_wallet() -> Result<()> {
     let age_path = w.save_default_encrypted(&passphrase)?;
     std::fs::remove_file(&json_path)
         .map_err(|e| eyre::eyre!("Saved encrypted wallet but failed to remove key.json: {e}"))?;
+    // Keep the registry consistent if it pointed at the (now-renamed) legacy file.
+    if let Ok(cfg) = config_dir() {
+        let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
+        if reg.repoint_path(&json_path, &age_path) {
+            reg.save(&cfg)?;
+        }
+    }
     println!("Wallet encrypted.");
     println!("Key file: {}", age_path.display());
     println!("key.json has been removed.");
@@ -195,6 +236,12 @@ async fn decrypt_wallet() -> Result<()> {
     let json_path = w.save_default()?;
     std::fs::remove_file(&age_path)
         .map_err(|e| eyre::eyre!("Saved decrypted wallet but failed to remove key.age: {e}"))?;
+    if let Ok(cfg) = config_dir() {
+        let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
+        if reg.repoint_path(&age_path, &json_path) {
+            reg.save(&cfg)?;
+        }
+    }
     println!("Wallet decrypted.");
     println!("Key file: {}", json_path.display());
     println!("key.age has been removed.");
@@ -203,13 +250,120 @@ async fn decrypt_wallet() -> Result<()> {
 
 // ── helpers ──────────────────────────────────────────────────
 
-fn load_wallet_for_show() -> Result<Wallet> {
-    if wallet::is_wallet_encrypted() {
-        let passphrase = read_passphrase_env_or_prompt()?;
-        Wallet::load_default_encrypted(&passphrase)
-    } else {
-        Wallet::load_default()
+fn config_dir() -> Result<std::path::PathBuf> {
+    dirs::config_dir().ok_or_else(|| eyre::eyre!("Cannot determine config directory"))
+}
+
+/// Expand a leading `~/` using the home dir; otherwise return the path as-is.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
     }
+    std::path::PathBuf::from(path)
+}
+
+async fn add(name: &str, path: &str, json: bool) -> Result<()> {
+    let cfg = config_dir()?;
+    let expanded = expand_tilde(path);
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+    if !abs.exists() {
+        return Err(eyre::eyre!("Key file not found: {}", abs.display()));
+    }
+    // Validate before registering: parse plaintext fully; for age just confirm header.
+    if !wallet::is_age_encrypted(&abs)? {
+        Wallet::from_file(&abs)?;
+    }
+    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    reg.add(name, &abs.to_string_lossy())?;
+    reg.save(&cfg)?;
+    let is_active = reg.active.as_deref() == Some(name);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "name": name, "path": abs.to_string_lossy(), "active": is_active })
+        );
+    } else {
+        println!("Registered wallet '{name}' -> {}", abs.display());
+        if is_active {
+            println!("'{name}' is now the active wallet.");
+        }
+    }
+    Ok(())
+}
+
+async fn list(json: bool) -> Result<()> {
+    let cfg = config_dir()?;
+    let reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    if json {
+        let items: Vec<crate::wallets::WalletListItemJson> = reg
+            .wallets
+            .iter()
+            .map(|w| {
+                let p = std::path::Path::new(&w.path);
+                let encrypted = wallet::is_age_encrypted(p).unwrap_or(false);
+                let pubkey = if encrypted {
+                    None
+                } else {
+                    Wallet::from_file(p).ok().map(|wk| wk.pubkey())
+                };
+                crate::wallets::WalletListItemJson {
+                    name: w.name.clone(),
+                    path: w.path.clone(),
+                    pubkey,
+                    active: reg.active.as_deref() == Some(&w.name),
+                    encrypted,
+                }
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "wallets": items }));
+        return Ok(());
+    }
+    if reg.wallets.is_empty() {
+        println!("No wallets registered. Add one with `rwa keys add <name> --path <file>`.");
+        return Ok(());
+    }
+    for w in &reg.wallets {
+        let active = if reg.active.as_deref() == Some(&w.name) { "*" } else { " " };
+        let p = std::path::Path::new(&w.path);
+        let kind = if wallet::is_age_encrypted(p).unwrap_or(false) { "encrypted" } else { "plaintext" };
+        println!("{active} {:<16} {}  [{}]", w.name, w.path, kind);
+    }
+    Ok(())
+}
+
+async fn use_wallet(name: &str, json: bool) -> Result<()> {
+    let cfg = config_dir()?;
+    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    reg.set_active(name)?;
+    reg.save(&cfg)?;
+    if json {
+        println!("{}", serde_json::json!({ "status": "ok", "active": name }));
+    } else {
+        println!("Active wallet set to '{name}'.");
+    }
+    Ok(())
+}
+
+async fn remove(name: &str, json: bool) -> Result<()> {
+    let cfg = config_dir()?;
+    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    reg.remove(name)?;
+    reg.save(&cfg)?;
+    if json {
+        println!("{}", serde_json::json!({ "status": "ok", "removed": name, "active": reg.active }));
+    } else {
+        println!("Removed wallet '{name}' from the registry. The key file was not deleted.");
+        if reg.active.is_none() {
+            println!("No active wallet now. Set one with `rwa keys use <name>`.");
+        }
+    }
+    Ok(())
 }
 
 /// Emit a one-time stderr warning when RWA_PASSPHRASE is read from the environment.
@@ -222,15 +376,6 @@ fn warn_passphrase_env_once() {
             Prefer interactive passphrase prompt."
         );
     });
-}
-
-/// Read passphrase from `RWA_PASSPHRASE` env var, otherwise prompt interactively.
-fn read_passphrase_env_or_prompt() -> Result<String> {
-    if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
-        warn_passphrase_env_once();
-        return Ok(p);
-    }
-    read_passphrase("Wallet passphrase: ")
 }
 
 fn read_passphrase(prompt: &str) -> Result<String> {
