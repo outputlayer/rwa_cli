@@ -6,6 +6,7 @@
 //! setups keep working untouched.
 
 use eyre::{Result, eyre};
+use rwa_ondo::wallet::{self, Wallet};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -214,6 +215,78 @@ pub fn ensure_legacy_registered(config_dir: &Path) -> Result<WalletRegistry> {
     Ok(reg)
 }
 
+/// Load the given target, calling `passphrase` only if the file is encrypted.
+/// `passphrase` is a closure so callers (and tests) control how it's obtained.
+pub fn load_target(
+    target: &WalletTarget,
+    passphrase: impl FnOnce() -> Result<String>,
+) -> Result<Wallet> {
+    match target {
+        WalletTarget::Path(path) => {
+            if !path.exists() {
+                return Err(eyre!(
+                    "Wallet key file not found: {}. Re-add it with `rwa keys add`.",
+                    path.display()
+                ));
+            }
+            if wallet::is_age_encrypted(path)? {
+                let pass = passphrase()?;
+                Wallet::from_encrypted_file(path, &pass)
+            } else {
+                Wallet::from_file(path)
+            }
+        }
+        WalletTarget::LegacyDefault => {
+            if wallet::is_wallet_encrypted() {
+                let pass = passphrase()?;
+                Wallet::load_default_encrypted(&pass)
+            } else {
+                Wallet::load_default().map_err(|_| {
+                    eyre!(
+                        "No wallet found.\n\n\
+                         Create or import one first:\n  \
+                         rwa keys generate                          Create a new wallet\n  \
+                         rwa keys import --seed-phrase \"word1 ...\"   Import from seed phrase\n  \
+                         rwa keys import --private-key <BASE58>     Import from private key\n  \
+                         rwa keys import --file <PATH>              Import from key file"
+                    )
+                })
+            }
+        }
+    }
+}
+
+/// Resolve the active/selected wallet under the real config dir and load it,
+/// reading the passphrase from `RWA_PASSPHRASE` or an interactive prompt.
+/// Single entry point for trading commands and `keys show`.
+pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
+    let config = dirs::config_dir()
+        .ok_or_else(|| eyre!("Cannot determine config directory"))?;
+    let target = WalletRegistry::load(&config)?.resolve(selected)?;
+    load_target(&target, prompt_passphrase)
+}
+
+/// Read the wallet passphrase from `RWA_PASSPHRASE` (one-time warning) or prompt.
+fn prompt_passphrase() -> Result<String> {
+    if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
+        warn_passphrase_env_once();
+        return Ok(p);
+    }
+    rpassword::prompt_password("Wallet passphrase: ")
+        .map_err(|e| eyre!("Failed to read passphrase: {e}"))
+}
+
+fn warn_passphrase_env_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "WARNING: RWA_PASSPHRASE in environment leaks via shell history / ps. \
+            Prefer interactive passphrase prompt."
+        );
+    });
+}
+
 /// What `resolve` decided to load.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTarget {
@@ -226,6 +299,7 @@ pub enum WalletTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rwa_ondo::wallet::Wallet;
 
     fn tmp_config() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -434,5 +508,46 @@ mod tests {
         );
         assert!(changed);
         assert_eq!(reg.find("default").unwrap().path, "/cfg/rwa/key.age");
+    }
+
+    #[test]
+    fn load_target_plaintext_no_passphrase() {
+        let cfg = tmp_config();
+        let p = cfg.join("k.json");
+        let w = Wallet::generate();
+        w.save(&p).unwrap();
+        let loaded = load_target(
+            &WalletTarget::Path(p.clone()),
+            || panic!("passphrase must not be requested for plaintext"),
+        )
+        .unwrap();
+        assert_eq!(loaded.pubkey(), w.pubkey());
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn load_target_encrypted_uses_passphrase() {
+        let cfg = tmp_config();
+        let p = cfg.join("k.age");
+        let w = Wallet::generate();
+        w.save_encrypted(&p, "TestPass2026!secure").unwrap();
+        let loaded = load_target(
+            &WalletTarget::Path(p.clone()),
+            || Ok("TestPass2026!secure".to_string()),
+        )
+        .unwrap();
+        assert_eq!(loaded.pubkey(), w.pubkey());
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn load_target_missing_path_errors() {
+        let res = load_target(
+            &WalletTarget::Path(PathBuf::from("/no/such/key.json")),
+            || Ok("x".to_string()),
+        );
+        assert!(res.is_err());
+        // Wallet: !Debug, so use .err().unwrap() instead of .unwrap_err()
+        assert!(res.err().unwrap().to_string().contains("not found"));
     }
 }
