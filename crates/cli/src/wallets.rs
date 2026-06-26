@@ -31,6 +31,14 @@ pub fn registry_path(config_dir: &Path) -> PathBuf {
     config_dir.join("rwa").join("wallets.toml")
 }
 
+fn legacy_json_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("rwa").join("key.json")
+}
+
+fn legacy_age_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("rwa").join("key.age")
+}
+
 impl WalletRegistry {
     /// Load the registry. A missing file is not an error — it yields an empty
     /// registry (the backward-compatible default).
@@ -117,6 +125,21 @@ impl WalletRegistry {
         }
     }
 
+    /// If any entry points at `old`, repoint it to `new`. Returns true if changed.
+    /// Keeps the registry consistent when `keys encrypt`/`decrypt` renames the
+    /// legacy key file.
+    pub fn repoint_path(&mut self, old: &Path, new: &Path) -> bool {
+        let new_s = new.to_string_lossy().to_string();
+        let mut changed = false;
+        for w in &mut self.wallets {
+            if Path::new(&w.path) == old {
+                w.path = new_s.clone();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Decide which wallet to load given an explicit selection (`--wallet`/env).
     ///
     /// Priority: explicit `selected` > registry `active` > legacy fallback.
@@ -165,6 +188,30 @@ pub fn validate_name(name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// If the registry is empty but a legacy single-wallet key file exists, register
+/// it as `default` and make it active. Called ONLY by registry-management
+/// commands (`keys add/list/use`) — never on a trade path, so trades never
+/// mutate the registry as a side effect.
+pub fn ensure_legacy_registered(config_dir: &Path) -> Result<WalletRegistry> {
+    let mut reg = WalletRegistry::load(config_dir)?;
+    if !reg.wallets.is_empty() {
+        return Ok(reg);
+    }
+    // Prefer the encrypted legacy file when both exist (mirrors is_wallet_encrypted).
+    let legacy = if legacy_age_path(config_dir).exists() {
+        Some(legacy_age_path(config_dir))
+    } else if legacy_json_path(config_dir).exists() {
+        Some(legacy_json_path(config_dir))
+    } else {
+        None
+    };
+    if let Some(path) = legacy {
+        reg.add("default", &path.to_string_lossy())?;
+        reg.save(config_dir)?;
+    }
+    Ok(reg)
 }
 
 /// What `resolve` decided to load.
@@ -324,5 +371,68 @@ mod tests {
         reg.remove("main").unwrap(); // clears active, "cold" remains
         let err = reg.resolve(None).unwrap_err().to_string();
         assert!(err.contains("keys use"), "guidance present: {err}");
+    }
+
+    fn write_file(p: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    #[test]
+    fn lazy_registers_plaintext_legacy_as_default() {
+        let cfg = tmp_config();
+        write_file(&cfg.join("rwa").join("key.json"), b"[1,2,3]");
+        let reg = ensure_legacy_registered(&cfg).unwrap();
+        let e = reg.find("default").expect("default registered");
+        assert!(e.path.ends_with("key.json"));
+        assert_eq!(reg.active.as_deref(), Some("default"));
+        // persisted
+        let reloaded = WalletRegistry::load(&cfg).unwrap();
+        assert!(reloaded.find("default").is_some());
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn lazy_prefers_encrypted_legacy() {
+        let cfg = tmp_config();
+        write_file(&cfg.join("rwa").join("key.json"), b"[1,2,3]");
+        write_file(&cfg.join("rwa").join("key.age"), b"age-encryption.org/v1\n");
+        let reg = ensure_legacy_registered(&cfg).unwrap();
+        let e = reg.find("default").unwrap();
+        assert!(e.path.ends_with("key.age"), "encrypted legacy preferred");
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn lazy_noop_when_registry_nonempty() {
+        let cfg = tmp_config();
+        let mut reg = WalletRegistry::default();
+        reg.add("main", "/k/a.json").unwrap();
+        reg.save(&cfg).unwrap();
+        write_file(&cfg.join("rwa").join("key.json"), b"[1,2,3]");
+        let out = ensure_legacy_registered(&cfg).unwrap();
+        assert!(out.find("default").is_none(), "no default added");
+        assert!(out.find("main").is_some());
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn lazy_noop_when_no_legacy_file() {
+        let cfg = tmp_config();
+        let out = ensure_legacy_registered(&cfg).unwrap();
+        assert!(out.wallets.is_empty());
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn repoint_path_updates_matching_entry() {
+        let mut reg = WalletRegistry::default();
+        reg.add("default", "/cfg/rwa/key.json").unwrap();
+        let changed = reg.repoint_path(
+            Path::new("/cfg/rwa/key.json"),
+            Path::new("/cfg/rwa/key.age"),
+        );
+        assert!(changed);
+        assert_eq!(reg.find("default").unwrap().path, "/cfg/rwa/key.age");
     }
 }
