@@ -474,13 +474,18 @@ fn named_wallets_add_list_use_remove() {
     let w2 = v2["wallets"].as_array().unwrap();
     let backup = w2.iter().find(|w| w["name"] == "backup").unwrap();
     assert_eq!(backup["active"], serde_json::Value::Bool(true));
+    let default2 = w2.iter().find(|w| w["name"] == "default").unwrap();
+    assert_eq!(default2["active"], serde_json::Value::Bool(false), "default must be inactive after `use backup`");
 
     // 5) Remove backup (it was active) — registry stays valid, active cleared.
     let rm = rwa(&home).args(["keys", "remove", "backup"]).output().unwrap();
     assert!(rm.status.success());
     let v3 = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
-    let names: Vec<_> = v3["wallets"].as_array().unwrap().iter().map(|w| w["name"].clone()).collect();
+    let remaining = v3["wallets"].as_array().unwrap();
+    let names: Vec<_> = remaining.iter().map(|w| w["name"].clone()).collect();
     assert!(!names.contains(&serde_json::Value::from("backup")), "backup removed");
+    assert!(remaining.iter().any(|w| w["name"] == "default"), "default still present after removing backup");
+    assert!(!remaining.iter().any(|w| w["active"] == serde_json::Value::Bool(true)), "active pointer cleared after removing the active wallet");
 }
 
 #[test]
