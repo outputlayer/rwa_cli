@@ -36,7 +36,7 @@ Cargo workspace: `bin/rwa` (entry point) → `crates/cli` (clap parsing, output)
 
 ```
 rwa gm hours                       # Market status
-rwa gm list                        # All 264 tokens
+rwa gm list                        # All 438 tokens
 rwa gm buy <SYM> <AMT> --dry-run   # Preview trade (no separate quote command)
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
 rwa gm close-all -y                # Sell ALL positions (sequential, skips <$1.50)

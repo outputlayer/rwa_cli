@@ -1,7 +1,7 @@
 # rwa CLI
 
 CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via Jupiter.
-264 tokens: TSLA, AAPL, NVDA, SPY, QQQ, and more.
+438 tokens: TSLA, AAPL, NVDA, SPY, QQQ, and more.
 
 ## Install
 
