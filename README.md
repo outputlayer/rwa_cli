@@ -57,7 +57,7 @@ Fund your wallet with **SOL** (network fees) and **USDC** (trading) before your 
 - **Amounts**: exact (`100`), percentage (`50%`), or `all`. Converted with exact on-chain precision — too many decimals is rejected, never silently rounded.
 - **`send` ≠ `sell`.** `sell` swaps a token to USDC; `send` transfers assets to another wallet. `send USDC all` sends your *entire* USDC balance, not just recent proceeds.
 - **`close-all`** is the canonical way to exit many positions; it skips dust (< $1.50) and reports it. Use `--parallel` to run all swaps at once.
-- **Named wallets**: register multiple key files with `rwa keys add <name> --path <path>`, switch the active wallet with `rwa keys use <name>`, or pick one for a single command with `rwa --wallet <name>`. Selection priority: `--wallet` / `RWA_WALLET` > registry active > legacy default. `rwa keys list` shows all registered wallets.
+- **Named wallets**: register multiple key files with `rwa keys add <name> --path <path>` (or import a key in one step with `rwa keys add <name> --seed-phrase "..." --path <path>` / `--private-key <key>`, encrypted by default), switch the active wallet with `rwa keys use <name>`, or pick one for a single command with `rwa --wallet <name>`. Selection priority: `--wallet` / `RWA_WALLET` > registry active > legacy default. `rwa keys list` shows all registered wallets.
 - **Slippage**: default 1% (100 bps), tunable with `--slippage`; swaps above 3% are blocked.
 - **Trading sessions are ET-based** and not every token trades in every session:
 

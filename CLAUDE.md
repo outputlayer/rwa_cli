@@ -99,7 +99,9 @@ rwa keys import --seed-phrase|--private-key|--file
 rwa keys encrypt
 rwa keys decrypt
 rwa keys show
-rwa keys add <NAME> --path <PATH>   # register an existing key file by name
+rwa keys add <NAME> --path <PATH>                       # register an existing key file by name
+rwa keys add <NAME> --seed-phrase "..." --path <PATH>   # import a seed phrase to <PATH> (encrypted by default) and register
+rwa keys add <NAME> --private-key <KEY> --path <PATH>   # import a base58/hex/base64 key to <PATH> and register
 rwa keys list                       # list named wallets (* = active)
 rwa keys use <NAME>                 # set the active wallet
 rwa keys remove <NAME>              # unregister (key file is NOT deleted)

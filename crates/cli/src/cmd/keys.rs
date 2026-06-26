@@ -47,13 +47,24 @@ pub enum KeysAction {
     /// Decrypt the wallet (key.age → key.json, then removes key.age)
     Decrypt,
 
-    /// Register an existing key file under a name
+    /// Register a key file by path, or import a key from a seed phrase /
+    /// private key, write it to <PATH> (encrypted by default), and register it
     Add {
         /// Name for this wallet (letters, digits, '-', '_')
         name: String,
-        /// Path to the key file (plaintext key.json or age-encrypted)
+        /// Where the key lives. With --seed-phrase/--private-key the key is
+        /// written here; otherwise an existing file at this path is registered.
         #[arg(long)]
         path: String,
+        /// Import from a BIP39 seed phrase (omit the value to enter it interactively)
+        #[arg(long, num_args = 0..=1, default_missing_value = "", conflicts_with = "private_key")]
+        seed_phrase: Option<String>,
+        /// Import from a base58/hex/base64 private key
+        #[arg(long)]
+        private_key: Option<String>,
+        /// When importing, write the key as plaintext instead of encrypted (not recommended)
+        #[arg(long)]
+        allow_plaintext: bool,
     },
 
     /// List registered wallets
@@ -99,7 +110,9 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             }
             decrypt_wallet().await
         }
-        KeysAction::Add { name, path } => add(&name, &path, json).await,
+        KeysAction::Add { name, path, seed_phrase, private_key, allow_plaintext } => {
+            add(&name, &path, seed_phrase, private_key, allow_plaintext, json).await
+        }
         KeysAction::List => list(json).await,
         KeysAction::Use { name } => use_wallet(&name, json).await,
         KeysAction::Remove { name } => remove(&name, json).await,
@@ -295,22 +308,85 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
     }
 }
 
-async fn add(name: &str, path: &str, json: bool) -> Result<()> {
+async fn add(
+    name: &str,
+    path: &str,
+    seed_phrase: Option<String>,
+    private_key: Option<String>,
+    allow_plaintext: bool,
+    json: bool,
+) -> Result<()> {
     let cfg = config_dir()?;
+    // Validate the name and reject duplicates BEFORE any file is written, so an
+    // import that names an existing wallet never leaves an orphan key file.
+    crate::wallets::validate_name(name)?;
+    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    if reg.find(name).is_some() {
+        return Err(eyre::eyre!("Wallet '{name}' already exists"));
+    }
+
     let expanded = expand_tilde(path);
     let abs = if expanded.is_absolute() {
         expanded
     } else {
         std::env::current_dir()?.join(expanded)
     };
-    if !abs.exists() {
-        return Err(eyre::eyre!("Key file not found: {}", abs.display()));
+
+    // Derive a wallet from a secret source, if one was provided.
+    let imported = match (seed_phrase, private_key) {
+        (Some(sp), None) => {
+            let phrase = if sp.is_empty() {
+                let input = rpassword::prompt_password("Enter seed phrase: ")
+                    .map_err(|e| eyre::eyre!("Failed to read seed phrase: {e}"))?;
+                if input.is_empty() {
+                    return Err(eyre::eyre!("Seed phrase cannot be empty"));
+                }
+                input
+            } else {
+                sp
+            };
+            Some(Wallet::from_mnemonic(&phrase)?)
+        }
+        (None, Some(pk)) => Some(Wallet::from_private_key(&pk)?),
+        (None, None) => None,
+        // clap's `conflicts_with` already blocks this, but stay defensive.
+        (Some(_), Some(_)) => {
+            return Err(eyre::eyre!("Provide only one of --seed-phrase or --private-key"));
+        }
+    };
+
+    match imported {
+        // Import mode: write a new key file at `abs` (encrypted by default), then register it.
+        Some(w) => {
+            if abs.exists() {
+                return Err(eyre::eyre!(
+                    "Refusing to overwrite existing file: {}. Choose a new --path, \
+                     or omit --seed-phrase/--private-key to register the existing file as-is.",
+                    abs.display()
+                ));
+            }
+            if allow_plaintext {
+                eprintln!(
+                    "WARNING: writing the key as plaintext. Omit --allow-plaintext to encrypt it with a passphrase."
+                );
+                w.save(&abs)?;
+            } else {
+                let passphrase = prompt_new_passphrase()?;
+                w.save_encrypted(&abs, &passphrase)?;
+            }
+        }
+        // Register mode: an existing file must be present and valid.
+        None => {
+            if !abs.exists() {
+                return Err(eyre::eyre!("Key file not found: {}", abs.display()));
+            }
+            // Validate before registering: parse plaintext fully; for age just confirm header.
+            if !wallet::is_age_encrypted(&abs)? {
+                Wallet::from_file(&abs)?;
+            }
+        }
     }
-    // Validate before registering: parse plaintext fully; for age just confirm header.
-    if !wallet::is_age_encrypted(&abs)? {
-        Wallet::from_file(&abs)?;
-    }
-    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+
     reg.add(name, &abs.to_string_lossy())?;
     reg.save(&cfg)?;
     let is_active = reg.active.as_deref() == Some(name);

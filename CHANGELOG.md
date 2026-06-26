@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.28] — 2026-06-26 — Import a key directly with `keys add`
+
+### Added
+
+- **`rwa keys add <NAME> --seed-phrase "..." --path <PATH>`** (and `--private-key <KEY>`) imports a key in one step: it derives the wallet, writes it to `<PATH>` **encrypted by default** (passphrase prompt, or `RWA_PASSPHRASE`; `--allow-plaintext` opts out), and registers it under `<NAME>`. Previously `keys add` could only register an already-existing file. The no-source form (`keys add <NAME> --path <PATH>`) is unchanged. Import refuses to overwrite an existing file at `<PATH>`, and the name is validated (and rejected if taken) before any file is written.
+
+---
+
 ## [0.2.27] — 2026-06-26 — Named wallets (path registry)
 
 ### Added

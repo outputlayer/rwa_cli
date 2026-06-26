@@ -504,3 +504,105 @@ fn unknown_selected_wallet_errors() {
     assert!(combined.contains("ghost"), "error names the bad wallet: {combined}");
     assert!(combined.contains("not found"), "error says not found: {combined}");
 }
+
+// ── keys add: import from seed phrase / private key ──────────────────────────
+
+/// Standard BIP39 test mnemonic (also used in crates/ondo wallet unit tests).
+const TEST_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+#[test]
+fn keys_add_import_from_seed_plaintext_is_deterministic() {
+    let home = test_home("add-seed-plain");
+    let p1 = home.join("k1.json");
+    let p2 = home.join("k2.json");
+
+    // Import the same seed twice, under two names, as plaintext (no passphrase).
+    for (name, path) in [("s1", &p1), ("s2", &p2)] {
+        let out = rwa(&home)
+            .args(["keys", "add", name, "--seed-phrase", TEST_MNEMONIC, "--allow-plaintext", "--path"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "add {name} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    // The written file is a 64-byte solana-keygen JSON array.
+    let bytes: Vec<u8> = serde_json::from_str(&std::fs::read_to_string(&p1).unwrap()).unwrap();
+    assert_eq!(bytes.len(), 64, "plaintext key file must be a 64-byte array");
+
+    // Both registered wallets are plaintext with the SAME derived pubkey (determinism).
+    let v = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
+    let w = v["wallets"].as_array().unwrap();
+    let s1 = w.iter().find(|x| x["name"] == "s1").unwrap();
+    let s2 = w.iter().find(|x| x["name"] == "s2").unwrap();
+    assert_eq!(s1["encrypted"], serde_json::Value::Bool(false));
+    assert!(s1["pubkey"].is_string(), "plaintext import exposes a pubkey");
+    assert_eq!(s1["pubkey"], s2["pubkey"], "same seed must derive the same address");
+}
+
+#[test]
+fn keys_add_import_encrypted_by_default() {
+    let home = test_home("add-seed-enc");
+    let pass = "TestPass2026!secure";
+    let cold = home.join("cold.age");
+    let warm = home.join("warm.json");
+
+    // Encrypted by default (passphrase from RWA_PASSPHRASE).
+    let enc = rwa(&home)
+        .env("RWA_PASSPHRASE", pass)
+        .args(["keys", "add", "cold", "--seed-phrase", TEST_MNEMONIC, "--path"])
+        .arg(&cold)
+        .output()
+        .unwrap();
+    assert!(enc.status.success(), "encrypted add failed: {}", String::from_utf8_lossy(&enc.stderr));
+
+    // The file is genuinely age-encrypted.
+    let head = std::fs::read(&cold).unwrap();
+    assert!(head.starts_with(b"age-encryption.org/v1"), "default add must write an age file");
+
+    // list --json: cold is encrypted with pubkey null (no passphrase prompt for listing).
+    let v = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
+    let cold_e = v["wallets"].as_array().unwrap().iter().find(|x| x["name"] == "cold").unwrap();
+    assert_eq!(cold_e["encrypted"], serde_json::Value::Bool(true));
+    assert_eq!(cold_e["pubkey"], serde_json::Value::Null);
+
+    // A plaintext import of the same seed exposes the address; the encrypted wallet,
+    // shown with its passphrase, must resolve to the same address (roundtrip).
+    let warm_out = rwa(&home)
+        .args(["keys", "add", "warm", "--seed-phrase", TEST_MNEMONIC, "--allow-plaintext", "--path"])
+        .arg(&warm)
+        .output()
+        .unwrap();
+    assert!(warm_out.status.success(), "warm add failed: {}", String::from_utf8_lossy(&warm_out.stderr));
+    let v2 = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
+    let warm_pk = v2["wallets"].as_array().unwrap().iter()
+        .find(|x| x["name"] == "warm").unwrap()["pubkey"].as_str().unwrap().to_string();
+
+    let show = rwa(&home)
+        .env("RWA_PASSPHRASE", pass)
+        .args(["--wallet", "cold", "keys", "show"])
+        .output()
+        .unwrap();
+    assert!(show.status.success(), "show cold failed: {}", String::from_utf8_lossy(&show.stderr));
+    let show_out = String::from_utf8_lossy(&show.stdout);
+    assert!(show_out.contains(&warm_pk), "encrypted wallet must resolve to the same address as the plaintext one:\n{show_out}");
+}
+
+#[test]
+fn keys_add_import_refuses_to_overwrite_existing_file() {
+    let home = test_home("add-no-overwrite");
+    let p = home.join("taken.json");
+    std::fs::write(&p, b"do not clobber").unwrap();
+
+    let out = rwa(&home)
+        .args(["keys", "add", "x", "--seed-phrase", TEST_MNEMONIC, "--allow-plaintext", "--path"])
+        .arg(&p)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "importing onto an existing file must fail");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("overwrite") || err.contains("existing"), "error explains the refusal: {err}");
+    // The original file is untouched.
+    assert_eq!(std::fs::read(&p).unwrap(), b"do not clobber");
+}

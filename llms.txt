@@ -94,7 +94,7 @@ Do not rely on legacy flat `portfolio` fields.
 - `rwa keys show` — show address + key path
 - `rwa keys encrypt` — convert `key.json` -> `key.age`
 - `rwa keys decrypt` — convert `key.age` -> `key.json`
-- `rwa keys add <NAME> --path <PATH>` — register an existing key file by name
+- `rwa keys add <NAME> --path <PATH>` — register an existing key file by name; with `--seed-phrase "..."` or `--private-key <KEY>` it imports the key to `<PATH>` (encrypted by default; `--allow-plaintext` to opt out) and registers it
 - `rwa keys list` — list named wallets (* = active); `--json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`
 - `rwa keys use <NAME>` — set the active wallet
 - `rwa keys remove <NAME>` — unregister (key file is NOT deleted)
