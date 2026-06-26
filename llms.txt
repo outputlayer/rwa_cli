@@ -94,6 +94,11 @@ Do not rely on legacy flat `portfolio` fields.
 - `rwa keys show` — show address + key path
 - `rwa keys encrypt` — convert `key.json` -> `key.age`
 - `rwa keys decrypt` — convert `key.age` -> `key.json`
+- `rwa keys add <NAME> --path <PATH>` — register an existing key file by name
+- `rwa keys list` — list named wallets (* = active); `--json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`
+- `rwa keys use <NAME>` — set the active wallet
+- `rwa keys remove <NAME>` — unregister (key file is NOT deleted)
+- `rwa --wallet <NAME> gm <CMD>` — select a named wallet for one command; wallet selection priority: `--wallet` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age`
 
 ## Amount formats
 

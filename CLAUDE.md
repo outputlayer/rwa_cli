@@ -99,6 +99,11 @@ rwa keys import --seed-phrase|--private-key|--file
 rwa keys encrypt
 rwa keys decrypt
 rwa keys show
+rwa keys add <NAME> --path <PATH>   # register an existing key file by name
+rwa keys list                       # list named wallets (* = active)
+rwa keys use <NAME>                 # set the active wallet
+rwa keys remove <NAME>              # unregister (key file is NOT deleted)
+rwa --wallet <NAME> gm buy ...      # select a wallet for one command
 
 rwa update --check
 rwa update -y
@@ -135,6 +140,12 @@ rwa update -y
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`
 - `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets
+- Multiple named wallets: registry at `~/.config/rwa/wallets.toml` maps a name to an absolute key-file path plus an `active` pointer (file is `0o600`; holds paths, not keys)
+- Wallet selection priority: `--wallet <name>` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age` default. An absent/empty registry behaves exactly as the old single-wallet setup
+- Key files stay wherever the user registered them; key type (plaintext vs age) is detected by file content, not extension
+- The legacy `key.json`/`key.age` is auto-registered as `default` the first time a `keys add/list/use` command runs
+- `keys encrypt`/`decrypt` operate on the legacy default location only and reconcile any registry entry that pointed at the renamed file; named external wallets are managed in the form they were registered
+- Selecting an unknown wallet fails with a non-transient error (exit 1) listing available names
 - Sign-time guard: before signing a swap, the CLI simulates the exact Jupiter transaction and confirms the input mint is debited by no more than expected and the expected output mint is credited to this wallet by **at least the quoted amount minus slippage tolerance** (an under-delivering fill is refused, the router excluded, and the quote refetched — surfaced as `route_unfillable` if retries run out); fails closed if the RPC is unreachable
 
 ## Agent usage rules
@@ -150,6 +161,7 @@ rwa update -y
 - Use `hours --tradable` only when the user wants the full currently tradable set
 - Use `buy-basket` / `sell-basket` for multi-token trades; prefer `--parallel` for speed
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
+- Use `--wallet <name>` (or `RWA_WALLET`) to pick among named wallets; `rwa keys list --json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`
 
 ## Anti-Overengineering Checklist
 
