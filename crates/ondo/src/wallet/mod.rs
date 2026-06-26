@@ -348,6 +348,22 @@ pub fn is_wallet_encrypted() -> bool {
     encrypted_key_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// Detect whether a key file is age-encrypted by inspecting its header, rather
+/// than trusting the filename. age v1 files (binary or armored) begin with a
+/// recognizable marker; a plaintext solana-keygen key is a JSON array (`[`).
+/// Used by the named-wallet loader, where paths are arbitrary.
+pub fn is_age_encrypted(path: &Path) -> Result<bool> {
+    let mut f = std::fs::File::open(path)
+        .map_err(|e| eyre!("Cannot open key file {}: {e}", path.display()))?;
+    let mut head = [0u8; 64];
+    let n = f
+        .read(&mut head)
+        .map_err(|e| eyre!("Cannot read key file {}: {e}", path.display()))?;
+    let head = &head[..n];
+    Ok(head.starts_with(b"age-encryption.org/v1")
+        || head.starts_with(b"-----BEGIN AGE ENCRYPTED FILE-----"))
+}
+
 /// Decode a compact-u16 from the start of a byte slice.
 /// Returns (value, bytes_consumed).
 fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {
@@ -678,5 +694,17 @@ mod tests {
             result.is_err(),
             "decrypting with wrong passphrase must return an error"
         );
+    }
+
+    #[test]
+    fn detects_encryption_by_content() {
+        let plain = TempFile::new("key.json");
+        let enc = TempFile::new("key.age");
+        let w = Wallet::generate();
+        w.save(plain.path()).unwrap();
+        w.save_encrypted(enc.path(), "TestPass2026!secure").unwrap();
+
+        assert!(!is_age_encrypted(plain.path()).unwrap(), "plaintext JSON => false");
+        assert!(is_age_encrypted(enc.path()).unwrap(), "age file => true");
     }
 }
