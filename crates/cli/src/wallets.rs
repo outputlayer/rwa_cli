@@ -69,8 +69,10 @@ impl WalletRegistry {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| eyre!("Failed to set permissions on {}: {e}", tmp.display()))?;
+            if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(eyre!("Failed to set permissions on {}: {e}", tmp.display()));
+            }
         }
         std::fs::rename(&tmp, &path)
             .map_err(|e| eyre!("Failed to finalize {}: {e}", path.display()))?;
@@ -313,13 +315,17 @@ mod tests {
     use rwa_ondo::wallet::Wallet;
 
     fn tmp_config() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "rwa-wallets-{}-{}",
+            "rwa-wallets-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            n
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -557,9 +563,21 @@ mod tests {
             &WalletTarget::Path(PathBuf::from("/no/such/key.json")),
             || Ok("x".to_string()),
         );
-        assert!(res.is_err());
         // Wallet: !Debug, so use .err().unwrap() instead of .unwrap_err()
-        assert!(res.err().unwrap().to_string().contains("not found"));
+        let err = res.err().expect("missing-path load must error");
+        assert!(err.to_string().contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn remove_unknown_does_not_lazy_register() {
+        let cfg = tmp_config();
+        write_file(&cfg.join("rwa").join("key.json"), b"[1,2,3]");
+        // Simulate `keys remove`: load (NOT ensure_legacy_registered), then remove.
+        let mut reg = WalletRegistry::load(&cfg).unwrap();
+        assert!(reg.remove("ghost").is_err());
+        // No registry file should have been written.
+        assert!(!registry_path(&cfg).exists(), "failed remove must not create wallets.toml");
+        let _ = std::fs::remove_dir_all(&cfg);
     }
 
     #[test]

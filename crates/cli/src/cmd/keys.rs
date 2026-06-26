@@ -87,8 +87,18 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             import(file, private_key, seed_phrase, allow_plaintext).await
         }
         KeysAction::Show => show(selected).await,
-        KeysAction::Encrypt => encrypt_wallet().await,
-        KeysAction::Decrypt => decrypt_wallet().await,
+        KeysAction::Encrypt => {
+            if selected.is_some() {
+                eprintln!("NOTE: --wallet/RWA_WALLET is ignored by `keys encrypt`/`decrypt`; operating on the legacy default wallet.");
+            }
+            encrypt_wallet().await
+        }
+        KeysAction::Decrypt => {
+            if selected.is_some() {
+                eprintln!("NOTE: --wallet/RWA_WALLET is ignored by `keys encrypt`/`decrypt`; operating on the legacy default wallet.");
+            }
+            decrypt_wallet().await
+        }
         KeysAction::Add { name, path } => add(&name, &path, json).await,
         KeysAction::List => list(json).await,
         KeysAction::Use { name } => use_wallet(&name, json).await,
@@ -192,6 +202,9 @@ async fn show(selected: Option<&str>) -> Result<()> {
         crate::wallets::WalletTarget::Path(p) => wallet::is_age_encrypted(p).unwrap_or(false),
         crate::wallets::WalletTarget::LegacyDefault => wallet::is_wallet_encrypted(),
     };
+    if !encrypted {
+        eprintln!("DEPRECATED: this wallet is stored as plaintext. Run `rwa keys encrypt` to secure it with a passphrase.");
+    }
     println!("Address:  {}", w.pubkey());
     println!("Key file: {path_str} {}", if encrypted { "(encrypted)" } else { "" });
     Ok(())
@@ -352,7 +365,7 @@ async fn use_wallet(name: &str, json: bool) -> Result<()> {
 
 async fn remove(name: &str, json: bool) -> Result<()> {
     let cfg = config_dir()?;
-    let mut reg = crate::wallets::ensure_legacy_registered(&cfg)?;
+    let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
     reg.remove(name)?;
     reg.save(&cfg)?;
     if json {
