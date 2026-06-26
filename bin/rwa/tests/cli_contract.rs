@@ -36,6 +36,7 @@ fn rwa(home: &Path) -> Command {
         "RWA_EXCLUDE_ROUTERS",
         "RWA_MAX_BPS",
         "RWA_PASSPHRASE",
+        "RWA_WALLET",
         "RWA_ONDO_API_URL",
         "RWA_ONDO_SESSION_URL",
         "RWA_JUPITER_URL",
@@ -424,4 +425,77 @@ fn buy_quote_only_json_emits_dry_run_shape() {
         }
         other => panic!("unexpected status {other:?}: {v}"),
     }
+}
+
+// ── Named wallets ────────────────────────────────────────────────────────────
+
+/// Extract the `Key file: <path>` line printed by `keys generate`.
+fn parse_key_file_path(stdout: &str) -> String {
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("Key file:"))
+        .map(|s| s.trim().to_string())
+        .expect("generate prints a 'Key file:' line")
+}
+
+#[test]
+fn named_wallets_add_list_use_remove() {
+    let home = test_home("named-wallets");
+
+    // 1) Create a plaintext default wallet (no passphrase needed).
+    let gen_out = rwa(&home)
+        .args(["keys", "generate", "--allow-plaintext"])
+        .output()
+        .unwrap();
+    assert!(gen_out.status.success(), "generate failed: {}", String::from_utf8_lossy(&gen_out.stderr));
+    let key_path = parse_key_file_path(&String::from_utf8_lossy(&gen_out.stdout));
+
+    // 2) list --json lazily registers the legacy key as `default` (active).
+    let list1 = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    assert!(list1.status.success());
+    let v1 = stdout_json(&list1);
+    let wallets = v1.get("wallets").and_then(|w| w.as_array()).unwrap();
+    let def = wallets.iter().find(|w| w["name"] == "default").expect("default present");
+    assert_eq!(def["active"], serde_json::Value::Bool(true));
+    assert_eq!(def["encrypted"], serde_json::Value::Bool(false));
+    assert!(def["pubkey"].is_string(), "plaintext wallet exposes pubkey");
+
+    // 3) Register the same file under a second name.
+    let add = rwa(&home)
+        .args(["keys", "add", "backup", "--path", &key_path])
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "add failed: {}", String::from_utf8_lossy(&add.stderr));
+
+    // 4) Switch active to backup.
+    let use_ = rwa(&home).args(["keys", "use", "backup"]).output().unwrap();
+    assert!(use_.status.success());
+    let v2 = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
+    let w2 = v2["wallets"].as_array().unwrap();
+    let backup = w2.iter().find(|w| w["name"] == "backup").unwrap();
+    assert_eq!(backup["active"], serde_json::Value::Bool(true));
+
+    // 5) Remove backup (it was active) — registry stays valid, active cleared.
+    let rm = rwa(&home).args(["keys", "remove", "backup"]).output().unwrap();
+    assert!(rm.status.success());
+    let v3 = stdout_json(&rwa(&home).args(["keys", "list", "--json"]).output().unwrap());
+    let names: Vec<_> = v3["wallets"].as_array().unwrap().iter().map(|w| w["name"].clone()).collect();
+    assert!(!names.contains(&serde_json::Value::from("backup")), "backup removed");
+}
+
+#[test]
+fn unknown_selected_wallet_errors() {
+    let home = test_home("unknown-wallet");
+    let out = rwa(&home)
+        .args(["--json", "--wallet", "ghost", "keys", "show"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "unknown wallet must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(combined.contains("ghost"), "error names the bad wallet: {combined}");
+    assert!(combined.contains("not found"), "error says not found: {combined}");
 }
