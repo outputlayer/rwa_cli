@@ -224,11 +224,21 @@ async fn encrypt_wallet() -> Result<()> {
     std::fs::remove_file(&json_path)
         .map_err(|e| eyre::eyre!("Saved encrypted wallet but failed to remove key.json: {e}"))?;
     // Keep the registry consistent if it pointed at the (now-renamed) legacy file.
-    if let Ok(cfg) = config_dir() {
-        let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
-        if reg.repoint_path(&json_path, &age_path) {
-            reg.save(&cfg)?;
+    // The key file is already encrypted; surface (don't swallow) a failure to
+    // update the registry so a named wallet isn't silently left pointing at the
+    // removed path.
+    match config_dir() {
+        Ok(cfg) => {
+            let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
+            if reg.repoint_path(&json_path, &age_path) {
+                reg.save(&cfg)?;
+            }
         }
+        Err(e) => eprintln!(
+            "WARNING: wallet encrypted, but the wallet registry could not be updated: {e}. \
+             If you use named wallets, run `rwa keys add <name> --path {}` to re-register it.",
+            age_path.display()
+        ),
     }
     println!("Wallet encrypted.");
     println!("Key file: {}", age_path.display());
@@ -249,11 +259,21 @@ async fn decrypt_wallet() -> Result<()> {
     let json_path = w.save_default()?;
     std::fs::remove_file(&age_path)
         .map_err(|e| eyre::eyre!("Saved decrypted wallet but failed to remove key.age: {e}"))?;
-    if let Ok(cfg) = config_dir() {
-        let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
-        if reg.repoint_path(&age_path, &json_path) {
-            reg.save(&cfg)?;
+    // Surface (don't swallow) a registry-update failure: the key is already
+    // decrypted, so a named wallet must not be silently left pointing at the
+    // removed encrypted path.
+    match config_dir() {
+        Ok(cfg) => {
+            let mut reg = crate::wallets::WalletRegistry::load(&cfg)?;
+            if reg.repoint_path(&age_path, &json_path) {
+                reg.save(&cfg)?;
+            }
         }
+        Err(e) => eprintln!(
+            "WARNING: wallet decrypted, but the wallet registry could not be updated: {e}. \
+             If you use named wallets, run `rwa keys add <name> --path {}` to re-register it.",
+            json_path.display()
+        ),
     }
     println!("Wallet decrypted.");
     println!("Key file: {}", json_path.display());

@@ -64,16 +64,25 @@ impl WalletRegistry {
         let tmp = dir.join("wallets.toml.tmp");
         let text = toml::to_string_pretty(self)
             .map_err(|e| eyre!("Failed to serialize wallet registry: {e}"))?;
-        std::fs::write(&tmp, text.as_bytes())
-            .map_err(|e| eyre!("Failed to write {}: {e}", tmp.display()))?;
+        // Create the temp file with `0o600` from the start (Unix) so the registry
+        // (key-file paths) is never momentarily world-readable before a chmod.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(eyre!("Failed to set permissions on {}: {e}", tmp.display()));
-            }
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| eyre!("Failed to write {}: {e}", tmp.display()))?;
+            f.write_all(text.as_bytes())
+                .map_err(|e| eyre!("Failed to write {}: {e}", tmp.display()))?;
         }
+        #[cfg(not(unix))]
+        std::fs::write(&tmp, text.as_bytes())
+            .map_err(|e| eyre!("Failed to write {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, &path)
             .map_err(|e| eyre!("Failed to finalize {}: {e}", path.display()))?;
         Ok(())
