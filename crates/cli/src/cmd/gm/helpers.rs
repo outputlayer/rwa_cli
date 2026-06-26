@@ -167,39 +167,10 @@ pub(super) fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-fn warn_passphrase_env_once() {
-    use std::sync::OnceLock;
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        eprintln!(
-            "WARNING: RWA_PASSPHRASE in environment leaks via shell history / ps. \
-            Prefer interactive passphrase prompt."
-        );
-    });
-}
-
-pub(super) fn load_wallet() -> Result<wallet::Wallet> {
-    if wallet::is_wallet_encrypted() {
-        let passphrase = match std::env::var("RWA_PASSPHRASE") {
-            Ok(p) => {
-                warn_passphrase_env_once();
-                p
-            }
-            Err(_) => rpassword::prompt_password("Wallet passphrase: ")
-                .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))?,
-        };
-        return wallet::Wallet::load_default_encrypted(&passphrase);
-    }
-    wallet::Wallet::load_default().map_err(|_| {
-        eyre::eyre!(
-            "No wallet found.\n\n\
-             Create or import one first:\n  \
-             rwa keys generate                          Create a new wallet\n  \
-             rwa keys import --seed-phrase \"word1 ...\"   Import from seed phrase\n  \
-             rwa keys import --private-key <BASE58>     Import from private key\n  \
-             rwa keys import --file <PATH>              Import from key file"
-        )
-    })
+/// Load the wallet selected for this invocation (`--wallet`/`RWA_WALLET` >
+/// active > legacy default). Single chokepoint for every signing command.
+pub(super) fn load_wallet(selected: Option<&str>) -> Result<wallet::Wallet> {
+    crate::wallets::load_selected(selected)
 }
 
 pub(super) fn resolve_gm_mint(

@@ -215,7 +215,7 @@ pub enum GmAction {
     },
 }
 
-pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
         GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps } => {
@@ -230,15 +230,16 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
                 Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
                 quote_only,
                 max_bps,
+                selected,
             )
             .await
         }
         GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps).await
+            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps, selected).await
         }
         GmAction::Portfolio { wallet } => {
-            portfolio::portfolio(wallet.as_deref(), json, rpc_url).await
+            portfolio::portfolio(wallet.as_deref(), json, rpc_url, selected).await
         }
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List => list::list(json).await,
@@ -264,7 +265,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             to,
             yes,
             dry_run,
-        } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url).await,
+        } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url, selected).await,
         GmAction::CloseAll {
             amount,
             yes,
@@ -274,16 +275,16 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>) -> Res
             max_bps,
         } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+            close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
         }
-        GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url).await,
+        GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
         GmAction::BuyBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            basket::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+            basket::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
         }
         GmAction::SellBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            basket::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps).await
+            basket::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
         }
     }
 }
@@ -522,6 +523,18 @@ mod tests {
             source: None,
         }).unwrap();
         assert!(without.get("source").is_none());
+    }
+
+    #[test]
+    fn global_wallet_flag_parses_before_and_after_subcommand() {
+        use clap::Parser;
+        let a = crate::Cli::try_parse_from(["rwa", "--wallet", "cold", "gm", "list"]);
+        assert!(a.is_ok(), "global --wallet before subcommand: {:?}", a.err());
+        let b = crate::Cli::try_parse_from(["rwa", "gm", "portfolio", "--wallet", "cold"]);
+        assert!(b.is_ok(), "global --wallet after subcommand: {:?}", b.err());
+        // positional portfolio address still works and is distinct from --wallet
+        let c = crate::Cli::try_parse_from(["rwa", "gm", "portfolio", "SomeAddress"]);
+        assert!(c.is_ok(), "positional wallet address: {:?}", c.err());
     }
 
     #[test]

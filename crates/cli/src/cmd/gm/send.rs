@@ -3,8 +3,8 @@ use rwa_ondo::{amounts, jupiter, solana, token_list, wallet};
 
 use super::*;
 
-pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let w = load_wallet()?;
+pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
+    let w = load_wallet(selected)?;
     let pubkey = w.pubkey();
 
     solana::validate_address(to)?;

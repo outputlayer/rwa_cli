@@ -3,8 +3,8 @@ use rwa_ondo::{solana, token_list};
 
 use super::*;
 
-pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&str>) -> Result<()> {
-    let w = load_wallet()?;
+pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
+    let w = load_wallet(selected)?;
     let pubkey = w.pubkey();
 
     let mut empty = solana::get_empty_token_accounts(&pubkey, rpc_url).await?;

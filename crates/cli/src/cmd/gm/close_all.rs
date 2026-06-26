@@ -200,12 +200,13 @@ pub async fn close_all(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    selected: Option<&str>,
 ) -> Result<()> {
     usecases::gm::ensure_trading_open()?;
     let sell_pct = usecases::gm::parse_sell_pct(amount)?;
 
     let tokens = token_list::get_token_list();
-    let w = load_wallet()?;
+    let w = load_wallet(selected)?;
     let taker = w.pubkey();
 
     let (balances_res, assets, tradable_set) = tokio::join!(

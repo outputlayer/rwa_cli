@@ -14,12 +14,13 @@ pub async fn buy(
     slippage: Option<u32>,
     quote_only: bool,
     max_bps: Option<u32>,
+    selected: Option<&str>,
 ) -> Result<()> {
     // `--quote-only` previews any size by skipping the funds pre-flight; it still
     // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
     // Implemented for buy only — sell amounts derive from on-chain holdings.
     let dry_run = dry_run || quote_only;
-    let w = load_wallet()?;
+    let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps).await?;
 
@@ -113,8 +114,9 @@ pub async fn sell(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    selected: Option<&str>,
 ) -> Result<()> {
-    let w = load_wallet()?;
+    let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps).await?;
 

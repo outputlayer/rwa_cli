@@ -3,14 +3,14 @@ use rwa_ondo::{api, solana, token_list};
 
 use super::*;
 
-pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&str>) -> Result<()> {
+pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
     let tokens = token_list::get_token_list();
     let pubkey = match wallet_addr {
         Some(w) => {
             solana::validate_address(w)?;
             w.to_string()
         }
-        None => load_wallet()?.pubkey(),
+        None => load_wallet(selected)?.pubkey(),
     };
 
     let (portfolio_bal, assets) = tokio::join!(

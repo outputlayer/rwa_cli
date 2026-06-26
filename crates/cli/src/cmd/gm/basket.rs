@@ -157,11 +157,12 @@ pub async fn buy_basket(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    selected: Option<&str>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
     usecases::gm::ensure_trading_open()?;
 
-    let w = load_wallet()?;
+    let w = load_wallet(selected)?;
     let taker = w.pubkey();
 
     // Compute total USDC needed and validate each amount is parseable as USDC
@@ -318,11 +319,12 @@ pub async fn sell_basket(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    selected: Option<&str>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
     usecases::gm::ensure_trading_open()?;
 
-    let w = load_wallet()?;
+    let w = load_wallet(selected)?;
     let taker = w.pubkey();
 
     if !json {

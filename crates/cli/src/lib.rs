@@ -19,6 +19,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Named wallet to use for this command (see `rwa keys add`/`list`).
+    /// Falls back to RWA_WALLET, then the active wallet, then the legacy default.
+    #[arg(long = "wallet", id = "wallet_name", global = true, env = "RWA_WALLET")]
+    pub wallet_name: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -111,7 +116,9 @@ pub async fn run() -> Result<()> {
 
     // Lock is held until lock_file is dropped (end of process)
     let result = match cli.command {
-        Commands::Gm { action } => cmd::gm::execute(action, json, cli.rpc_url.as_deref()).await,
+        Commands::Gm { action } => {
+            cmd::gm::execute(action, json, cli.rpc_url.as_deref(), cli.wallet_name.as_deref()).await
+        }
         Commands::Keys { action } => cmd::keys::execute(action).await,
         Commands::Update { check, yes } => cmd::update::run(check, yes, json).await,
     };
