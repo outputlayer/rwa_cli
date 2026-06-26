@@ -67,6 +67,72 @@ impl WalletRegistry {
             .map_err(|e| eyre!("Failed to finalize {}: {e}", path.display()))?;
         Ok(())
     }
+
+    pub fn find(&self, name: &str) -> Option<&WalletEntry> {
+        self.wallets.iter().find(|w| w.name == name)
+    }
+
+    /// Register a new wallet. Errors if the name is invalid or already taken.
+    /// The first wallet added becomes active.
+    pub fn add(&mut self, name: &str, path: &str) -> Result<()> {
+        validate_name(name)?;
+        if self.find(name).is_some() {
+            return Err(eyre!("Wallet '{name}' already exists"));
+        }
+        self.wallets.push(WalletEntry { name: name.to_string(), path: path.to_string() });
+        if self.active.is_none() {
+            self.active = Some(name.to_string());
+        }
+        Ok(())
+    }
+
+    /// Remove a wallet (the key file is left on disk). If it was active,
+    /// `active` is cleared.
+    pub fn remove(&mut self, name: &str) -> Result<()> {
+        if self.find(name).is_none() {
+            return Err(eyre!("Wallet '{name}' not found"));
+        }
+        self.wallets.retain(|w| w.name != name);
+        if self.active.as_deref() == Some(name) {
+            self.active = None;
+        }
+        Ok(())
+    }
+
+    /// Set the active wallet. Errors if the name is not registered.
+    pub fn set_active(&mut self, name: &str) -> Result<()> {
+        if self.find(name).is_none() {
+            return Err(eyre!("Wallet '{name}' not found"));
+        }
+        self.active = Some(name.to_string());
+        Ok(())
+    }
+
+    /// Comma-separated list of registered names, for error messages.
+    pub fn available_names(&self) -> String {
+        if self.wallets.is_empty() {
+            "(none)".to_string()
+        } else {
+            self.wallets.iter().map(|w| w.name.as_str()).collect::<Vec<_>>().join(", ")
+        }
+    }
+}
+
+/// Validate a wallet name: non-empty, ASCII alphanumerics plus `-`/`_`, max 64.
+/// Restrictive on purpose — names appear in CLI flags, JSON, and error text.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(eyre!("Wallet name cannot be empty"));
+    }
+    if name.len() > 64 {
+        return Err(eyre!("Wallet name too long (max 64 characters)"));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(eyre!(
+            "Invalid wallet name '{name}': use only letters, digits, '-' and '_'"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,5 +188,53 @@ mod tests {
         let meta = std::fs::metadata(registry_path(&cfg)).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn validate_name_accepts_safe_names() {
+        for n in ["main", "cold-storage", "wallet_2", "A1"] {
+            assert!(validate_name(n).is_ok(), "{n} should be valid");
+        }
+    }
+
+    #[test]
+    fn validate_name_rejects_unsafe_names() {
+        for n in ["", "has space", "slash/name", "dot.name", "emoji😀"] {
+            assert!(validate_name(n).is_err(), "{n} should be rejected");
+        }
+        assert!(validate_name(&"x".repeat(65)).is_err(), "over 64 chars rejected");
+    }
+
+    #[test]
+    fn add_first_wallet_becomes_active() {
+        let mut reg = WalletRegistry::default();
+        reg.add("main", "/k/a.json").unwrap();
+        assert_eq!(reg.active.as_deref(), Some("main"));
+        reg.add("cold", "/k/b.age").unwrap();
+        assert_eq!(reg.active.as_deref(), Some("main"), "active unchanged by 2nd add");
+    }
+
+    #[test]
+    fn add_duplicate_name_errors() {
+        let mut reg = WalletRegistry::default();
+        reg.add("main", "/k/a.json").unwrap();
+        assert!(reg.add("main", "/k/other.json").is_err());
+    }
+
+    #[test]
+    fn remove_active_clears_active() {
+        let mut reg = WalletRegistry::default();
+        reg.add("main", "/k/a.json").unwrap();
+        reg.add("cold", "/k/b.age").unwrap();
+        reg.remove("main").unwrap();
+        assert!(reg.active.is_none());
+        assert!(reg.find("main").is_none());
+        assert!(reg.find("cold").is_some());
+    }
+
+    #[test]
+    fn set_active_unknown_errors() {
+        let mut reg = WalletRegistry::default();
+        assert!(reg.set_active("ghost").is_err());
     }
 }
