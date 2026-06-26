@@ -9,6 +9,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.27] — 2026-06-26 — Named wallets (path registry)
+
+### Added
+
+- **Multiple named wallets.** A registry at `~/.config/rwa/wallets.toml` (file `0o600`, holds paths only — never key material) maps a name to an absolute key-file path plus an `active` pointer. Key files stay wherever you registered them; their type (plaintext `key.json` vs age-encrypted) is detected by file content, not extension.
+- **New `keys` subcommands:** `rwa keys add <NAME> --path <PATH>` (register an existing key file), `rwa keys list` (`--json` returns the stable shape `{"wallets":[{name,path,pubkey,active,encrypted}]}`; `pubkey` is `null` for encrypted wallets), `rwa keys use <NAME>` (set active), `rwa keys remove <NAME>` (unregister — the key file is **not** deleted).
+- **Global `--wallet <NAME>` flag and `RWA_WALLET` env** select a wallet for any command. Selection priority: `--wallet` > `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age` default. An absent/empty registry behaves exactly like the previous single-wallet setup; the legacy key is lazily auto-registered as `default` the first time a `keys add/list/use` command runs.
+- `keys show` now honors the selection; `keys encrypt`/`decrypt` operate on the legacy default location and reconcile any registry entry that pointed at the renamed file. Selecting an unknown wallet fails closed with a non-transient error (exit 1) listing the available names.
+
+---
+
 ## [0.2.19] — 2026-06-05 — Fix all-in cost sign; performance tests
 
 ### Fixed
