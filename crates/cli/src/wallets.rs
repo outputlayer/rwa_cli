@@ -116,6 +116,38 @@ impl WalletRegistry {
             self.wallets.iter().map(|w| w.name.as_str()).collect::<Vec<_>>().join(", ")
         }
     }
+
+    /// Decide which wallet to load given an explicit selection (`--wallet`/env).
+    ///
+    /// Priority: explicit `selected` > registry `active` > legacy fallback.
+    pub fn resolve(&self, selected: Option<&str>) -> Result<WalletTarget> {
+        if let Some(name) = selected {
+            return match self.find(name) {
+                Some(e) => Ok(WalletTarget::Path(PathBuf::from(&e.path))),
+                None => Err(eyre!(
+                    "Wallet '{name}' not found. Available: {}",
+                    self.available_names()
+                )),
+            };
+        }
+        if let Some(active) = self.active.as_deref() {
+            return match self.find(active) {
+                Some(e) => Ok(WalletTarget::Path(PathBuf::from(&e.path))),
+                None => Err(eyre!(
+                    "Active wallet '{active}' is not registered (inconsistent registry). \
+                     Run `rwa keys use <name>`. Available: {}",
+                    self.available_names()
+                )),
+            };
+        }
+        if self.wallets.is_empty() {
+            return Ok(WalletTarget::LegacyDefault);
+        }
+        Err(eyre!(
+            "No active wallet selected. Run `rwa keys use <name>`. Available: {}",
+            self.available_names()
+        ))
+    }
 }
 
 /// Validate a wallet name: non-empty, ASCII alphanumerics plus `-`/`_`, max 64.
@@ -133,6 +165,15 @@ pub fn validate_name(name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// What `resolve` decided to load.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WalletTarget {
+    /// Load this explicit key-file path (a named wallet).
+    Path(PathBuf),
+    /// No registry involvement — use the legacy single-wallet default location.
+    LegacyDefault,
 }
 
 #[cfg(test)]
@@ -236,5 +277,52 @@ mod tests {
     fn set_active_unknown_errors() {
         let mut reg = WalletRegistry::default();
         assert!(reg.set_active("ghost").is_err());
+    }
+
+    fn two_wallet_reg() -> WalletRegistry {
+        let mut reg = WalletRegistry::default();
+        reg.add("main", "/k/a.json").unwrap();
+        reg.add("cold", "/k/b.age").unwrap();
+        reg
+    }
+
+    #[test]
+    fn resolve_explicit_selection() {
+        let reg = two_wallet_reg();
+        assert_eq!(
+            reg.resolve(Some("cold")).unwrap(),
+            WalletTarget::Path(PathBuf::from("/k/b.age"))
+        );
+    }
+
+    #[test]
+    fn resolve_unknown_selection_errors() {
+        let reg = two_wallet_reg();
+        let err = reg.resolve(Some("ghost")).unwrap_err().to_string();
+        assert!(err.contains("ghost"), "error mentions the bad name: {err}");
+        assert!(err.contains("main"), "error lists available names: {err}");
+    }
+
+    #[test]
+    fn resolve_falls_back_to_active() {
+        let reg = two_wallet_reg(); // active == "main"
+        assert_eq!(
+            reg.resolve(None).unwrap(),
+            WalletTarget::Path(PathBuf::from("/k/a.json"))
+        );
+    }
+
+    #[test]
+    fn resolve_empty_registry_is_legacy_default() {
+        let reg = WalletRegistry::default();
+        assert_eq!(reg.resolve(None).unwrap(), WalletTarget::LegacyDefault);
+    }
+
+    #[test]
+    fn resolve_no_active_nonempty_errors() {
+        let mut reg = two_wallet_reg();
+        reg.remove("main").unwrap(); // clears active, "cold" remains
+        let err = reg.resolve(None).unwrap_err().to_string();
+        assert!(err.contains("keys use"), "guidance present: {err}");
     }
 }
