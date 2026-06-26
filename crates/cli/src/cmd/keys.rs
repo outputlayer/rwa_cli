@@ -269,12 +269,10 @@ fn config_dir() -> Result<std::path::PathBuf> {
 
 /// Expand a leading `~/` using the home dir; otherwise return the path as-is.
 fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    match (path.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(path),
     }
-    std::path::PathBuf::from(path)
 }
 
 async fn add(name: &str, path: &str, json: bool) -> Result<()> {
