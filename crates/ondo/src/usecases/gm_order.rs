@@ -7,7 +7,7 @@ use super::gm::{
 };
 use super::gm_internal::{
     MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, check_trading_hours, get_order_checked,
-    resolve_gm_mint, resolve_sell_amount,
+    min_usdc_raw, resolve_gm_mint, resolve_sell_amount,
 };
 use crate::types::Symbol;
 
@@ -106,7 +106,7 @@ pub async fn fetch_sell_order_by_symbol(
 /// (`MIN_USDC_AMOUNT`): Jupiter MMs reject tiny orders outright, so fail fast
 /// locally and name the offending symbol instead of burning a quote round-trip.
 fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
-    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
+    let minimum = min_usdc_raw();
     for (sym, raw) in items {
         if *raw < minimum {
             return Err(GmTradeError::new(
@@ -207,12 +207,12 @@ mod tests {
 
     #[test]
     fn basket_buy_rejects_items_below_minimum() {
-        // Same floor as single `buy` (MIN_USDC_AMOUNT = 1 USDC): a basket item
+        // Same floor as single `buy` (MIN_USDC_AMOUNT = 5 USDC): a basket item
         // below it must fail fast, naming the offending symbol — Jupiter MMs
         // reject tiny orders outright.
         let items = vec![
             ("AAPLon".to_string(), 12_000_000u128), // 12 USDC — fine
-            ("TSLAon".to_string(), 999_999u128),    // 0.999999 USDC — below min
+            ("TSLAon".to_string(), 4_999_999u128),  // 4.999999 USDC — below min
         ];
         let err = check_basket_buy_minimums(&items).expect_err("sub-minimum item must be rejected");
         let msg = err.to_string();
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn basket_buy_accepts_items_at_or_above_minimum() {
         let items = vec![
-            ("AAPLon".to_string(), 1_000_000u128), // exactly 1 USDC
+            ("AAPLon".to_string(), 5_000_000u128), // exactly 5 USDC
             ("SPYon".to_string(), 12_000_000u128),
         ];
         assert!(check_basket_buy_minimums(&items).is_ok());

@@ -47,7 +47,7 @@ cargo install --path bin/rwa
 - Both `TSLA` and `TSLAon` are accepted token symbols
 - Amounts can be exact (`100`), percentage (`50%`), or `all`
 - Inputs with too many decimal places must be rejected, not silently rounded
-- Minimum buy amount is 1 USDC — enforced for single `buy` and per item in `buy-basket`
+- Minimum buy amount is 5 USDC — enforced for single `buy` and per item in `buy-basket`
 - `send` and `sell` are different actions
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape

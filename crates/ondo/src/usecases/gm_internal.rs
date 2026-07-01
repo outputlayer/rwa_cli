@@ -14,10 +14,17 @@ pub(crate) const SLIPPAGE_RETRY_PCT: f64 = 1.0;
 pub(crate) const MAX_SLIPPAGE_RETRIES: u32 = 5;
 /// Maximum retries for transient swap execution failures.
 pub(crate) const MAX_SWAP_RETRIES: u32 = 2;
-/// Minimum buy/sell amount in USDC.
-pub(crate) const MIN_USDC_AMOUNT: f64 = 1.0;
+/// Minimum buy amount in USDC. Jupiter RFQ MMs routinely decline orders below
+/// ~5 USDC outside Regular hours, so fail fast locally instead of burning a
+/// quote round-trip that ends in `route_unfillable`.
+pub(crate) const MIN_USDC_AMOUNT: f64 = 5.0;
 /// Minimum SOL balance required to cover transaction fees (rent + priority).
 pub(crate) const MIN_SOL_FOR_FEES: f64 = 0.002;
+
+/// The buy minimum in raw USDC units — single source for `buy` and `buy-basket`.
+pub(crate) fn min_usdc_raw() -> u128 {
+    10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128
+}
 
 pub(crate) fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
     let entry = gm::resolve_token(symbol, tokens)?;
@@ -195,7 +202,7 @@ pub(crate) async fn preflight_buy_raw(
     let requested: u128 = raw_usdc_amount
         .parse()
         .map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
-    let minimum = 10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128;
+    let minimum = min_usdc_raw();
     if requested < minimum {
         return Err(GmTradeError::new(
             GmTradeErrorKind::AmountBelowMinimum,
