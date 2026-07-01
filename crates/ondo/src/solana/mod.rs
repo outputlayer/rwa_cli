@@ -20,6 +20,7 @@ pub use balance::{
 };
 #[cfg(any(test, feature = "test-util"))]
 pub use balance::get_portfolio_balances_with_urls;
+pub(crate) use balance::is_rpc_unavailable;
 pub use fee::{estimate_gas_needed, estimate_tx_fee, estimate_tx_fee_lamports};
 pub use transaction::{
     TransactionError, TransactionErrorKind, TransactionResult, confirm_transaction,

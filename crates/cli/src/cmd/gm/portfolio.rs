@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::{api, solana, token_list};
+use rwa_ondo::{api, solana, token_list, usecases};
 
 use super::*;
 
@@ -14,7 +14,7 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     };
 
     let (portfolio_bal, assets) = tokio::join!(
-        solana::get_portfolio_balances(&pubkey, tokens, rpc_url),
+        usecases::gm::fetch_portfolio_balances(&pubkey, tokens, rpc_url),
         api::fetch_assets()
     );
     let portfolio_bal = portfolio_bal?;

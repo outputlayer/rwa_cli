@@ -377,6 +377,27 @@ pub fn should_skip_position(
     None
 }
 
+/// Portfolio balances with the Jupiter Ultra holdings fallback: Solana RPC
+/// first; when every endpoint is unavailable, fall back to the holdings API
+/// (result marked `source: jupiter`). The fallback lives here — not in the
+/// solana layer — so `solana` stays a leaf module with no jupiter dependency.
+pub async fn fetch_portfolio_balances(
+    wallet_addr: &str,
+    tokens: &[token_list::GmTokenEntry],
+    rpc_url: Option<&str>,
+) -> Result<solana::PortfolioBalances> {
+    match solana::get_portfolio_balances(wallet_addr, tokens, rpc_url).await {
+        Err(e) if solana::is_rpc_unavailable(&e) => {
+            crate::jupiter::holdings::get_holdings_balances(wallet_addr, tokens)
+                .await
+                .map_err(|je| {
+                    eyre!("Solana RPC unavailable and Jupiter holdings fallback failed: {je} (rpc: {e})")
+                })
+        }
+        res => res,
+    }
+}
+
 pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::HashSet<String> {
     let session = api::current_session();
     if session == api::Session::Closed {
