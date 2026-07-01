@@ -5,7 +5,7 @@ use crate::USDC_MINT;
 use super::rpc::{rpc_call_simple, RpcMode};
 use super::fee::get_priority_fee_for_accounts;
 use super::transaction::{
-    TransactionResult, MessageHeader, Instruction,
+    TransactionResult, MessageHeader, Instruction, ConfirmLevel,
     send_legacy_transaction, compute_unit_limit_ix, compute_unit_price_ix,
     COMPUTE_BUDGET_PROGRAM,
 };
@@ -89,7 +89,7 @@ pub async fn transfer_sol(
         num_readonly_unsigned: 2, // compute budget + system program
     };
 
-    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
+    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
 }
 
 /// Transfer SPL token (USDC or GM token) to a recipient. Returns transaction result.
@@ -169,7 +169,7 @@ pub async fn transfer_spl(
             num_readonly_unsigned: 3, // compute_budget, mint, token_program
         };
 
-        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
+        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
     } else {
         // Create recipient ATA, then transfer
         accounts = vec![
@@ -214,7 +214,7 @@ pub async fn transfer_spl(
             num_readonly_unsigned: 6, // compute_budget, to_pubkey, mint, system, token_prog, ata_prog
         };
 
-        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
+        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
     }
 }
 
@@ -501,7 +501,7 @@ async fn close_account_batch(
         num_readonly_unsigned,
     };
 
-    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url).await
+    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Processed).await
 }
 
 #[cfg(test)]

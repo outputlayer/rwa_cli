@@ -170,6 +170,7 @@ pub(super) async fn send_legacy_transaction(
     instructions: &[Instruction],
     header: &MessageHeader,
     rpc_url: Option<&str>,
+    level: ConfirmLevel,
 ) -> Result<TransactionResult> {
     // 1. Get recent blockhash (confirmed commitment for more validity)
     let bh = get_recent_blockhash(rpc_url).await?;
@@ -210,8 +211,8 @@ pub(super) async fn send_legacy_transaction(
     let final_tx = sign_and_encode(wallet, &final_message);
     let sig = send_raw_transaction(&final_tx, true, rpc_url).await?;
 
-    // 5. Confirm — poll until confirmed
-    let confirmed = match confirm_transaction(&sig, rpc_url).await {
+    // 5. Confirm — poll until the requested commitment level
+    let confirmed = match confirm_transaction(&sig, rpc_url, level).await {
         Ok(()) => true,
         Err(e) => {
             eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
@@ -222,9 +223,36 @@ pub(super) async fn send_legacy_transaction(
     Ok(TransactionResult { signature: sig, confirmed })
 }
 
-/// Poll for transaction confirmation with `confirmed` commitment.
-/// Returns Ok(()) when confirmed, or Err after timeout (30s).
-pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Result<()> {
+/// Commitment level `confirm_transaction` waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmLevel {
+    /// Tx is in a block the RPC has replayed — `err` is authoritative, but a
+    /// minority fork can still drop it. Use only for low-stakes transactions
+    /// (rent reclaim), where the latency win outweighs the rare re-check.
+    Processed,
+    /// Optimistic confirmation (supermajority vote) — the default for anything
+    /// that moves funds.
+    Confirmed,
+}
+
+/// True when the RPC-reported `confirmationStatus` satisfies `level`.
+/// An absent status (`None`) never satisfies any level — keep polling and let
+/// the timeout decide; never report a confirmation the RPC didn't assert.
+fn status_meets_level(status: Option<&str>, level: ConfirmLevel) -> bool {
+    matches!(
+        (level, status),
+        (ConfirmLevel::Processed, Some("processed" | "confirmed" | "finalized"))
+            | (ConfirmLevel::Confirmed, Some("confirmed" | "finalized"))
+    )
+}
+
+/// Poll for transaction confirmation up to the requested commitment level.
+/// Returns Ok(()) when reached, or Err after timeout (30s).
+pub async fn confirm_transaction(
+    signature: &str,
+    rpc_url: Option<&str>,
+    level: ConfirmLevel,
+) -> Result<()> {
     let timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
 
@@ -249,15 +277,11 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
                 .and_then(|arr| arr.first())
             && !status.is_null()
         {
-            // Check confirmationStatus is at least "confirmed"
-            let is_confirmed = status.get("confirmationStatus")
-                .and_then(|s| s.as_str())
-                .map(|s| s == "confirmed" || s == "finalized")
-                // Absent status field ⇒ keep polling and let the timeout decide;
-                // never report a confirmation the RPC didn't actually assert.
-                .unwrap_or(false);
-            if !is_confirmed {
-                // Still "processed" — wait for confirmed
+            let level_reached = status_meets_level(
+                status.get("confirmationStatus").and_then(|s| s.as_str()),
+                level,
+            );
+            if !level_reached {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
@@ -270,17 +294,18 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
                 )
                 .into());
             }
-            return Ok(()); // confirmed, no error
+            return Ok(()); // level reached, no error
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
 
-/// Send an already signed base64 transaction and wait for confirmation.
+/// Send an already signed base64 transaction and wait for `confirmed`
+/// commitment (this path carries swaps — always full confirmation).
 pub async fn send_signed_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<TransactionResult> {
     let sig = send_raw_transaction(tx_base64, false, rpc_url).await?;
-    let confirmed = match confirm_transaction(&sig, rpc_url).await {
+    let confirmed = match confirm_transaction(&sig, rpc_url, ConfirmLevel::Confirmed).await {
         Ok(()) => true,
         Err(e) => {
             eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
@@ -432,6 +457,21 @@ mod tests {
         // Decode back: (buf[0] & 0x7f) | (buf[1] << 7)
         let val = (buf[0] as u16 & 0x7f) | ((buf[1] as u16) << 7);
         assert_eq!(val, 255);
+    }
+
+    #[test]
+    fn status_meets_level_matrix() {
+        use ConfirmLevel::*;
+        assert!(status_meets_level(Some("processed"), Processed));
+        assert!(status_meets_level(Some("confirmed"), Processed));
+        assert!(status_meets_level(Some("finalized"), Processed));
+        assert!(status_meets_level(Some("confirmed"), Confirmed));
+        assert!(status_meets_level(Some("finalized"), Confirmed));
+        assert!(!status_meets_level(Some("processed"), Confirmed));
+        // Absent or unknown status never satisfies any level.
+        assert!(!status_meets_level(None, Processed));
+        assert!(!status_meets_level(None, Confirmed));
+        assert!(!status_meets_level(Some("bogus"), Processed));
     }
 
     #[test]

@@ -120,6 +120,7 @@ rwa update -y
 - `buy` and `sell` check tradability before calling Jupiter
 - `close-all` skips tiny positions and non-tradable tokens
 - `close-all` and basket trading default to sequential (3s spacing); use `--parallel` for concurrent swaps
+- Swap confirmation happens server-side in Jupiter `/execute` (no local wait); `send` and Metis-fallback swaps confirm locally at `confirmed` commitment; `reclaim` batches confirm at `processed` (fast path — low-stakes rent, err field already authoritative)
 
 ## Jupiter behavior
 
