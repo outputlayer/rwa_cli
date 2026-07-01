@@ -68,13 +68,7 @@ impl Wallet {
         writer.finish()
             .map_err(|e| eyre!("Failed to finalize encryption: {e}"))?;
 
-        std::fs::write(path, &encrypted)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        Ok(())
+        write_key_file(path, &encrypted)
     }
 
     /// Load wallet from an age-encrypted file.
@@ -220,14 +214,7 @@ impl Wallet {
         bytes.extend_from_slice(self.signing_key.as_bytes());
         bytes.extend_from_slice(self.verifying_key().as_bytes());
         let json = Zeroizing::new(serde_json::to_string(&*bytes)?);
-        // Set restrictive permissions before writing
-        std::fs::write(path, json.as_bytes())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        Ok(())
+        write_key_file(path, json.as_bytes())
     }
 
     /// Save to the default path ~/.config/rwa/key.json.
@@ -388,6 +375,28 @@ fn decode_compact_u16(data: &[u8]) -> Result<(u16, usize)> {
     Ok(((b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), 3))
 }
 
+/// Write key material so the file is never readable by group/other: on unix
+/// the file is created with mode 0o600 before any bytes land (no umask
+/// window). Pre-existing files are repaired to 0o600 as well, since `mode()`
+/// only applies at creation time.
+fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +410,28 @@ mod tests {
         // Should decode to 32 bytes
         let bytes = bs58::decode(&pk).into_vec().unwrap();
         assert_eq!(bytes.len(), 32);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_creates_file_with_0600_even_over_existing_looser_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rwa-wallet-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key.json");
+
+        let w = Wallet::generate();
+        w.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        // A pre-existing world-readable file must be repaired, not inherited.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        w.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
