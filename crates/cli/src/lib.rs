@@ -71,7 +71,7 @@ pub fn render_error(err: &eyre::Error, json: bool) {
             // `{:#}` joins the full eyre cause chain ("wrap: cause: root"),
             // so the real failure is visible, not just "swap execution failed".
             "error": format!("{err:#}"),
-            "error_kind": rwa_ondo::usecases::gm::classify_error(err),
+            "error_kind": error_kind_label(err),
         });
         println!("{obj}");
     } else {
@@ -79,13 +79,30 @@ pub fn render_error(err: &eyre::Error, json: bool) {
     }
 }
 
+/// Stable `error_kind` label for the JSON envelope: trade/runtime kinds via
+/// `classify_error`, plus the cli-crate self-update kinds.
+fn error_kind_label(err: &eyre::Error) -> Option<&'static str> {
+    rwa_ondo::usecases::gm::classify_error(err).or_else(|| {
+        err.chain()
+            .find_map(|c| c.downcast_ref::<cmd::update::UpdateError>())
+            .map(|u| u.kind.label())
+    })
+}
+
 /// Exit code for a top-level error: 75 (EX_TEMPFAIL) for transient failures
 /// worth retrying (RPC/exchange hiccups, confirmation timeouts), 1 otherwise.
 /// Documented contract for scripts/agents alongside the JSON `error_kind`.
 #[must_use]
 pub fn exit_code_for(err: &eyre::Error) -> i32 {
-    match rwa_ondo::usecases::gm::classify_error(err) {
-        Some(kind) if rwa_ondo::usecases::gm::is_transient_kind(kind) => 75,
+    match error_kind_label(err) {
+        // "network"/"rate_limited" are the self-update transients — same
+        // retry-later semantics as the trade-path kinds.
+        Some(kind)
+            if rwa_ondo::usecases::gm::is_transient_kind(kind)
+                || matches!(kind, "network" | "rate_limited") =>
+        {
+            75
+        }
         _ => 1,
     }
 }
@@ -147,5 +164,23 @@ mod exit_code_tests {
     #[test]
     fn permanent_and_unclassified_exit_1() {
         assert_eq!(exit_code_for(&eyre::eyre!("No wallet found")), 1);
+    }
+
+    #[test]
+    fn update_network_error_is_transient_75() {
+        use crate::cmd::update::{UpdateError, UpdateErrorKind};
+        let err: eyre::Report = UpdateError::new(UpdateErrorKind::Network, "timeout").into();
+        assert_eq!(exit_code_for(&err), 75);
+        let err: eyre::Report = UpdateError::new(UpdateErrorKind::RateLimited, "429").into();
+        assert_eq!(exit_code_for(&err), 75);
+    }
+
+    #[test]
+    fn update_hard_errors_exit_1_with_kind() {
+        use crate::cmd::update::{UpdateError, UpdateErrorKind};
+        let err: eyre::Report =
+            UpdateError::new(UpdateErrorKind::ChecksumMismatch, "sha mismatch").into();
+        assert_eq!(exit_code_for(&err), 1);
+        assert_eq!(super::error_kind_label(&err), Some("checksum_mismatch"));
     }
 }

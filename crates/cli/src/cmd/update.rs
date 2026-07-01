@@ -324,16 +324,6 @@ fn print_json(status: &'static str, current: &str, latest: &str) {
     println!("{}", serde_json::to_string(&out).expect("UpdateJson is always serializable"));
 }
 
-fn print_json_error(err: &eyre::Error) {
-    let kind = err.downcast_ref::<UpdateError>().map(|u| u.kind.label());
-    let body = serde_json::json!({
-        "status": "error",
-        "error": err.to_string(),
-        "error_kind": kind,
-    });
-    println!("{body}");
-}
-
 /// Prompt the user to confirm; returns true on y/yes.
 fn confirm(current: &str, latest: &str) -> Result<bool> {
     use std::io::Write;
@@ -344,51 +334,42 @@ fn confirm(current: &str, latest: &str) -> Result<bool> {
     Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
+/// Errors flow to main.rs: render_error emits the same JSON envelope as every
+/// other command and exit_code_for maps transient kinds (network, rate limit)
+/// to 75.
 pub async fn run(check: bool, yes: bool, json: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let client = http_client();
 
-    let result = async {
-        let latest_tag = fetch_latest_tag(&client, API_BASE).await?;
-        let latest = latest_tag.trim_start_matches('v');
+    let latest_tag = fetch_latest_tag(&client, API_BASE).await?;
+    let latest = latest_tag.trim_start_matches('v');
 
-        match decide(latest, current, check, yes, json) {
-            UpdateAction::UpToDate => {
-                if json {
-                    print_json("up_to_date", current, latest);
-                } else {
-                    println!("Already up to date (v{current}).");
-                }
-            }
-            UpdateAction::ReportAvailable => {
-                if json {
-                    print_json("update_available", current, latest);
-                } else {
-                    println!("Update available: v{current} -> v{latest}");
-                    println!("Run `rwa update -y` to install it.");
-                }
-            }
-            UpdateAction::Confirm => {
-                if !confirm(current, latest)? {
-                    println!("Update cancelled.");
-                    return Ok(());
-                }
-                perform(&client, &latest_tag, current, latest, json).await?;
-            }
-            UpdateAction::Perform => {
-                perform(&client, &latest_tag, current, latest, json).await?;
+    match decide(latest, current, check, yes, json) {
+        UpdateAction::UpToDate => {
+            if json {
+                print_json("up_to_date", current, latest);
+            } else {
+                println!("Already up to date (v{current}).");
             }
         }
-        Ok::<(), eyre::Error>(())
-    }
-    .await;
-
-    if let Err(err) = result {
-        if json {
-            print_json_error(&err);
-            std::process::exit(1);
+        UpdateAction::ReportAvailable => {
+            if json {
+                print_json("update_available", current, latest);
+            } else {
+                println!("Update available: v{current} -> v{latest}");
+                println!("Run `rwa update -y` to install it.");
+            }
         }
-        return Err(err);
+        UpdateAction::Confirm => {
+            if !confirm(current, latest)? {
+                println!("Update cancelled.");
+                return Ok(());
+            }
+            perform(&client, &latest_tag, current, latest, json).await?;
+        }
+        UpdateAction::Perform => {
+            perform(&client, &latest_tag, current, latest, json).await?;
+        }
     }
     Ok(())
 }
