@@ -60,32 +60,28 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
 
     let sol_reclaimed = reclaimed_lamports as f64 / 1_000_000_000.0;
 
+    // Every batch failed — surface it as an error so the exit code and the
+    // central JSON envelope (status/error/error_kind) reflect the failure.
+    if signatures.is_empty() && found_count > 0 {
+        return Err(eyre::eyre!(
+            "found {found_count} empty account(s) but all close attempts failed"
+        ));
+    }
+
     if json {
-        let status = if signatures.is_empty() && found_count > 0 {
-            "error"
-        } else {
-            "success"
-        };
         return json_out(&ReclaimJson {
-            status,
+            status: "success",
             accounts_closed: signatures.len(),
             sol_reclaimed: format!("{sol_reclaimed:.9}"),
             signatures,
         });
     }
 
-    if signatures.is_empty() && found_count > 0 {
-        println!(
-            "Found {} empty account(s) but all close attempts failed.",
-            found_count
-        );
-    } else {
-        println!(
-            "Closed {} account(s), reclaimed {:.6} SOL",
-            signatures.len(),
-            sol_reclaimed
-        );
-    }
+    println!(
+        "Closed {} account(s), reclaimed {:.6} SOL",
+        signatures.len(),
+        sol_reclaimed
+    );
     for sig in &signatures {
         println!("  Tx: {}", solscan_tx_url(sig));
     }
