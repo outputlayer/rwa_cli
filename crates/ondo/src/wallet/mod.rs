@@ -255,7 +255,11 @@ impl Wallet {
     /// Decodes base64, finds the correct signature slot by matching our pubkey
     /// in the transaction's account keys, signs the message, and returns
     /// re-encoded base64.
-    pub fn sign_transaction(&self, tx_base64: &str) -> Result<String> {
+    ///
+    /// Crate-private on purpose: external swap signing must go through
+    /// `sign_jupiter_swap`, which verifies the transaction against the
+    /// caller's intent before touching the key.
+    pub(crate) fn sign_transaction(&self, tx_base64: &str) -> Result<String> {
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
 
