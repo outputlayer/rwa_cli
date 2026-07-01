@@ -12,7 +12,7 @@ use eyre::{eyre, Result};
 use crate::HTTP;
 
 use super::{
-    types::{OrderBackend, OrderResponse},
+    types::{ExecuteFailure, ExecuteFailureKind, OrderBackend, OrderResponse},
     with_jupiter_headers, ORDER_SEMAPHORE, METIS_LITE_API_BASE, SWAP_V2_LITE_API_BASE,
     ULTRA_API_BASE, ULTRA_LITE_API_BASE,
 };
@@ -115,10 +115,18 @@ async fn get_order_impl(
         Ok(order) => Ok(order),
         Err(err) => {
             failures.push(format!("{}: {}", OrderBackend::MetisV1Lite.label(), err));
-            Err(eyre!(
-                "No swap route found across public Jupiter backends: {}",
-                failures.join(" | ")
-            ))
+            // Every backend (RFQ MMs and the Metis AMM tail) declined this
+            // order — a market/size condition, not a transport failure.
+            // Surface the stable `route_unfillable` kind for agents.
+            Err(ExecuteFailure {
+                kind: ExecuteFailureKind::RouteUnfillable,
+                code: None,
+                message: format!(
+                    "No swap route found across public Jupiter backends: {}",
+                    failures.join(" | ")
+                ),
+            }
+            .into())
         }
     }
 }
@@ -273,22 +281,27 @@ fn order_backoff(attempt: u32) -> std::time::Duration {
 }
 
 /// Errors from Jupiter /order that should be retried with backoff.
-/// Covers transient MM unavailability, rate limits, server errors, and
-/// network issues.
+/// Covers transient hiccups, rate limits, server errors, and network issues.
+/// "Quote not available from market maker" is deliberately NOT here: it is a
+/// size/market condition that rarely resolves within the backoff window —
+/// falling through to the next backend (see below) is both faster and more
+/// likely to fill.
 fn is_retryable_order_error(msg: &str) -> bool {
-    msg.contains("not available from market maker")
-        || msg.contains("Something unexpected occurred")
+    msg.contains("Something unexpected occurred")
         || msg.contains("Winning quote has no transaction")
         || msg.contains("/order network error")
         || msg.contains("/order rate limited")
         || msg.contains("/order server error")
 }
 
+/// Errors that mean "this backend can't fill the order" — continue down the
+/// fallback chain (Ultra → UltraLite → Metis AMM) instead of hard-failing.
 fn is_route_like_order_error(msg: &str) -> bool {
     msg.contains("No swap route found")
         || msg.contains("Failed to get quotes")
         || msg.contains("COULD_NOT_FIND_ANY_ROUTE")
         || msg.contains("TOKEN_NOT_TRADABLE")
+        || msg.contains("not available from market maker")
 }
 
 pub(super) fn compact_error_body(body: &str) -> String {
@@ -434,6 +447,18 @@ mod tests {
     use crate::USDC_MINT;
 
     #[test]
+    fn mm_quote_unavailable_falls_through_not_retried() {
+        // Size-based MM rejection: don't burn backoff retries on the same
+        // backend, do continue down the fallback chain.
+        let msg = "Jupiter API error (HTTP 400 Bad Request): Quote not available from market maker";
+        assert!(!is_retryable_order_error(msg));
+        assert!(is_route_like_order_error(msg));
+        // Transport errors stay retryable and are not route-like.
+        assert!(is_retryable_order_error("/order network error: timeout"));
+        assert!(!is_route_like_order_error("/order network error: timeout"));
+    }
+
+    #[test]
     fn order_backoff_is_exponential() {
         use std::time::Duration;
         assert_eq!(order_backoff(0), Duration::from_millis(800));
@@ -451,8 +476,10 @@ mod tests {
         assert!(is_retryable_order_error("Jupiter /order server error (500)"));
         assert!(is_retryable_order_error("Jupiter /order rate limited (429)"));
         assert!(is_retryable_order_error("Jupiter /order network error: connection reset"));
-        assert!(is_retryable_order_error("not available from market maker"));
         assert!(is_retryable_order_error("Winning quote has no transaction"));
+        // MM size rejection → not retried in place, falls through to the
+        // next backend instead (see mm_quote_unavailable_falls_through_not_retried).
+        assert!(!is_retryable_order_error("not available from market maker"));
         // Hard → fail fast, no retry.
         assert!(!is_retryable_order_error("Jupiter API error (HTTP 400): bad input"));
         assert!(!is_retryable_order_error("No swap route found — TOKEN_NOT_TRADABLE"));
