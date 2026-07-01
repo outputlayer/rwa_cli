@@ -253,7 +253,9 @@ pub async fn confirm_transaction(signature: &str, rpc_url: Option<&str>) -> Resu
             let is_confirmed = status.get("confirmationStatus")
                 .and_then(|s| s.as_str())
                 .map(|s| s == "confirmed" || s == "finalized")
-                .unwrap_or(true); // if no status field, assume confirmed
+                // Absent status field ⇒ keep polling and let the timeout decide;
+                // never report a confirmation the RPC didn't actually assert.
+                .unwrap_or(false);
             if !is_confirmed {
                 // Still "processed" — wait for confirmed
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
