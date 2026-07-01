@@ -59,15 +59,25 @@ pub async fn execute_order(
 /// debit ≤ expected input, expected output mint credited at least the quoted
 /// amount minus slippage tolerance (an RFQ MM or a stale route can otherwise
 /// bake a far worse fill into the tx than its own quote claimed).
+/// Parse the quoted output amount. An unparseable quote must refuse to sign
+/// (fail closed), never silently disable the under-delivery floor with 0.
+fn quoted_out_amount(order: &OrderResponse) -> Result<u64, ExecuteFailure> {
+    order.out_amount.parse().map_err(|_| ExecuteFailure {
+        kind: ExecuteFailureKind::Unknown,
+        code: None,
+        message: format!(
+            "order has unparseable outAmount '{}' — refusing to sign",
+            order.out_amount
+        ),
+    })
+}
+
 async fn presign_simulation_gate(
     tx_b64: &str,
     order: &OrderResponse,
     expected: &ExpectedSwap,
 ) -> Result<()> {
-    let min_output = solana::min_output_floor(
-        order.out_amount.parse().unwrap_or(0),
-        order.slippage_bps,
-    );
+    let min_output = solana::min_output_floor(quoted_out_amount(order)?, order.slippage_bps);
     if let Err(e) = solana::verify_swap_simulation(
         tx_b64,
         &expected.input_mint,
@@ -240,6 +250,23 @@ mod tests {
         assert_eq!(execute_http_error_kind(StatusCode::INTERNAL_SERVER_ERROR), ExecuteFailureKind::Unavailable);
         assert_eq!(execute_http_error_kind(StatusCode::BAD_GATEWAY), ExecuteFailureKind::Unavailable);
         assert_eq!(execute_http_error_kind(StatusCode::BAD_REQUEST), ExecuteFailureKind::Unknown);
+    }
+
+    #[test]
+    fn unparseable_out_amount_refuses_to_sign() {
+        let order = OrderResponse {
+            out_amount: "not-a-number".to_string(),
+            ..OrderResponse::default()
+        };
+        let err = quoted_out_amount(&order).unwrap_err();
+        assert_eq!(err.kind, ExecuteFailureKind::Unknown);
+        assert!(err.message.contains("refusing to sign"));
+
+        let order = OrderResponse {
+            out_amount: "40273156".to_string(),
+            ..OrderResponse::default()
+        };
+        assert_eq!(quoted_out_amount(&order).unwrap(), 40_273_156);
     }
 
     #[test]
