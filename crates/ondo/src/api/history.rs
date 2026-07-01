@@ -1,10 +1,7 @@
 use eyre::{eyre, Result};
 use serde::Deserialize;
 
-use crate::HTTP;
-use super::error::{OndoError, OndoErrorKind};
-
-const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
+use super::ONDO_API_URL;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,34 +44,10 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
     };
 
     let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
-    super::retry_with_backoff(3, || fetch_history_attempt(&url, &sym)).await
+    super::retry_with_backoff(3, || fetch_history_attempt(&url)).await
 }
 
-async fn fetch_history_attempt(url: &str, sym: &str) -> Result<Vec<HistoryCandle>> {
-    let resp = HTTP.get(url).send().await.map_err(|e| {
-        OndoError::new(
-            OndoErrorKind::Network,
-            "history",
-            None,
-            format!("request failed: {e}"),
-        )
-    })?;
-    if !resp.status().is_success() {
-        return Err(OndoError::new(
-            OndoErrorKind::HttpStatus,
-            "history",
-            Some(resp.status()),
-            format!("symbol={sym}"),
-        )
-        .into());
-    }
-    let data: HistoryResponse = resp.json().await.map_err(|e| {
-        OndoError::new(
-            OndoErrorKind::Decode,
-            "history",
-            None,
-            format!("failed to decode response body: {e}"),
-        )
-    })?;
+async fn fetch_history_attempt(url: &str) -> Result<Vec<HistoryCandle>> {
+    let data: HistoryResponse = super::get_json(url, "history").await?;
     Ok(data.primary_market_price)
 }

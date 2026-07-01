@@ -9,8 +9,76 @@ pub use history::*;
 pub use session::*;
 
 use eyre::Result;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // ─── Shared helpers used by submodules ──────────────────────────────────────
+
+/// Ondo assets API base (assets list, per-symbol history).
+pub(crate) const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
+
+/// GET `url` and decode JSON, mapping transport/status/decode failures to the
+/// typed `OndoError` kinds. Single chokepoint for every Ondo endpoint.
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
+    url: &str,
+    endpoint: &'static str,
+) -> Result<T> {
+    let resp = crate::HTTP.get(url).send().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Network,
+            endpoint,
+            None,
+            format!("request failed: {e}"),
+        )
+    })?;
+    if !resp.status().is_success() {
+        return Err(OndoError::new(
+            OndoErrorKind::HttpStatus,
+            endpoint,
+            Some(resp.status()),
+            format!("non-success response from {url}"),
+        )
+        .into());
+    }
+    resp.json().await.map_err(|e| {
+        OndoError::new(
+            OndoErrorKind::Decode,
+            endpoint,
+            None,
+            format!("failed to decode response body: {e}"),
+        )
+        .into()
+    })
+}
+
+/// Cache file under `~/.config/rwa/.cache/`.
+pub(crate) fn cache_path(file: &str) -> Option<PathBuf> {
+    let dir = dirs::config_dir()?.join("rwa").join(".cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(file))
+}
+
+/// Read a cache file no older than `max_age`; `None` on missing/stale/corrupt
+/// (a corrupt file degrades to a live fetch, never an error).
+pub(crate) fn read_cache<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    max_age: Duration,
+) -> Option<T> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.modified().ok()?.elapsed().ok()? > max_age {
+        return None;
+    }
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Best-effort atomic cache write: unique tmp file + rename, so a crash or a
+/// concurrent `rwa` process can never leave a truncated/interleaved file.
+pub(crate) fn write_cache<T: serde::Serialize>(path: &Path, value: &T) -> Option<()> {
+    let data = serde_json::to_string(value).ok()?;
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, data).ok()?;
+    std::fs::rename(&tmp, path).ok()
+}
 
 pub(crate) fn invalid_market_data(field: &str, detail: impl Into<String>) -> eyre::Report {
     OndoError::new(OndoErrorKind::InvalidData, field, None, detail).into()

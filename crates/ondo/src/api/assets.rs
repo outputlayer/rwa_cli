@@ -1,13 +1,8 @@
 use eyre::Result;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::HTTP;
-use super::error::{OndoError, OndoErrorKind};
-use super::{missing_market_data, parse_market_number};
-
-const ONDO_API_URL: &str = "https://app.ondo.finance/api/v2/assets";
+use super::{missing_market_data, parse_market_number, ONDO_API_URL};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,101 +66,48 @@ const ASSETS_CACHE_FRESH: Duration = Duration::from_secs(60);
 /// failure, falls back to cached data up to 1 hour old. An explicit
 /// `RWA_ONDO_API_URL` override (test seam) bypasses the cache entirely.
 pub async fn fetch_assets() -> Result<Vec<OndoAsset>> {
-    let overridden = std::env::var("RWA_ONDO_API_URL")
+    // Read the override once so the cache-bypass decision and the fetch URL
+    // can never disagree.
+    let env_url = std::env::var("RWA_ONDO_API_URL")
         .ok()
-        .filter(|v| !v.trim().is_empty())
-        .is_some();
-    let cache = if overridden { None } else { assets_cache_path() };
+        .filter(|v| !v.trim().is_empty());
+    let overridden = env_url.is_some();
+    let url = env_url.unwrap_or_else(|| ONDO_API_URL.to_string());
+    let cache = if overridden {
+        None
+    } else {
+        super::cache_path("assets.json")
+    };
 
     if let Some(assets) = cache
         .as_deref()
-        .and_then(|p| read_cache_aged(p, ASSETS_CACHE_FRESH))
+        .and_then(|p| super::read_cache(p, ASSETS_CACHE_FRESH))
     {
         return Ok(assets);
     }
 
-    match fetch_assets_live().await {
+    match super::retry_with_backoff(3, || fetch_assets_attempt(&url)).await {
         Ok(assets) => {
-            // Update cache in background (best-effort)
+            // Update cache (best-effort)
             if let Some(ref path) = cache {
-                let _ = write_cache(path, &assets);
+                let _ = super::write_cache(path, &assets);
             }
             Ok(assets)
         }
         Err(live_err) => {
-            // Live fetch failed — try disk cache
-            // Stale fallback: up to 1 hour old beats a hard failure.
-            if let Some(assets) = cache
+            // Live fetch failed — stale fallback: up to 1 hour old beats a
+            // hard failure.
+            cache
                 .as_deref()
-                .and_then(|p| read_cache_aged(p, Duration::from_secs(3600)))
-            {
-                Ok(assets)
-            } else {
-                Err(live_err)
-            }
+                .and_then(|p| super::read_cache(p, Duration::from_secs(3600)))
+                .ok_or(live_err)
         }
     }
 }
 
-async fn fetch_assets_live() -> Result<Vec<OndoAsset>> {
-    super::retry_with_backoff(3, fetch_assets_attempt).await
-}
-
-/// Assets endpoint; `RWA_ONDO_API_URL` overrides it (test seam — not user-facing).
-fn ondo_assets_url() -> String {
-    std::env::var("RWA_ONDO_API_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| ONDO_API_URL.to_string())
-}
-
-async fn fetch_assets_attempt() -> Result<Vec<OndoAsset>> {
-    let resp = HTTP.get(ondo_assets_url()).send().await.map_err(|e| {
-        OndoError::new(
-            OndoErrorKind::Network,
-            "assets",
-            None,
-            format!("request failed: {e}"),
-        )
-    })?;
-    if !resp.status().is_success() {
-        return Err(OndoError::new(
-            OndoErrorKind::HttpStatus,
-            "assets",
-            Some(resp.status()),
-            "non-success response",
-        )
-        .into());
-    }
-    let wrapper: AssetsResponse = resp.json().await.map_err(|e| {
-        OndoError::new(
-            OndoErrorKind::Decode,
-            "assets",
-            None,
-            format!("failed to decode response body: {e}"),
-        )
-    })?;
+async fn fetch_assets_attempt(url: &str) -> Result<Vec<OndoAsset>> {
+    let wrapper: AssetsResponse = super::get_json(url, "assets").await?;
     Ok(wrapper.assets)
-}
-
-fn assets_cache_path() -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("rwa").join(".cache");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("assets.json"))
-}
-
-fn write_cache(path: &Path, assets: &[OndoAsset]) -> Option<()> {
-    let data = serde_json::to_string(assets).ok()?;
-    std::fs::write(path, data).ok()
-}
-
-fn read_cache_aged(path: &Path, max_age: Duration) -> Option<Vec<OndoAsset>> {
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.modified().ok()?.elapsed().ok()? > max_age {
-        return None;
-    }
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
 }
 
 /// Find an asset by symbol (case-insensitive, accepts "TSLA" or "TSLAon").
@@ -220,6 +162,7 @@ pub fn market_snapshot_for_symbol(symbol: &str, assets: &[OndoAsset]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{OndoError, OndoErrorKind};
 
     #[test]
     fn parse_valid_price() {
