@@ -24,7 +24,7 @@ use base64::Engine;
 use eyre::{Result, eyre};
 
 use super::parser::{ParsedInstruction, ParsedMessage, parse_message};
-use crate::solana::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, derive_ata_pubkey};
+use crate::spl::{mint_atas, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 
 /// What the caller intended to swap. Built once from user input
 /// (e.g. `prepare_buy` / `prepare_sell`) and threaded through to the signer.
@@ -135,14 +135,8 @@ fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
     }
 
     // Pre-derive the input/output ATAs for both classic Token and Token-2022.
-    let input_atas = [
-        derive_ata_pubkey(&expected.owner_pubkey, &expected.input_mint, &TOKEN_PROGRAM_ID)?,
-        derive_ata_pubkey(&expected.owner_pubkey, &expected.input_mint, &TOKEN_2022_PROGRAM_ID)?,
-    ];
-    let output_atas = [
-        derive_ata_pubkey(&expected.owner_pubkey, &expected.output_mint, &TOKEN_PROGRAM_ID)?,
-        derive_ata_pubkey(&expected.owner_pubkey, &expected.output_mint, &TOKEN_2022_PROGRAM_ID)?,
-    ];
+    let input_atas = mint_atas(&expected.owner_pubkey, &expected.input_mint)?;
+    let output_atas = mint_atas(&expected.owner_pubkey, &expected.output_mint)?;
 
     // Walk instructions: find the SPL token transfer that debits one of our
     // input-mint ATAs. Whichever token-program ix references our input ATA as
@@ -285,6 +279,7 @@ fn decode_b58_32(s: &str, label: &str) -> Result<[u8; 32]> {
 mod tests {
     use super::super::parser::test_fixtures::{encode_compact_u16, serialize_v0_message};
     use super::*;
+    use crate::spl::derive_ata_pubkey;
 
     /// Build a synthetic v0 Jupiter-like swap transaction.
     ///

@@ -34,8 +34,10 @@ pub(crate) use swap_verify::min_output_floor;
 pub use transfer::{
     transfer_sol, transfer_spl,
     EmptyTokenAccount, get_empty_token_accounts, close_empty_accounts,
-    derive_ata_pubkey, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
 };
+// Kept as `solana::*` re-exports for API stability; the definitions live in
+// the shared `spl` leaf module.
+pub use crate::spl::{derive_ata_pubkey, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID};
 
 /// Validate a Solana base58 address (32-44 chars, valid base58, decodes to 32 bytes).
 pub fn validate_address(addr: &str) -> Result<()> {

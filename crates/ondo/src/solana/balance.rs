@@ -4,7 +4,7 @@ use serde::Deserialize;
 use crate::{amounts, token_list::GmTokenEntry, USDC_MINT};
 use crate::types::Mint;
 use super::rpc::{rpc_call_simple, rpc_batch_with_retry, rpc_urls, RpcMode, RpcRequest, RpcResponse};
-use super::transfer::{derive_ata, TOKEN_PROGRAM};
+use crate::spl::{derive_ata, TOKEN_PROGRAM_ID as TOKEN_PROGRAM};
 
 /// Ondo GM tokens use Token-2022 (Token Extensions) on Solana.
 pub(super) const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";

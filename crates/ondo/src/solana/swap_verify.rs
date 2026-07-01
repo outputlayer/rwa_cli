@@ -20,7 +20,7 @@ use base64::Engine;
 use eyre::Result;
 
 use super::rpc::{RpcMode, rpc_call_simple};
-use super::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, derive_ata_pubkey};
+use crate::spl::mint_atas;
 
 /// Why a pre-sign swap simulation refused. The execute layer maps each to the
 /// right action: an unfillable route is retried (with that router excluded), an
@@ -146,14 +146,8 @@ pub async fn verify_swap_simulation(
     // The canonical ATAs we expect to move. Deriving for both token programs
     // means the wrong-program candidate simply doesn't exist (reads as 0); the
     // real ATA is whichever the mint actually uses.
-    let input_atas = [
-        derive_ata_pubkey(owner, input_mint, &TOKEN_PROGRAM_ID)?,
-        derive_ata_pubkey(owner, input_mint, &TOKEN_2022_PROGRAM_ID)?,
-    ];
-    let output_atas = [
-        derive_ata_pubkey(owner, output_mint, &TOKEN_PROGRAM_ID)?,
-        derive_ata_pubkey(owner, output_mint, &TOKEN_2022_PROGRAM_ID)?,
-    ];
+    let input_atas = mint_atas(owner, input_mint)?;
+    let output_atas = mint_atas(owner, output_mint)?;
     let watch: Vec<String> = input_atas
         .iter()
         .chain(output_atas.iter())

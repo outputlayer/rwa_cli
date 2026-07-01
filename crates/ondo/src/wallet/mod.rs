@@ -613,7 +613,7 @@ mod tests {
         output_mint: &[u8; 32],
         amount: u64,
     ) -> String {
-        use crate::solana::{TOKEN_PROGRAM_ID, derive_ata_pubkey};
+        use crate::spl::{TOKEN_PROGRAM_ID, derive_ata_pubkey};
         use base64::Engine;
 
         let input_ata = derive_ata_pubkey(owner, input_mint, &TOKEN_PROGRAM_ID).unwrap();

@@ -11,25 +11,10 @@ use super::transaction::{
 };
 use super::balance::GetTokenAccountsResult;
 
+use crate::spl::{derive_ata, ATA_PROGRAM, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID as TOKEN_PROGRAM};
+
 /// System Program ID (for SOL transfers)
 const SYSTEM_PROGRAM: [u8; 32] = [0; 32];
-/// SPL Token Program ID (for USDC)
-pub(crate) const TOKEN_PROGRAM: [u8; 32] = [
-    6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172,
-    28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
-];
-/// SPL Token Program ID (re-exported for callers outside `solana`).
-pub const TOKEN_PROGRAM_ID: [u8; 32] = TOKEN_PROGRAM;
-/// SPL Token-2022 Program ID (for GM tokens)
-pub const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
-    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218,
-    182, 26, 252, 77, 131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
-];
-/// Associated Token Account Program ID
-const ATA_PROGRAM: [u8; 32] = [
-    140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131,
-    11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
-];
 
 /// SPL Token program ID (base58 string, for RPC queries).
 const TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -216,51 +201,6 @@ pub async fn transfer_spl(
 
         send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
     }
-}
-
-/// Derive an Associated Token Account address from raw 32-byte pubkeys.
-///
-/// `owner` and `mint` are 32-byte Solana pubkeys; `token_program` is either
-/// the SPL Token or Token-2022 program id. Returns the 32-byte ATA pubkey.
-pub fn derive_ata_pubkey(owner: &[u8; 32], mint: &[u8; 32], token_program: &[u8; 32]) -> Result<[u8; 32]> {
-    let v = derive_ata(owner.as_slice(), mint.as_slice(), token_program)?;
-    let arr: [u8; 32] = v.as_slice().try_into()
-        .map_err(|_| eyre!("derived ATA wrong length"))?;
-    Ok(arr)
-}
-
-/// Derive Associated Token Account address.
-pub(super) fn derive_ata(owner: &[u8], mint: &[u8], token_program: &[u8; 32]) -> Result<Vec<u8>> {
-    use sha2::{Sha256, Digest};
-
-    // PDA seeds: [owner, token_program, mint]
-    // Program: ATA program
-    let seeds: &[&[u8]] = &[owner, token_program.as_slice(), mint];
-
-    // Find PDA: try nonce from 255 down to 0
-    for nonce in (0..=255u8).rev() {
-        let mut hasher = Sha256::new();
-        for seed in seeds {
-            hasher.update(seed);
-        }
-        hasher.update([nonce]);
-        hasher.update(ATA_PROGRAM);
-        hasher.update(b"ProgramDerivedAddress");
-        let hash = hasher.finalize();
-
-        // Valid PDA must NOT be on the Ed25519 curve
-        if !is_on_curve(&hash) {
-            return Ok(hash.to_vec());
-        }
-    }
-
-    Err(eyre!("Failed to derive ATA — no valid PDA found"))
-}
-
-/// Check if a 32-byte key is on the Ed25519 curve.
-fn is_on_curve(bytes: &[u8]) -> bool {
-    let Ok(arr) = <[u8; 32]>::try_from(bytes) else { return false };
-    ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok()
 }
 
 /// Check if a Solana account exists (has non-zero lamports).
@@ -504,45 +444,3 @@ async fn close_account_batch(
     send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Processed).await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn derive_ata_produces_32_bytes() {
-        let owner = bs58::decode("11111111111111111111111111111111").into_vec().unwrap();
-        let mint = bs58::decode("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").into_vec().unwrap();
-        let ata = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
-        assert_eq!(ata.len(), 32);
-    }
-
-    #[test]
-    fn derive_ata_deterministic() {
-        let owner = bs58::decode("5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiYtRo7DFYiuZ47").into_vec().unwrap();
-        let mint = bs58::decode("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").into_vec().unwrap();
-        let ata1 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
-        let ata2 = derive_ata(&owner, &mint, &TOKEN_PROGRAM).unwrap();
-        assert_eq!(ata1, ata2);
-    }
-
-    #[test]
-    fn token_program_id_matches() {
-        let expected = bs58::decode("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-            .into_vec().unwrap();
-        assert_eq!(TOKEN_PROGRAM.as_slice(), expected.as_slice());
-    }
-
-    #[test]
-    fn token_2022_program_id_matches() {
-        let expected = bs58::decode("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-            .into_vec().unwrap();
-        assert_eq!(TOKEN_2022_PROGRAM_ID.as_slice(), expected.as_slice());
-    }
-
-    #[test]
-    fn ata_program_id_matches() {
-        let expected = bs58::decode("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-            .into_vec().unwrap();
-        assert_eq!(ATA_PROGRAM.as_slice(), expected.as_slice());
-    }
-}
