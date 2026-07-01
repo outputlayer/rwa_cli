@@ -9,7 +9,7 @@ pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_bu
 
 use super::gm_internal::{
     resolve_gm_mint, check_tradable, preflight_buy_raw, preflight_sell,
-    get_order_checked,
+    get_order_checked, resolve_sell_amount,
 };
 use super::gm_execute::{calc_actual_slippage, execute_with_retry, SwapParams};
 
@@ -256,8 +256,6 @@ pub async fn prepare_sell(
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let taker = wallet.pubkey();
     let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let is_all = amount.trim().eq_ignore_ascii_case("all");
-    let is_pct = amount.trim().ends_with('%');
 
     preflight_sell()?;
     let (tradable_res, bal_res) = tokio::join!(
@@ -274,46 +272,7 @@ pub async fn prepare_sell(
         .into());
     }
 
-    let (sell_amount, raw_gm) = if is_all || is_pct {
-        if is_all {
-            (
-                amounts::format_amount(&bal.raw_amount, gm_dec),
-                bal.raw_amount.clone(),
-            )
-        } else {
-            let pct_str = amount
-                .trim()
-                .strip_suffix('%')
-                .ok_or_else(|| eyre!("expected percentage suffix"))?;
-            let pct: f64 = pct_str
-                .parse()
-                .map_err(|_| eyre!("Invalid percentage: {amount}"))?;
-            if !(0.0..=100.0).contains(&pct) {
-                return Err(eyre!("Percentage must be 0–100, got {pct}"));
-            }
-            let raw: u128 = bal
-                .raw_amount
-                .parse()
-                .map_err(|_| eyre!("Invalid on-chain amount: {}", bal.raw_amount))?;
-            let pct_raw = amounts::pct_of_u128(raw, pct).to_string();
-            (amounts::format_amount(&pct_raw, gm_dec), pct_raw)
-        }
-    } else {
-        let raw = amounts::token_to_raw(amount, gm_dec)?;
-        let raw_sell: u128 = raw.parse().map_err(|_| eyre!("Invalid amount: {amount}"))?;
-        let raw_balance: u128 = bal
-            .raw_amount
-            .parse()
-            .map_err(|_| eyre!("Invalid on-chain amount: {}", bal.raw_amount))?;
-        if raw_sell > raw_balance {
-            return Err(eyre!(
-                "Insufficient {symbol} balance: have {}, trying to sell {}",
-                amounts::format_amount(&bal.raw_amount, gm_dec),
-                amounts::format_amount(&raw, gm_dec)
-            ));
-        }
-        (amounts::format_amount(&raw, gm_dec), raw)
-    };
+    let (sell_amount, raw_gm) = resolve_sell_amount(amount, &symbol, &bal.raw_amount, gm_dec)?;
 
     let (order, slippage_pct) = get_order_checked(
         &gm_mint,

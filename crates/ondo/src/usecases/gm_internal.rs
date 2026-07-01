@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 
-use crate::{api, gm, jupiter, solana, token_list};
+use crate::{amounts, api, gm, jupiter, solana, token_list};
 use crate::types::{Mint, Symbol};
 use super::gm::{GmTradeError, GmTradeErrorKind};
 
@@ -27,7 +27,8 @@ pub(crate) fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntr
     Ok((Symbol::from(entry.symbol), Mint::from(mint)))
 }
 
-/// Compute `value * pct / 100` using integer math to avoid f64 precision loss.
+/// Estimate quote slippage in percent: price impact when the order reports it,
+/// otherwise the in/out USD value delta.
 pub(crate) fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     if let Some(pi) = order.price_impact {
         return Some(pi);
@@ -222,6 +223,57 @@ pub(crate) fn preflight_sell() -> Result<()> {
     check_trading_hours()
 }
 
+/// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's
+/// GM-token balance, returning `(display_amount, raw_amount)`. The single
+/// chokepoint for `sell` and `sell-basket`; selling more than the balance is a
+/// typed `insufficient_funds` error, mirroring the buy path.
+pub(crate) fn resolve_sell_amount(
+    amount_str: &str,
+    symbol: &str,
+    balance_raw: &str,
+    decimals: u8,
+) -> Result<(String, String)> {
+    let s = amount_str.trim();
+    if s.eq_ignore_ascii_case("all") {
+        return Ok((
+            amounts::format_amount(balance_raw, decimals),
+            balance_raw.to_string(),
+        ));
+    }
+    if let Some(pct_str) = s.strip_suffix('%') {
+        let pct: f64 = pct_str
+            .parse()
+            .map_err(|_| eyre!("Invalid percentage: {amount_str}"))?;
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(eyre!("Percentage must be 0–100, got {pct}"));
+        }
+        let raw: u128 = balance_raw
+            .parse()
+            .map_err(|_| eyre!("Invalid on-chain amount: {balance_raw}"))?;
+        let pct_raw = amounts::pct_of_u128(raw, pct).to_string();
+        return Ok((amounts::format_amount(&pct_raw, decimals), pct_raw));
+    }
+    let raw = amounts::token_to_raw(s, decimals)?;
+    let raw_sell: u128 = raw
+        .parse()
+        .map_err(|_| eyre!("Invalid amount: {amount_str}"))?;
+    let raw_balance: u128 = balance_raw
+        .parse()
+        .map_err(|_| eyre!("Invalid on-chain amount: {balance_raw}"))?;
+    if raw_sell > raw_balance {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient {symbol} balance: have {}, trying to sell {}",
+                amounts::format_amount(balance_raw, decimals),
+                amounts::format_amount(&raw, decimals)
+            ),
+        )
+        .into());
+    }
+    Ok((amounts::format_amount(&raw, decimals), raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +315,35 @@ mod tests {
     fn check_buy_funds_errors_on_insufficient_sol() {
         let err = super::check_buy_funds("100000000", 0, 50_000_000).unwrap_err();
         assert!(err.to_string().contains("Insufficient SOL"));
+    }
+
+    #[test]
+    fn resolve_sell_amount_all_pct_exact() {
+        let (d, r) = resolve_sell_amount("all", "TSLA", "1500000000", 9).unwrap();
+        assert_eq!(r, "1500000000");
+        assert_eq!(d, "1.5");
+
+        let (_, r) = resolve_sell_amount("50%", "TSLA", "1500000000", 9).unwrap();
+        assert_eq!(r, "750000000");
+
+        let (d, r) = resolve_sell_amount("1", "TSLA", "1500000000", 9).unwrap();
+        assert_eq!(r, "1000000000");
+        assert_eq!(d, "1");
+    }
+
+    #[test]
+    fn resolve_sell_amount_over_balance_is_typed_insufficient_funds() {
+        let err = resolve_sell_amount("2", "TSLA", "1500000000", 9).unwrap_err();
+        let te = err.downcast_ref::<GmTradeError>().expect("typed error");
+        assert_eq!(te.kind, GmTradeErrorKind::InsufficientFunds);
+        assert!(te.detail.contains("TSLA"), "detail: {}", te.detail);
+    }
+
+    #[test]
+    fn resolve_sell_amount_rejects_bad_percentage() {
+        assert!(resolve_sell_amount("150%", "TSLA", "1500000000", 9).is_err());
+        assert!(resolve_sell_amount("-5%", "TSLA", "1500000000", 9).is_err());
+        assert!(resolve_sell_amount("abc%", "TSLA", "1500000000", 9).is_err());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use super::gm::{
 };
 use super::gm_internal::{
     MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, check_trading_hours, get_order_checked,
-    resolve_gm_mint,
+    resolve_gm_mint, resolve_sell_amount,
 };
 use crate::types::Symbol;
 
@@ -90,32 +90,8 @@ pub async fn fetch_sell_order_by_symbol(
         .into());
     }
 
-    let is_all = amount_str.trim().eq_ignore_ascii_case("all");
-    let is_pct = amount_str.trim().ends_with('%');
-    let (display_amount, raw_amount) = if is_all {
-        (
-            amounts::format_amount(&bal.raw_amount, gm_dec),
-            bal.raw_amount.clone(),
-        )
-    } else if is_pct {
-        let pct_str = amount_str.trim().strip_suffix('%').unwrap_or("0");
-        let pct: f64 = pct_str
-            .parse()
-            .map_err(|_| eyre!("Invalid percentage: {amount_str}"))?;
-        if !(0.0..=100.0).contains(&pct) {
-            return Err(eyre!("Percentage must be 0–100, got {amount_str}"));
-        }
-        let raw: u128 = bal.raw_amount.parse().map_err(|_| eyre!("Invalid balance"))?;
-        let scaled = amounts::pct_of_u128(raw, pct);
-        (
-            amounts::format_amount(&scaled.to_string(), gm_dec),
-            scaled.to_string(),
-        )
-    } else {
-        let raw = amounts::token_to_raw(amount_str, gm_dec)
-            .map_err(|e| eyre!("Invalid amount '{amount_str}' for {sym}: {e}"))?;
-        (amounts::format_amount(&raw, gm_dec), raw)
-    };
+    let (display_amount, raw_amount) =
+        resolve_sell_amount(amount_str, &sym, &bal.raw_amount, gm_dec)?;
 
     let mint_str = gm_mint.to_string();
     fetch_sell_order(&sym, &mint_str, &raw_amount, taker, json, slippage_bps, max_bps)
