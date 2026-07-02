@@ -22,63 +22,36 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let balance_source = portfolio_bal.source;
     let sol_bal = portfolio_bal.sol;
     let usdc_bal = portfolio_bal.usdc;
-    let balances = portfolio_bal.gm_tokens;
 
-    let mut positions = Vec::new();
-    let mut unavailable = Vec::new();
-    let mut gm_positions_value = 0.0;
-    let mut gm_positions_prev_value = 0.0;
-
-    for tb in &balances {
-        let (price, pct_24h) = match api::market_snapshot_for_symbol(&tb.symbol, &assets) {
-            Ok(v) => v,
-            Err(e) => {
-                if !json {
-                    eprintln!("  Skipping {} — market data unavailable: {e}", tb.symbol);
-                }
-                unavailable.push(PortfolioUnavailableJson {
-                    symbol: tb.symbol.clone(),
-                    reason: format!("market data unavailable: {e}"),
-                });
-                continue;
-            }
-        };
-        let value = tb.balance * price;
-        let prev_value = if pct_24h.abs() > f64::EPSILON {
-            value / (1.0 + pct_24h / 100.0)
-        } else {
-            value
-        };
-        gm_positions_value += value;
-        gm_positions_prev_value += prev_value;
-        positions.push(PositionJson {
-            token: tb.symbol.clone(),
-            balance: tb.balance,
-            price,
-            value_usd: value,
-            gm_alloc_pct: 0.0,
-            change_pct_24h: pct_24h,
-        });
-    }
-
-    if gm_positions_value.abs() > f64::EPSILON {
-        for p in &mut positions {
-            p.gm_alloc_pct = (p.value_usd / gm_positions_value) * 100.0;
+    let summary = usecases::gm::compute_portfolio(&portfolio_bal.gm_tokens, &assets);
+    if !json {
+        for u in &summary.unavailable {
+            eprintln!("  Skipping {} — {}", u.symbol, u.reason);
         }
     }
-
-    positions.sort_by(|a, b| {
-        b.value_usd
-            .partial_cmp(&a.value_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let gm_positions_change = gm_positions_value - gm_positions_prev_value;
-    let gm_positions_change_pct = if gm_positions_prev_value.abs() > f64::EPSILON {
-        (gm_positions_change / gm_positions_prev_value) * 100.0
-    } else {
-        0.0
-    };
+    let positions: Vec<PositionJson> = summary
+        .positions
+        .into_iter()
+        .map(|p| PositionJson {
+            token: p.token,
+            balance: p.balance,
+            price: p.price,
+            value_usd: p.value_usd,
+            gm_alloc_pct: p.gm_alloc_pct,
+            change_pct_24h: p.change_pct_24h,
+        })
+        .collect();
+    let unavailable: Vec<PortfolioUnavailableJson> = summary
+        .unavailable
+        .into_iter()
+        .map(|u| PortfolioUnavailableJson {
+            symbol: u.symbol,
+            reason: u.reason,
+        })
+        .collect();
+    let gm_positions_value = summary.value_usd;
+    let gm_positions_change = summary.change_24h_usd;
+    let gm_positions_change_pct = summary.change_24h_pct;
 
     let source = if balance_source == solana::BalanceSource::Jupiter {
         if !json {

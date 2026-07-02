@@ -26,7 +26,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
     let pubkey = w.pubkey();
     let balance_raw = solana::get_sol_balance_raw(&pubkey, rpc_url).await?;
     let tx_fee_lamports = solana::estimate_tx_fee_lamports(rpc_url).await;
-    let raw_str = resolve_sol_send_amount(amount, &balance_raw, tx_fee_lamports).await?;
+    let raw_str = amounts::resolve_sol_send_amount(amount, &balance_raw, tx_fee_lamports).await?;
     let display_amount = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid SOL amount"))?;
 
@@ -70,44 +70,6 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }
     Ok(())
-}
-
-async fn resolve_sol_send_amount(amount: &str, balance_raw: &str, tx_fee_lamports: u64) -> Result<String> {
-    let amount = amount.trim();
-    let is_all = amount.eq_ignore_ascii_case("all") || amount == "100%";
-
-    let balance_lamports: u64 = balance_raw
-        .parse()
-        .map_err(|_| eyre::eyre!("Invalid on-chain SOL amount: {balance_raw}"))?;
-    if balance_lamports <= tx_fee_lamports {
-        let sol_bal = balance_lamports as f64 / 1_000_000_000.0;
-        let tx_fee = tx_fee_lamports as f64 / 1_000_000_000.0;
-        return Err(eyre::eyre!(
-            "Balance too low to cover tx fee ({sol_bal:.6} SOL, fee ~{tx_fee:.6})"
-        ));
-    }
-
-    if is_all {
-        return Ok((balance_lamports - tx_fee_lamports).to_string());
-    }
-
-    let raw_str = amounts::resolve_amount_to_raw(amount, jupiter::GM_SOL_DECIMALS, || {
-        let balance_raw = balance_raw.to_string();
-        async move { Ok(balance_raw) }
-    }).await?;
-    let raw_lamports: u64 = raw_str
-        .parse()
-        .map_err(|_| eyre::eyre!("Invalid SOL amount: {raw_str}"))?;
-    let max_send_lamports = balance_lamports - tx_fee_lamports;
-    if raw_lamports > max_send_lamports {
-        let sol_bal = balance_lamports as f64 / 1_000_000_000.0;
-        let send_sol = raw_lamports as f64 / 1_000_000_000.0;
-        let tx_fee = tx_fee_lamports as f64 / 1_000_000_000.0;
-        return Err(eyre::eyre!(
-            "Insufficient SOL: have {sol_bal:.6}, sending {send_sol:.6} + fee ~{tx_fee:.6}"
-        ));
-    }
-    Ok(raw_str)
 }
 
 async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
@@ -253,40 +215,4 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_sol_send_amount_all_reserves_fee_exactly() {
-        let raw = resolve_sol_send_amount("all", "1000000000", 5000).await.unwrap();
-        assert_eq!(raw, "999995000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_sol_send_amount_percentage_uses_raw_math() {
-        let raw = resolve_sol_send_amount("50%", "1000000000", 5000).await.unwrap();
-        assert_eq!(raw, "500000000");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_sol_send_amount_hundred_percent_matches_all() {
-        let all = resolve_sol_send_amount("all", "1000000000", 5000).await.unwrap();
-        let pct = resolve_sol_send_amount("100%", "1000000000", 5000).await.unwrap();
-        assert_eq!(pct, all);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_sol_send_amount_rejects_over_spend() {
-        let err = resolve_sol_send_amount("1", "1000000000", 5000).await.unwrap_err();
-        assert!(err.to_string().contains("Insufficient SOL"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolve_sol_send_amount_rejects_balance_below_fee() {
-        let err = resolve_sol_send_amount("all", "5000", 5000).await.unwrap_err();
-        assert!(err.to_string().contains("Balance too low to cover tx fee"));
-    }
 }

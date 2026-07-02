@@ -4,16 +4,11 @@ use std::sync::Arc;
 
 use super::*;
 
-/// A tradable, non-tiny position pre-filtered for closing.
-struct CloseCandidate {
-    symbol: String,
-    mint: String,
-    sell_raw: String,
-    sell_display: String,
-}
+use usecases::gm::ClosePosition as CloseCandidate;
 
 /// Filter phase: from raw balances to (candidates, skipped[]).
-/// Used by both real-execution and dry-run paths.
+/// The math lives in `usecases::gm::filter_close_positions`; this wrapper only
+/// prints the human skip lines and shapes the JSON entries.
 fn filter_close_items(
     balances: &[solana::SolanaTokenBalance],
     sell_pct: f64,
@@ -21,68 +16,21 @@ fn filter_close_items(
     tradable_set: &std::collections::HashSet<String>,
     json: bool,
 ) -> Result<(Vec<CloseCandidate>, Vec<CloseSkipJson>)> {
-    let mut candidates = Vec::new();
-    let mut skipped = Vec::new();
-
-    for tb in balances {
-        let sell_raw = if sell_pct < 100.0 {
-            let raw: u128 = tb.raw_amount.parse().map_err(|_| {
-                eyre::eyre!(
-                    "Invalid on-chain amount for {}: {}",
-                    tb.symbol,
-                    tb.raw_amount
-                )
-            })?;
-            let partial = amounts::pct_of_u128(raw, sell_pct);
-            if partial == 0 {
-                continue;
-            }
-            partial.to_string()
-        } else {
-            tb.raw_amount.clone()
-        };
-
-        let sell_balance = if sell_pct < 100.0 {
-            tb.balance * sell_pct / 100.0
-        } else {
-            tb.balance
-        };
-        let est_value = match api::market_snapshot_for_symbol(&tb.symbol, assets) {
-            Ok((price, _)) => sell_balance * price,
-            Err(_) => {
-                if !json {
-                    eprintln!("  Skipping {} — market data unavailable", tb.symbol);
-                }
-                skipped.push(CloseSkipJson {
-                    token: tb.symbol.clone(),
-                    estimated_usd: 0.0,
-                    reason: "market data unavailable",
-                });
-                continue;
-            }
-        };
-
-        if let Some(skip) = usecases::gm::should_skip_position(&tb.symbol, est_value, tradable_set) {
+    let (candidates, skips) =
+        usecases::gm::filter_close_positions(balances, sell_pct, assets, tradable_set)?;
+    let skipped = skips
+        .into_iter()
+        .map(|skip| {
             if !json {
                 eprintln!("  Skipping {} — {}", skip.token, skip.reason);
             }
-            skipped.push(CloseSkipJson {
+            CloseSkipJson {
                 token: skip.token,
                 estimated_usd: skip.estimated_usd,
                 reason: skip.reason,
-            });
-            continue;
-        }
-
-        let sell_display = amounts::format_amount(&sell_raw, jupiter::GM_SOL_DECIMALS);
-        candidates.push(CloseCandidate {
-            symbol: tb.symbol.clone(),
-            mint: tb.mint.to_string(),
-            sell_raw,
-            sell_display,
-        });
-    }
-
+            }
+        })
+        .collect();
     Ok((candidates, skipped))
 }
 

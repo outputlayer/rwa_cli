@@ -6,6 +6,10 @@ use crate::types::{Mint, Symbol};
 // Re-export from sibling modules so callers can continue using `usecases::gm::*`.
 pub use super::gm_execute::{execute_sell_from_order, execute_buy_from_order};
 pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy};
+pub use super::gm_positions::{
+    compute_portfolio, filter_close_positions, ClosePosition, PortfolioPosition,
+    PortfolioSummary, PortfolioUnavailable,
+};
 use super::gm_order::check_cost_gate;
 
 use super::gm_internal::{
