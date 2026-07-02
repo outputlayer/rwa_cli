@@ -26,6 +26,18 @@ impl OrderBackend {
             Self::MetisV1Lite => "metis-v1-lite",
         }
     }
+
+    /// Canonical base URL for this backend — the single source used by both
+    /// the `/order` fallback chain and `/execute` dispatch.
+    #[must_use]
+    pub(crate) fn base_url(self) -> &'static str {
+        match self {
+            Self::SwapV2Lite => super::SWAP_V2_LITE_API_BASE,
+            Self::Ultra => super::ULTRA_API_BASE,
+            Self::UltraLite => super::ULTRA_LITE_API_BASE,
+            Self::MetisV1Lite => super::METIS_LITE_API_BASE,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

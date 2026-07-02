@@ -23,8 +23,7 @@ use crate::HTTP;
 
 use super::{
     types::{ExecuteFailure, ExecuteFailureKind, ExecuteResponse, OrderBackend, OrderResponse},
-    with_jupiter_headers, EXECUTE_SEMAPHORE, SWAP_V2_LITE_API_BASE, ULTRA_API_BASE,
-    ULTRA_LITE_API_BASE,
+    with_jupiter_headers, EXECUTE_SEMAPHORE,
 };
 
 #[derive(Debug, Serialize)]
@@ -47,10 +46,8 @@ pub async fn execute_order(
     let _permit = EXECUTE_SEMAPHORE.acquire().await
         .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
     match order.backend {
-        OrderBackend::SwapV2Lite => execute_managed_order(wallet, order, expected, SWAP_V2_LITE_API_BASE).await,
-        OrderBackend::Ultra => execute_managed_order(wallet, order, expected, ULTRA_API_BASE).await,
-        OrderBackend::UltraLite => execute_managed_order(wallet, order, expected, ULTRA_LITE_API_BASE).await,
         OrderBackend::MetisV1Lite => execute_metis_order(wallet, order, expected).await,
+        managed => execute_managed_order(wallet, order, expected, managed.base_url()).await,
     }
 }
 

@@ -13,8 +13,7 @@ use crate::HTTP;
 
 use super::{
     types::{ExecuteFailure, ExecuteFailureKind, OrderBackend, OrderResponse},
-    with_jupiter_headers, ORDER_SEMAPHORE, METIS_LITE_API_BASE, SWAP_V2_LITE_API_BASE,
-    ULTRA_API_BASE, ULTRA_LITE_API_BASE,
+    with_jupiter_headers, METIS_LITE_API_BASE, ORDER_SEMAPHORE,
 };
 
 /// Maximum retries for transient errors on /order.
@@ -79,14 +78,14 @@ async fn get_order_impl(
 
     let mut failures = Vec::new();
     let backends = [
-        (SWAP_V2_LITE_API_BASE, OrderBackend::SwapV2Lite),
-        (ULTRA_API_BASE, OrderBackend::Ultra),
-        (ULTRA_LITE_API_BASE, OrderBackend::UltraLite),
+        OrderBackend::SwapV2Lite,
+        OrderBackend::Ultra,
+        OrderBackend::UltraLite,
     ];
 
-    for (base_url, backend) in backends {
+    for backend in backends {
         match get_order_with_retries(
-            base_url,
+            backend.base_url(),
             backend,
             input_mint,
             output_mint,
