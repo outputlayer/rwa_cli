@@ -680,8 +680,28 @@ mod tests {
         };
         let signed = w.sign_jupiter_swap(&tx, &expected)
             .expect("legitimate Jupiter-shaped tx should be signed");
-        // Signed tx must differ from the unsigned input (signature slot now non-zero).
-        assert_ne!(signed, tx);
+        // A real ed25519 signature over the message bytes must land in our
+        // signature slot — "differs from input" would also pass for garbage.
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&signed)
+            .expect("signed tx is base64");
+        let (num_sigs, prefix) = decode_compact_u16(&bytes).unwrap();
+        let sigs_end = prefix + num_sigs as usize * 64;
+        let message = &bytes[sigs_end..];
+        let pubkey_bytes: [u8; 32] =
+            bs58::decode(w.pubkey()).into_vec().unwrap().try_into().unwrap();
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_bytes).unwrap();
+        let our_sig = (0..num_sigs as usize)
+            .map(|i| &bytes[prefix + i * 64..prefix + (i + 1) * 64])
+            .find_map(|slot| {
+                let sig = ed25519_dalek::Signature::from_bytes(slot.try_into().unwrap());
+                vk.verify_strict(message, &sig).ok()
+            });
+        assert!(
+            our_sig.is_some(),
+            "one signature slot must cryptographically verify against our pubkey over the message"
+        );
     }
 
     #[test]
