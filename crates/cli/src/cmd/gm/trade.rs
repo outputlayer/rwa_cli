@@ -22,8 +22,8 @@ pub async fn buy(
     let dry_run = dry_run || quote_only;
     let w = load_wallet(selected)?;
     // Auto-refuel SOL from USDC before a real buy (no-op when SOL is fine).
-    let gas_refuel = if dry_run {
-        None
+    let (gas_refuel, balances) = if dry_run {
+        (None, None)
     } else {
         let reserved = amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
             .ok()
@@ -32,7 +32,7 @@ pub async fn buy(
         auto_gas(&w, rpc_url, yes, json, reserved).await?
     };
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances).await?;
 
     if !json {
         println!(

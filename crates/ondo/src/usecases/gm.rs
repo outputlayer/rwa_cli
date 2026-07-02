@@ -6,7 +6,7 @@ use crate::types::{Mint, Symbol};
 // Re-export from sibling modules so callers can continue using `usecases::gm::*`.
 pub use super::gm_execute::{execute_sell_from_order, execute_buy_from_order};
 pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy};
-pub use super::gm_gas::{ensure_gas, GasRefuel, REFUEL_USDC_RAW, SOL_LOW_WATER_LAMPORTS};
+pub use super::gm_gas::{ensure_gas, BalanceSnapshot, GasRefuel, REFUEL_USDC_RAW, SOL_LOW_WATER_LAMPORTS};
 pub use super::gm_pnl::{compute_pnl, PnlSummary, TokenPnl};
 pub use super::gm_positions::{
     compute_portfolio, filter_close_positions, ClosePosition, PortfolioPosition,
@@ -191,6 +191,7 @@ pub async fn prepare_buy(
     json: bool,
     quote_only: bool,
     max_bps: Option<u32>,
+    balances: Option<BalanceSnapshot>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -200,6 +201,11 @@ pub async fn prepare_buy(
         let taker = taker.clone();
         let rpc = rpc_url.map(str::to_string);
         async move {
+            // `%`/`all` amounts resolve against the auto-gas snapshot when
+            // available — no extra fetch.
+            if let Some(snap) = balances {
+                return Ok(snap.usdc_raw.to_string());
+            }
             let (_, raw) = solana::get_usdc_balance_raw(&taker, rpc.as_deref()).await?;
             Ok(raw)
         }
@@ -208,7 +214,7 @@ pub async fn prepare_buy(
     let usdc_amount = amounts::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
 
     let (preflight_res, tradable_res) = tokio::join!(
-        preflight_buy_raw(&taker, &raw_usdc, rpc_url, !quote_only),
+        preflight_buy_raw(&taker, &raw_usdc, rpc_url, !quote_only, balances),
         check_tradable(&symbol, None),
     );
     let sol_lamports = preflight_res?;

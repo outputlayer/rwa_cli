@@ -180,12 +180,12 @@ pub async fn buy_basket(
     }
     // Auto-refuel SOL from USDC before a real basket buy; the reserve keeps
     // the refuel from eating the basket's own USDC.
-    let gas_refuel = if dry_run {
-        None
+    let (gas_refuel, balances) = if dry_run {
+        (None, None)
     } else {
         auto_gas(&w, rpc_url, yes, json, total_raw).await?
     };
-    let sol_lamports = usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url).await?;
+    let sol_lamports = usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url, balances).await?;
 
     if !json {
         let mode = if parallel { " (parallel)" } else { "" };

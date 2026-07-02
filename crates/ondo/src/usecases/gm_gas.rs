@@ -36,6 +36,16 @@ pub struct GasRefuel {
     pub signature: String,
 }
 
+/// Wallet balances sampled by the auto-gas gate. Returned to the caller so
+/// the subsequent preflight can reuse them instead of refetching — ONE wallet
+/// state sample per command. Invalidated (None) whenever a refuel executed,
+/// because the swap changed both balances.
+#[derive(Clone, Copy, Debug)]
+pub struct BalanceSnapshot {
+    pub sol_lamports: u64,
+    pub usdc_raw: u128,
+}
+
 /// Pure decision: SOL below the low-water mark AND enough USDC to cover both
 /// the upcoming operation (`reserved_usdc_raw`) and the minimum refuel.
 pub(crate) fn needs_refuel(sol_lamports: u64, usdc_raw: u128, reserved_usdc_raw: u128) -> bool {
@@ -81,7 +91,7 @@ pub async fn ensure_gas(
     json: bool,
     reserved_usdc_raw: u128,
     consent: impl FnOnce(f64) -> bool,
-) -> Result<Option<GasRefuel>> {
+) -> Result<(Option<GasRefuel>, Option<BalanceSnapshot>)> {
     let taker = w.pubkey();
     let (sol_res, usdc_res) = tokio::join!(
         solana::get_sol_balance_raw(&taker, rpc_url),
@@ -90,9 +100,10 @@ pub async fn ensure_gas(
     let sol_lamports: u64 = sol_res?.parse().unwrap_or(0);
     let (_, usdc_raw_s) = usdc_res?;
     let usdc_raw: u128 = usdc_raw_s.parse().unwrap_or(0);
+    let snapshot = BalanceSnapshot { sol_lamports, usdc_raw };
 
     if sol_lamports >= SOL_LOW_WATER_LAMPORTS {
-        return Ok(None);
+        return Ok((None, Some(snapshot)));
     }
     let sol_now = sol_lamports as f64 / 1_000_000_000.0;
     if !needs_refuel(sol_lamports, usdc_raw, reserved_usdc_raw) {
@@ -100,20 +111,23 @@ pub async fn ensure_gas(
             "Note: SOL is low ({sol_now:.6}) but USDC can't cover a {} USDC gas refuel on top of this operation; continuing without.",
             REFUEL_USDC_RAW as f64 / 1_000_000.0
         );
-        return Ok(None);
+        return Ok((None, Some(snapshot)));
     }
     if !consent(sol_now) {
-        return Ok(None);
+        return Ok((None, Some(snapshot)));
     }
 
     let usdc_after_op = usdc_raw.saturating_sub(reserved_usdc_raw);
     match refuel(w, &taker, sol_lamports, usdc_after_op, rpc_url, json).await {
-        Ok(refueled) => Ok(refueled),
+        // A refuel that executed changed both balances — the snapshot is
+        // stale, so the caller must refetch (fail closed on staleness).
+        Ok(Some(refueled)) => Ok((Some(refueled), None)),
+        Ok(None) => Ok((None, Some(snapshot))),
         Err(e) => {
             // Best-effort: a failed refuel must not fail the user's trade —
             // the route-aware SOL gate will still refuse anything unsafe.
             eprintln!("Warning: SOL gas refuel failed ({e}); continuing without.");
-            Ok(None)
+            Ok((None, Some(snapshot)))
         }
     }
 }

@@ -27,20 +27,20 @@ pub(super) async fn auto_gas(
     yes: bool,
     json: bool,
     reserved_usdc_raw: u128,
-) -> Result<Option<GasRefuelJson>> {
+) -> Result<(Option<GasRefuelJson>, Option<usecases::gm::BalanceSnapshot>)> {
     let disabled = std::env::var("RWA_NO_AUTO_GAS")
         .is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0");
     if disabled {
-        return Ok(None);
+        return Ok((None, None));
     }
-    let refuel = usecases::gm::ensure_gas(w, rpc_url, json, reserved_usdc_raw, |sol| {
+    let (refuel, snapshot) = usecases::gm::ensure_gas(w, rpc_url, json, reserved_usdc_raw, |sol| {
         yes || json
             || confirm(&format!(
                 "SOL is low ({sol:.6}) — buy 5 USDC of SOL for fees first?"
             ))
     })
     .await?;
-    Ok(refuel.map(|r| {
+    let refuel_json = refuel.map(|r| {
         let tx = solscan_tx_url(&r.signature);
         eprintln!("Gas refuel: {} USDC -> {} SOL  tx: {tx}", r.usdc_spent, r.sol_received);
         GasRefuelJson {
@@ -48,7 +48,8 @@ pub(super) async fn auto_gas(
             sol: r.sol_received,
             tx,
         }
-    }))
+    });
+    Ok((refuel_json, snapshot))
 }
 
 /// Orchestrate multi-item swaps for close-all and both baskets — the single

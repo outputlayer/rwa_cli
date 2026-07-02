@@ -222,12 +222,15 @@ pub(crate) fn check_sol_for_route(gasless: Option<bool>, sol_lamports: u64) -> R
 /// Buy preflight: minimum + USDC affordability. Returns the wallet's SOL
 /// balance in lamports so the caller can run the route-aware SOL gate after
 /// quoting (`check_sol_for_route`). Returns 0 without touching the RPC when
-/// `check_funds` is false (`--quote-only`).
+/// `check_funds` is false (`--quote-only`). When the auto-gas gate already
+/// sampled the balances this command (`snapshot`), they are reused instead of
+/// refetched — one wallet-state sample per command.
 pub(crate) async fn preflight_buy_raw(
     pubkey: &str,
     raw_usdc_amount: &str,
     rpc_url: Option<&str>,
     check_funds: bool,
+    snapshot: Option<super::gm_gas::BalanceSnapshot>,
 ) -> Result<u64> {
     let requested: u128 = raw_usdc_amount
         .parse()
@@ -242,6 +245,11 @@ pub(crate) async fn preflight_buy_raw(
     }
     if !check_funds {
         return Ok(0);
+    }
+    if let Some(snap) = snapshot {
+        check_buy_funds(&snap.usdc_raw.to_string(), requested)
+            .wrap_err_with(|| format!("Fund wallet: {pubkey}"))?;
+        return Ok(snap.sol_lamports);
     }
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),

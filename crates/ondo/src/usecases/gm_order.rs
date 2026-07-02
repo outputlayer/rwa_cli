@@ -128,8 +128,24 @@ pub async fn preflight_basket_buy(
     items: &[(String, u128)],
     total_usdc_raw: u128,
     rpc_url: Option<&str>,
+    snapshot: Option<super::gm_gas::BalanceSnapshot>,
 ) -> Result<u64> {
     check_basket_buy_minimums(items)?;
+    if let Some(snap) = snapshot {
+        // Reuse the auto-gas gate's sample — one wallet-state read per command.
+        if snap.usdc_raw < total_usdc_raw {
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::InsufficientFunds,
+                format!(
+                    "Insufficient USDC: {:.2} available, need {:.2} total\n  Fund wallet: {pubkey}",
+                    snap.usdc_raw as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+                    total_usdc_raw as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32),
+                ),
+            )
+            .into());
+        }
+        return Ok(snap.sol_lamports);
+    }
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),
         solana::get_sol_balance_raw(pubkey, rpc_url),

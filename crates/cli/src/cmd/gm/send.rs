@@ -18,8 +18,8 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool,
     // Auto-refuel SOL from USDC before a real transfer (transfers always pay
     // their own fees). Deliberately NOT for `send SOL`: buying more SOL right
     // before the user drains SOL would fight their intent.
-    let gas_refuel = if dry_run || token_upper == "SOL" {
-        None
+    let (gas_refuel, _balances) = if dry_run || token_upper == "SOL" {
+        (None, None)
     } else {
         let reserved = if token_upper == "USDC" {
             amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
