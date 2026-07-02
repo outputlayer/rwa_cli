@@ -9,6 +9,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] — 2026-07-02 — 24/7 off-hours trading, 5 USDC minimum, safety hardening
+
+### Breaking
+
+- **Minimum buy amount raised from 1 to 5 USDC** (single `buy` and per item in `buy-basket`). Jupiter RFQ market makers routinely decline sub-5-USDC orders outside Regular hours, so 1–4 USDC buys mostly burned a ~14 s quote round-trip ending in `route_unfillable`; the local floor now fails fast with `amount_below_minimum`.
+- **`gm reclaim` exits non-zero when every close batch failed.** Previously it printed `status:"error"` in JSON but exited 0, breaking the documented exit-code contract. It now flows through the standard error envelope (exit 1 with `error_kind`).
+- **`rwa update --json` errors use the standard envelope** (`status`/`error`/`error_kind`) instead of a private shape, and transient failures (`network`, `rate_limited`) exit **75** instead of always 1 — same retry semantics as the trade paths.
+
+### Added
+
+- **24/7 off-hours trading.** Ondo's session-limits API gained an `offhours` session (weekends/NYSE holidays) where select flagship tokens (TSLAon, NVDAon, SPYon, QQQon, GOOGLon, …) trade around the clock. The CLI previously hard-blocked *all* trading whenever the ET calendar said Closed. Now gating is per-token: an offhours-enabled token trades on weekends; anything else gets a typed `market_closed` explaining that only flagships trade 24/7 and when regular trading resumes. `hours --tradable` and `close-all` skip-filtering work off-hours too. If the limits endpoint is unreachable *during* off-hours the check fails closed (eligibility can't be verified); in regular sessions it keeps failing open, now with a stderr warning.
+- **Faster rent reclaim.** `reclaim` batches confirm at `processed` commitment (the `err` field is already authoritative there; stakes are rent dust), cutting the per-batch wait by the processed→confirmed gap (typically 2–6 s). `send` and swaps still confirm at `confirmed`.
+- **`route_unfillable` on quote-time exhaustion.** When every quote backend (RFQ MMs and the Metis AMM tail) declines an order, the error now carries the stable `route_unfillable` kind instead of a bare message.
+
+### Fixed
+
+- **Money safety (sign-time guard):** an order whose quoted `outAmount` fails to parse is now *refused* — previously it silently became a 0 floor, disabling the under-delivery check. A missing `confirmationStatus` in an RPC response is no longer assumed confirmed (the timeout decides). The raw `sign_transaction` primitive is crate-private, so external swap signing must pass the intent-verifying guard.
+- **Key files are created with `0o600` from the first byte** (`OpenOptions::mode`), closing the window where a freshly written plaintext key was readable under the process umask.
+- **`sell` reports `insufficient_funds`** as a typed error kind (parity with `buy`); `sell-basket` gains the over-balance check it lacked. One shared resolver now handles `all`/`N%`/exact for both paths.
+- **MM quote rejections fall through backends fast.** "Quote not available from market maker" was retried against the same backend with backoff (~14 s) and then hard-failed without trying Ultra or Metis. It now tries each backend once (~2.7 s total) and can fill via the AMM tail. A base URL pinned to `/swap/v1` also now dispatches through the correct Metis `/quote`+`/swap` flow instead of the managed `/order` endpoint.
+- **Robustness:** Ondo API cache writes are atomic (tmp + rename — no more truncated cache from concurrent runs); a 5xx-exhausted RPC endpoint correctly falls through to the next URL on the batch path; the NYSE holiday calendar can no longer panic the CLI on date math; `keys encrypt`/`decrypt` registry repointing matches symlink/`..` path forms instead of leaving entries dangling.
+
+### Changed
+
+- **Internal decoupling (no behavior change):** SPL primitives moved to a shared leaf module (breaking the `wallet`↔`solana` dependency cycle); the portfolio Jupiter-holdings fallback moved from the solana layer to usecases; portfolio P&L, close-all filtering, and SOL fee-reservation math moved out of the CLI layer into unit-tested usecases; ~500 lines of duplicated retry/error/cache plumbing collapsed into shared helpers.
+- **Test suite: 372 → 396**, with independent oracles: our own transaction construction is pinned against the on-chain ABI (System Transfer, TransferChecked, ATA Create, CloseAccount), SLIP-10 mnemonic derivation is pinned to an independently derived reference vector, the sign-time simulation gate and the full send pipeline run end-to-end over mock RPC, and every trading/transfer command now has a spawned-binary `--json` contract test.
+
+---
+
 ## [0.2.28] — 2026-06-26 — Import a key directly with `keys add`
 
 ### Added
