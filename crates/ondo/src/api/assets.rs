@@ -22,12 +22,33 @@ pub struct OndoAsset {
 }
 
 impl OndoAsset {
-    /// Extract sector from tags (e.g. "Technology", "Healthcare").
-    pub fn sector(&self) -> Option<&str> {
+    fn tag(&self, slug: &str) -> Option<&str> {
         self.tags
             .iter()
-            .find(|t| t.category_slug == "sector-industry")
+            .find(|t| t.category_slug == slug)
             .map(|t| t.tag_label.as_str())
+    }
+
+    /// Extract sector from tags (e.g. "Technology", "Healthcare").
+    pub fn sector(&self) -> Option<&str> {
+        self.tag("sector-industry")
+    }
+
+    /// Asset class ("Equities", "Fixed Income", "Commodities", "Crypto-Native
+    /// Assets", …) — the primary classification for ETFs without a sector.
+    pub fn asset_class(&self) -> Option<&str> {
+        self.tag("asset-class")
+    }
+
+    /// Region / market exposure ("US", "Asia", "Europe", "Global", …).
+    pub fn region(&self) -> Option<&str> {
+        self.tag("region-market-exposure")
+    }
+
+    /// Every tag label across all categories (sector, asset class, region,
+    /// factor/risk profile) — the haystack for tag-based filtering.
+    pub fn tag_labels(&self) -> impl Iterator<Item = &str> {
+        self.tags.iter().map(|t| t.tag_label.as_str())
     }
 
     /// Extract instrument type from tags ("Stock" or "ETF").

@@ -81,9 +81,10 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
 }
 
 pub async fn list(json: bool) -> Result<()> {
-    search(json, &[], false, &[], None, &[]).await
+    search(json, &[], false, &[], None, &[], &[]).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn search(
     json: bool,
     search_terms: &[String],
@@ -91,12 +92,13 @@ pub async fn search(
     sectors: &[String],
     kind: Option<&str>,
     name_keywords: &[String],
+    tags: &[String],
 ) -> Result<()> {
     let context = fetch_list_context().await?;
     let filtered: Vec<ListItemJson> = context
         .items
         .into_iter()
-        .filter(|item| matches_filters(item, search_terms, tradable_only, sectors, kind, name_keywords))
+        .filter(|item| matches_filters(item, search_terms, tradable_only, sectors, kind, name_keywords, tags))
         .collect();
 
     if json {
@@ -105,12 +107,20 @@ pub async fn search(
 
     println!("{} GM tokens{}\n", filtered.len(), describe_filters(search_terms, tradable_only, sectors, kind, name_keywords));
     for item in &filtered {
-        let sector = item.sector.as_deref().unwrap_or("");
+        // Stocks show their sector; ETFs (usually sector-less) show
+        // asset class · region so nothing lists unclassified.
+        let classification = match (&item.sector, &item.asset_class, &item.region) {
+            (Some(s), _, _) => s.clone(),
+            (None, Some(c), Some(r)) => format!("{c} · {r}"),
+            (None, Some(c), None) => c.clone(),
+            (None, None, Some(r)) => r.clone(),
+            (None, None, None) => String::new(),
+        };
         let mark = if item.tradable { "✓" } else { "✗" };
-        if sector.is_empty() {
+        if classification.is_empty() {
             println!("  {} {:<12} {}", mark, item.symbol, item.name);
         } else {
-            println!("  {} {:<12} {:<30} {}", mark, item.symbol, item.name, sector);
+            println!("  {} {:<12} {:<30} {}", mark, item.symbol, item.name, classification);
         }
     }
     Ok(())
@@ -230,13 +240,21 @@ async fn fetch_list_context() -> Result<ListContext> {
                 .unwrap_or_else(|| token_type_from_name(&name))
                 .to_lowercase();
             let sector = asset.and_then(|a| a.sector()).map(String::from);
+            let asset_class = asset.and_then(|a| a.asset_class()).map(String::from);
+            let region = asset.and_then(|a| a.region()).map(String::from);
+            let all_tags = asset
+                .map(|a| a.tag_labels().collect::<Vec<_>>().join(" ").to_lowercase())
+                .unwrap_or_default();
             let tradable = tradable_set.contains(&t.symbol.to_uppercase());
             ListItemJson {
                 symbol: t.symbol.to_string(),
                 name,
                 kind,
                 sector,
+                asset_class,
+                region,
                 tradable,
+                all_tags,
             }
         })
         .collect();
@@ -244,6 +262,7 @@ async fn fetch_list_context() -> Result<ListContext> {
     Ok(ListContext { session, items })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn matches_filters(
     item: &ListItemJson,
     search_terms: &[String],
@@ -251,6 +270,7 @@ fn matches_filters(
     sectors: &[String],
     kind: Option<&str>,
     name_keywords: &[String],
+    tags: &[String],
 ) -> bool {
     if tradable_only && !item.tradable {
         return false;
@@ -259,12 +279,23 @@ fn matches_filters(
     if !search_terms.is_empty() {
         let symbol = item.symbol.to_lowercase();
         let name = item.name.to_lowercase();
-        let sector = item.sector.as_deref().unwrap_or("").to_lowercase();
         let matches_search = search_terms.iter().any(|term| {
             let term = term.to_lowercase();
-            symbol.contains(&term) || name.contains(&term) || sector.contains(&term)
+            symbol.contains(&term) || name.contains(&term) || item.all_tags.contains(&term)
         });
         if !matches_search {
+            return false;
+        }
+    }
+
+    // `--tag` matches any Ondo tag label across all categories (sector,
+    // asset class, region, factor/risk), substring, case-insensitive —
+    // e.g. `--tag dividend`, `--tag asia`, `--tag "fixed income"`.
+    if !tags.is_empty() {
+        let matches_tag = tags
+            .iter()
+            .any(|t| item.all_tags.contains(&t.to_lowercase()));
+        if !matches_tag {
             return false;
         }
     }
@@ -338,7 +369,10 @@ mod tests {
             name: "Lockheed Martin".to_string(),
             kind: "stock".to_string(),
             sector: Some("Industrials".to_string()),
+            asset_class: Some("Equities".to_string()),
+            region: Some("US".to_string()),
             tradable: true,
+            all_tags: "industrials equities us large cap value".to_string(),
         }
     }
 
@@ -352,6 +386,7 @@ mod tests {
             &["Industrials".to_string()],
             Some("stock"),
             &["lockheed".to_string(), "raytheon".to_string()],
+            &[],
         ));
     }
 
@@ -364,6 +399,7 @@ mod tests {
             false,
             &["Energy".to_string()],
             None,
+            &[],
             &[],
         ));
     }
@@ -378,6 +414,21 @@ mod tests {
             &[],
             None,
             &[],
+            &[],
         ));
+    }
+
+    #[test]
+    fn tag_filter_matches_any_ondo_tag_category() {
+        let item = sample_item();
+        // Factor/risk, asset-class, and region labels all match --tag,
+        // substring and case-insensitive.
+        assert!(matches_filters(&item, &[], false, &[], None, &[], &["Large Cap".to_string()]));
+        assert!(matches_filters(&item, &[], false, &[], None, &[], &["equities".to_string()]));
+        assert!(matches_filters(&item, &[], false, &[], None, &[], &["value".to_string()]));
+        assert!(!matches_filters(&item, &[], false, &[], None, &[], &["asia".to_string()]));
+        // --search also reaches all tags now (e.g. searching by factor).
+        assert!(matches_filters(&item, &["dividend".to_string()], false, &[], None, &[], &[]) == false);
+        assert!(matches_filters(&item, &["large cap".to_string()], false, &[], None, &[], &[]));
     }
 }

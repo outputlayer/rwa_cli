@@ -117,6 +117,10 @@ pub enum GmAction {
         /// Filter by company-name keyword (repeatable)
         #[arg(long = "name-keyword")]
         name_keywords: Vec<String>,
+        /// Filter by any Ondo tag: asset class, region, factor/risk
+        /// (e.g. --tag asia, --tag dividend, --tag "fixed income"; repeatable)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 
     /// Check tradable status for one or more symbols, or list all tradable tokens
@@ -263,6 +267,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             sectors,
             kind,
             name_keywords,
+            tags,
         } => list::search(
             json,
             &search,
@@ -270,6 +275,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             &sectors,
             kind.as_deref(),
             &name_keywords,
+            &tags,
         )
         .await,
         GmAction::Tradable { symbols } => list::tradable(json, &symbols).await,

@@ -148,7 +148,16 @@ pub struct ListItemJson {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sector: Option<String>,
+    /// Classification for tokens without a sector (mostly ETFs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
     pub tradable: bool,
+    /// Lowercased haystack of every Ondo tag label (sector, asset class,
+    /// region, factor/risk) — used by `--tag`/`--search`, not serialized.
+    #[serde(skip)]
+    pub all_tags: String,
 }
 
 #[derive(Serialize)]

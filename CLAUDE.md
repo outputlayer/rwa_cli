@@ -66,6 +66,7 @@ rwa gm hours --tradable
 rwa gm list
 rwa gm search --search <keyword>
 rwa gm search --tradable-only --sector <SECTOR>
+rwa gm search --tag <LABEL>               # any Ondo tag: asset class, region, factor (asia, dividend, "fixed income", ...)
 rwa gm tradable [SYM ...]
 
 rwa gm buy <SYM> <AMT> --dry-run
@@ -168,6 +169,7 @@ rwa update -y
 - Exit codes: 75 (EX_TEMPFAIL) for transient failures worth retrying (`rpc_unavailable`, `execute_unavailable`, `confirmation_timeout`, lock contention); 1 for everything else
 - Use `gm tradable <SYM...>` to check one or many symbols
 - Use `gm search --tradable-only ...` for bulk scans without Python
+- `list`/`search` JSON items carry optional `asset_class` and `region` (Ondo tags) alongside `sector`; sector-less ETFs display `asset class · region`. `--tag <label>` filters across ALL Ondo tag categories (sector, asset class, region, factor/risk — 24 factor labels like Large Cap/Dividend/High Yield); `--search` matches them too
 - Use `hours --tradable` only when the user wants the full currently tradable set
 - Use `buy-basket` / `sell-basket` for multi-token trades; parallel is the default (use `--sequential` only if rate-limited)
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
