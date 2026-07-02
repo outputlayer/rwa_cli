@@ -7,10 +7,19 @@
 use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
 
-/// Map a non-success `/execute` HTTP status to a failure kind. 429 and 5xx are
-/// transient (retryable via a fresh order); everything else is a hard error.
+/// Map a non-success `/execute` HTTP status to a failure kind.
+///
+/// Only statuses that PROVE Jupiter did not execute the swap are retryable
+/// (fresh-order retry): 429 (rejected before processing) and 503 (service
+/// refused). Gateway statuses — 502 Bad Gateway, 504 Gateway Timeout — mean a
+/// proxy gave up while Jupiter may have already received and EXECUTED the
+/// request; retrying with a fresh order could double-submit the trade, so
+/// they are hard errors, same as the ambiguous-timeout rule above. 500 is
+/// treated the same: "internal error" says nothing about whether execution
+/// happened.
 fn execute_http_error_kind(status: reqwest::StatusCode) -> ExecuteFailureKind {
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+    use reqwest::StatusCode;
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
         ExecuteFailureKind::Unavailable
     } else {
         ExecuteFailureKind::Unknown
@@ -243,9 +252,14 @@ mod tests {
     #[test]
     fn execute_http_error_kind_maps_transient_vs_hard() {
         use reqwest::StatusCode;
+        // Provably-not-executed → retryable with a fresh order.
         assert_eq!(execute_http_error_kind(StatusCode::TOO_MANY_REQUESTS), ExecuteFailureKind::Unavailable);
-        assert_eq!(execute_http_error_kind(StatusCode::INTERNAL_SERVER_ERROR), ExecuteFailureKind::Unavailable);
-        assert_eq!(execute_http_error_kind(StatusCode::BAD_GATEWAY), ExecuteFailureKind::Unavailable);
+        assert_eq!(execute_http_error_kind(StatusCode::SERVICE_UNAVAILABLE), ExecuteFailureKind::Unavailable);
+        // Ambiguous — Jupiter may have executed before the gateway gave up:
+        // retrying could double-submit the trade. Hard errors.
+        assert_eq!(execute_http_error_kind(StatusCode::BAD_GATEWAY), ExecuteFailureKind::Unknown);
+        assert_eq!(execute_http_error_kind(StatusCode::GATEWAY_TIMEOUT), ExecuteFailureKind::Unknown);
+        assert_eq!(execute_http_error_kind(StatusCode::INTERNAL_SERVER_ERROR), ExecuteFailureKind::Unknown);
         assert_eq!(execute_http_error_kind(StatusCode::BAD_REQUEST), ExecuteFailureKind::Unknown);
     }
 
