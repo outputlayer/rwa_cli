@@ -72,6 +72,10 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
 
     let result = solana::transfer_sol(w, to, raw, rpc_url).await?;
     let sig = &result.signature;
+    rwa_ondo::ledger::record(
+        &pubkey,
+        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", "SOL", &raw_str, None),
+    );
 
     if json {
         return json_out(&SendJson {
@@ -148,6 +152,10 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
 
     let result = solana::transfer_spl(w, to, solana::USDC_MINT, raw, 6, false, rpc_url).await?;
     let sig = &result.signature;
+    rwa_ondo::ledger::record(
+        &pubkey,
+        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", "USDC", &raw_str, None),
+    );
 
     if json {
         return json_out(&SendJson {
@@ -222,6 +230,10 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
 
     let result = solana::transfer_spl(w, to, &gm_mint, raw, 9, true, rpc_url).await?;
     let sig = &result.signature;
+    rwa_ondo::ledger::record(
+        &pubkey,
+        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", &sym, &raw_str, None),
+    );
 
     if json {
         return json_out(&SendJson {

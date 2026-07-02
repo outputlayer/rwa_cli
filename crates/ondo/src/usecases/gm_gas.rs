@@ -192,6 +192,16 @@ async fn refuel(
     };
     let result = execute_with_retry(w, &order, json, &params).await?;
     let exec = finalize_execution(&order, &result, jupiter::GM_SOL_DECIMALS);
+    crate::ledger::record(
+        taker,
+        &crate::ledger::LedgerEvent::now(
+            Some(exec.signature.clone()),
+            "gas_refuel",
+            "SOL",
+            &exec.output_amount_raw,
+            Some(refuel_raw.clone()),
+        ),
+    );
     Ok(Some(GasRefuel {
         usdc_spent: amounts::format_amount(&refuel_raw, jupiter::USDC_DECIMALS),
         sol_received: exec.output_amount,

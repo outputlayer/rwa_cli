@@ -38,13 +38,13 @@ pub(crate) struct SwapParams<'a> {
 
 /// Context shared across an entire swap attempt — used to build the audit
 /// record once on either outcome.
-struct SwapAuditCtx {
-    op: &'static str,
-    symbol: String,
-    raw_amount: String,
-    taker: String,
-    slippage_bps: Option<u32>,
-    backend: String,
+pub(crate) struct SwapAuditCtx {
+    pub(crate) op: &'static str,
+    pub(crate) symbol: String,
+    pub(crate) raw_amount: String,
+    pub(crate) taker: String,
+    pub(crate) slippage_bps: Option<u32>,
+    pub(crate) backend: String,
 }
 
 /// Shape an execute response into a `SwapExecution`, formatting the credited
@@ -55,14 +55,15 @@ pub(crate) fn finalize_execution(
     output_decimals: u8,
 ) -> SwapExecution {
     let actual_slippage_pct = calc_actual_slippage(order, result);
-    let output_amount = result
+    let output_amount_raw = result
         .output_amount_result
-        .as_deref()
-        .map(|r| amounts::format_amount(r, output_decimals))
-        .unwrap_or_else(|| amounts::format_amount(&order.out_amount, output_decimals));
+        .clone()
+        .unwrap_or_else(|| order.out_amount.clone());
+    let output_amount = amounts::format_amount(&output_amount_raw, output_decimals);
     let signature = result.signature.clone().unwrap_or_else(|| "unknown".to_string());
     SwapExecution {
         output_amount,
+        output_amount_raw,
         signature,
         actual_slippage_pct,
     }
@@ -132,7 +133,7 @@ pub async fn execute_buy_from_order(
     outcome
 }
 
-fn record_swap_outcome(ctx: SwapAuditCtx, outcome: &Result<SwapExecution>) {
+pub(crate) fn record_swap_outcome(ctx: SwapAuditCtx, outcome: &Result<SwapExecution>) {
     let timestamp = chrono::Utc::now().to_rfc3339();
     let SwapAuditCtx { op, symbol, raw_amount, taker, slippage_bps, backend } = ctx;
     let record = match outcome {
@@ -166,6 +167,26 @@ fn record_swap_outcome(ctx: SwapAuditCtx, outcome: &Result<SwapExecution>) {
         },
     };
     audit::record_swap(&record);
+
+    // Successful swaps also land in the per-wallet trade ledger (cost basis /
+    // P&L). Buys move USDC -> token; sells move token -> USDC.
+    if let Ok(exec) = outcome {
+        let (qty_raw, usdc_raw) = if record.op == "buy" {
+            (exec.output_amount_raw.clone(), record.raw_amount.clone())
+        } else {
+            (record.raw_amount.clone(), exec.output_amount_raw.clone())
+        };
+        crate::ledger::record(
+            &record.taker,
+            &crate::ledger::LedgerEvent::now(
+                Some(exec.signature.clone()),
+                record.op,
+                &record.symbol,
+                &qty_raw,
+                Some(usdc_raw),
+            ),
+        );
+    }
 }
 
 pub(crate) async fn execute_with_retry(

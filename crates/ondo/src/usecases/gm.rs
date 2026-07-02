@@ -17,7 +17,7 @@ use super::gm_internal::{
     resolve_gm_mint, check_tradable, check_sol_for_route, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
 };
-use super::gm_execute::{execute_with_retry, finalize_execution, SwapParams};
+use super::gm_execute::{execute_with_retry, finalize_execution, record_swap_outcome, SwapAuditCtx, SwapParams};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmTradeErrorKind {
@@ -132,6 +132,8 @@ pub struct SwapPlan {
 
 pub struct SwapExecution {
     pub output_amount: String,
+    /// Raw on-chain output amount (smallest units) — feeds the trade ledger.
+    pub output_amount_raw: String,
     pub signature: String,
     /// Actual slippage computed from execute response vs order quote.
     /// `None` when the execute response omits amount fields.
@@ -315,9 +317,22 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
         taker: &plan.swap.taker,
         slippage_bps: plan.swap.slippage_bps,
     };
-    let result = execute_with_retry(wallet, &plan.order, json, &params).await
-        .wrap_err("swap execution failed")?;
-    let exec = finalize_execution(&plan.order, &result, plan.output_decimals);
+    // Single buy/sell: same audit + ledger trail as the basket paths.
+    let op = if plan.swap.output_mint.as_ref() == jupiter::USDC_MINT { "sell" } else { "buy" };
+    let ctx = SwapAuditCtx {
+        op,
+        symbol: plan.symbol.to_string(),
+        raw_amount: plan.swap.raw_amount.clone(),
+        taker: plan.swap.taker.clone(),
+        slippage_bps: plan.swap.slippage_bps,
+        backend: plan.order.backend.label().to_string(),
+    };
+    let outcome = execute_with_retry(wallet, &plan.order, json, &params)
+        .await
+        .wrap_err("swap execution failed")
+        .map(|result| finalize_execution(&plan.order, &result, plan.output_decimals));
+    record_swap_outcome(ctx, &outcome);
+    let exec = outcome?;
     if let Some(actual) = exec.actual_slippage_pct
         && let Some(quoted) = plan.slippage_pct
     {

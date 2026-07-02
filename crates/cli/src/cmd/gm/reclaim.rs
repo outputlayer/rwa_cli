@@ -59,6 +59,18 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
         solana::close_empty_accounts(&w, &empty, rpc_url).await?;
 
     let sol_reclaimed = reclaimed_lamports as f64 / 1_000_000_000.0;
+    if reclaimed_lamports > 0 {
+        rwa_ondo::ledger::record(
+            &pubkey,
+            &rwa_ondo::ledger::LedgerEvent::now(
+                signatures.first().cloned(),
+                "reclaim",
+                "SOL",
+                &reclaimed_lamports.to_string(),
+                None,
+            ),
+        );
+    }
 
     // Every batch failed — surface it as an error so the exit code and the
     // central JSON envelope (status/error/error_kind) reflect the failure.
