@@ -126,7 +126,13 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
     }
     let limits = match api::fetch_session_limits(api_url).await {
         Ok(l) => l,
-        Err(_) => return Ok(()),
+        Err(e) => {
+            // Fail open: an unreachable limits endpoint must not block trading,
+            // but say so on stderr — a silently skipped check would mask real
+            // outages (stderr never corrupts the JSON stdout contract).
+            eprintln!("Warning: session-limits check unavailable ({e}); assuming {symbol} is tradable.");
+            return Ok(());
+        }
     };
     let sym_upper = symbol.to_uppercase();
     let limit = limits
