@@ -127,22 +127,38 @@ async fn generate(allow_plaintext: bool) -> Result<()> {
             "Wallet already exists. Delete it first if you want to generate a new one."
         ));
     }
-    let w = Wallet::generate();
+    // Mnemonic-first: the wallet derives from a fresh BIP39 phrase at the
+    // standard Solana path, so it can always be restored in Phantom/Solflare.
+    let (w, phrase) = Wallet::generate_with_mnemonic(12)?;
     if allow_plaintext {
         eprintln!("WARNING: Saving wallet as plaintext key.json. Consider using encryption for better security.");
         let saved = w.save_default()?;
         println!("New wallet generated!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
+        print_recovery_phrase(&phrase, false);
         println!("\nFund this address with SOL and USDC to start trading.");
     } else {
         let passphrase = prompt_new_passphrase()?;
-        let saved = w.save_default_encrypted(&passphrase)?;
+        let saved = wallet::encrypted_key_path()?;
+        w.save_encrypted_with_mnemonic(&saved, &passphrase, Some(&phrase))?;
         println!("New wallet generated (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
+        print_recovery_phrase(&phrase, true);
     }
     Ok(())
+}
+
+/// Print the recovery phrase once, with storage-dependent guidance.
+fn print_recovery_phrase(phrase: &str, stored_encrypted: bool) {
+    println!("\nRecovery phrase (works in Phantom/Solflare):");
+    println!("  {phrase}");
+    if stored_encrypted {
+        println!("  Stored inside the encrypted wallet — view again with `rwa keys export`.");
+    } else {
+        println!("  WRITE IT DOWN NOW — plaintext wallets do not store it; this is the only time it is shown.");
+    }
 }
 
 async fn import(
@@ -159,6 +175,7 @@ async fn import(
         ));
     }
 
+    let mut imported_phrase: Option<String> = None;
     let w = match (file, private_key, seed_phrase) {
         (Some(f), None, None) => Wallet::from_file(std::path::Path::new(&f))?,
         (None, Some(pk), None) => Wallet::from_private_key(&pk)?,
@@ -173,7 +190,9 @@ async fn import(
             } else {
                 sp
             };
-            Wallet::from_mnemonic(&phrase)?
+            let w = Wallet::from_mnemonic(&phrase)?;
+            imported_phrase = Some(phrase);
+            w
         }
         _ => return Err(eyre::eyre!(
             "Provide exactly one: --file, --private-key, or --seed-phrase"
@@ -188,7 +207,10 @@ async fn import(
         println!("Key file: {}", saved.display());
     } else {
         let passphrase = prompt_new_passphrase()?;
-        let saved = w.save_default_encrypted(&passphrase)?;
+        let saved = wallet::encrypted_key_path()?;
+        // A seed-phrase import keeps the phrase inside the encrypted payload
+        // so `keys export` can reveal it later.
+        w.save_encrypted_with_mnemonic(&saved, &passphrase, imported_phrase.as_deref())?;
         println!("Wallet imported (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
@@ -332,7 +354,9 @@ async fn add(
         std::env::current_dir()?.join(expanded)
     };
 
-    // Derive a wallet from a secret source, if one was provided.
+    // Derive a wallet from a secret source, if one was provided. A seed-phrase
+    // source keeps the phrase so the encrypted payload can embed it.
+    let mut imported_phrase: Option<String> = None;
     let imported = match (seed_phrase, private_key) {
         (Some(sp), None) => {
             let phrase = if sp.is_empty() {
@@ -345,7 +369,9 @@ async fn add(
             } else {
                 sp
             };
-            Some(Wallet::from_mnemonic(&phrase)?)
+            let w = Wallet::from_mnemonic(&phrase)?;
+            imported_phrase = Some(phrase);
+            Some(w)
         }
         (None, Some(pk)) => Some(Wallet::from_private_key(&pk)?),
         (None, None) => None,
@@ -372,7 +398,7 @@ async fn add(
                 w.save(&abs)?;
             } else {
                 let passphrase = prompt_new_passphrase()?;
-                w.save_encrypted(&abs, &passphrase)?;
+                w.save_encrypted_with_mnemonic(&abs, &passphrase, imported_phrase.as_deref())?;
             }
         }
         // Register mode: an existing file must be present and valid.

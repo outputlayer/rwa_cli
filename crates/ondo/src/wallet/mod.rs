@@ -32,6 +32,21 @@ impl Wallet {
         Self { signing_key }
     }
 
+    /// Generate a fresh wallet from a new BIP39 mnemonic (12 or 24 words),
+    /// derived at the standard Solana path — the same wallet Phantom/Solflare
+    /// would restore from the phrase. Returns the wallet and the phrase.
+    pub fn generate_with_mnemonic(word_count: usize) -> Result<(Self, String)> {
+        use rand::RngCore;
+        let entropy_len = if word_count == 24 { 32 } else { 16 };
+        let mut entropy = Zeroizing::new(vec![0u8; entropy_len]);
+        rand::thread_rng().fill_bytes(&mut entropy);
+        let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+            .map_err(|e| eyre!("mnemonic generation failed: {e}"))?;
+        let phrase = mnemonic.to_string();
+        let wallet = Self::from_mnemonic(&phrase)?;
+        Ok((wallet, phrase))
+    }
+
     /// Load from a solana-keygen compatible JSON file (64-byte array).
     pub fn from_file(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)?;
@@ -51,13 +66,32 @@ impl Wallet {
 
     /// Save wallet encrypted with a passphrase (age format → `key.age`).
     pub fn save_encrypted(&self, path: &Path, passphrase: &str) -> Result<()> {
+        self.save_encrypted_with_mnemonic(path, passphrase, None)
+    }
+
+    /// Save encrypted, optionally embedding the recovery mnemonic inside the
+    /// encrypted payload (object `{"key": [...], "mnemonic": "..."}` instead
+    /// of the legacy bare array) so `keys export` can reveal it later. The
+    /// mnemonic is NEVER written outside the age container.
+    pub fn save_encrypted_with_mnemonic(
+        &self,
+        path: &Path,
+        passphrase: &str,
+        mnemonic: Option<&str>,
+    ) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut key_bytes = Zeroizing::new(Vec::with_capacity(64));
         key_bytes.extend_from_slice(self.signing_key.as_bytes());
         key_bytes.extend_from_slice(self.verifying_key().as_bytes());
-        let json = Zeroizing::new(serde_json::to_string(&*key_bytes)?);
+        let json = Zeroizing::new(match mnemonic {
+            Some(phrase) => serde_json::to_string(&serde_json::json!({
+                "key": &*key_bytes,
+                "mnemonic": phrase,
+            }))?,
+            None => serde_json::to_string(&*key_bytes)?,
+        });
 
         let encryptor = age::Encryptor::with_user_passphrase(Secret::new(passphrase.to_string()));
         let mut encrypted = vec![];
@@ -73,6 +107,16 @@ impl Wallet {
 
     /// Load wallet from an age-encrypted file.
     pub fn from_encrypted_file(path: &Path, passphrase: &str) -> Result<Self> {
+        Ok(Self::from_encrypted_file_full(path, passphrase)?.0)
+    }
+
+    /// Load an encrypted wallet plus its stored recovery mnemonic, when the
+    /// payload carries one. Accepts both the legacy bare-array payload and the
+    /// object form written by `save_encrypted_with_mnemonic`.
+    pub fn from_encrypted_file_full(
+        path: &Path,
+        passphrase: &str,
+    ) -> Result<(Self, Option<String>)> {
         let encrypted = std::fs::read(path)?;
         let decryptor = match age::Decryptor::new(&encrypted[..])
             .map_err(|e| eyre!("Failed to open encrypted wallet: {e}"))?
@@ -88,7 +132,20 @@ impl Wallet {
             .map_err(|e| eyre!("Failed to decrypt wallet: {e}"))?;
         let json = std::str::from_utf8(decrypted.as_slice())
             .map_err(|e| eyre!("Invalid wallet data after decryption: {e}"))?;
-        Self::from_json(json)
+        if json.trim_start().starts_with('{') {
+            #[derive(serde::Deserialize)]
+            struct Payload {
+                key: Vec<u8>,
+                #[serde(default)]
+                mnemonic: Option<String>,
+            }
+            let payload: Payload = serde_json::from_str(json)
+                .map_err(|e| eyre!("Invalid wallet payload after decryption: {e}"))?;
+            let key_json = Zeroizing::new(serde_json::to_string(&payload.key)?);
+            let wallet = Self::from_json(&key_json)?;
+            return Ok((wallet, payload.mnemonic));
+        }
+        Ok((Self::from_json(json)?, None))
     }
 
     /// Save encrypted to the default path `~/.config/rwa/key.age`.
@@ -415,6 +472,39 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn encrypted_mnemonic_roundtrip_and_legacy_compat() {
+        let dir = std::env::temp_dir().join(format!("rwa-mn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Object payload: mnemonic survives the roundtrip and restores the
+        // same wallet the phrase derives.
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        assert_eq!(phrase.split_whitespace().count(), 12);
+        let p = dir.join("k.age");
+        w.save_encrypted_with_mnemonic(&p, "TestPass2026!secure", Some(&phrase)).unwrap();
+        let (loaded, stored) = Wallet::from_encrypted_file_full(&p, "TestPass2026!secure").unwrap();
+        assert_eq!(loaded.pubkey(), w.pubkey());
+        assert_eq!(stored.as_deref(), Some(phrase.as_str()));
+        assert_eq!(Wallet::from_mnemonic(&phrase).unwrap().pubkey(), w.pubkey());
+
+        // Legacy bare-array payload still loads, with no mnemonic.
+        let p2 = dir.join("legacy.age");
+        w.save_encrypted(&p2, "TestPass2026!secure").unwrap();
+        let (loaded2, stored2) = Wallet::from_encrypted_file_full(&p2, "TestPass2026!secure").unwrap();
+        assert_eq!(loaded2.pubkey(), w.pubkey());
+        assert!(stored2.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generate_with_mnemonic_24_words() {
+        let (w, phrase) = Wallet::generate_with_mnemonic(24).unwrap();
+        assert_eq!(phrase.split_whitespace().count(), 24);
+        assert_eq!(Wallet::from_mnemonic(&phrase).unwrap().pubkey(), w.pubkey());
     }
 
     #[test]
