@@ -170,20 +170,21 @@ pub async fn verify_swap_simulation(
         watch.push(bs58::encode(owner).into_string());
     }
 
-    // Pre-balances (current on-chain state).
-    let pre: serde_json::Value = rpc_call_simple(
+    // Pre-balances and the simulation are independent RPC calls — run them
+    // concurrently. Besides removing one round-trip from every swap's
+    // critical path, this narrows the pre/post sampling window, tightening
+    // the delta comparison against concurrent balance changes (e.g. parallel
+    // basket items sharing the USDC ATA). Both stay fail-closed.
+    let pre_fut = rpc_call_simple::<serde_json::Value>(
         "getMultipleAccounts",
         serde_json::json!([watch, { "encoding": "base64", "commitment": "confirmed" }]),
         rpc_url,
         RpcMode::Race,
-    )
-    .await
-    .map_err(|e| SwapSimError::RpcUnavailable(format!("reading pre-swap balances: {e}")))?;
-
+    );
     // Simulate the exact Jupiter transaction. sigVerify=false because the
     // market-maker fee-payer signature is absent pre-submit; we only want the
     // balance effect. replaceRecentBlockhash sidesteps blockhash staleness.
-    let sim: serde_json::Value = rpc_call_simple(
+    let sim_fut = rpc_call_simple::<serde_json::Value>(
         "simulateTransaction",
         serde_json::json!([
             tx_base64,
@@ -197,9 +198,12 @@ pub async fn verify_swap_simulation(
         ]),
         rpc_url,
         RpcMode::Race,
-    )
-    .await
-    .map_err(|e| SwapSimError::RpcUnavailable(format!("simulateTransaction call: {e}")))?;
+    );
+    let (pre_res, sim_res) = tokio::join!(pre_fut, sim_fut);
+    let pre = pre_res
+        .map_err(|e| SwapSimError::RpcUnavailable(format!("reading pre-swap balances: {e}")))?;
+    let sim = sim_res
+        .map_err(|e| SwapSimError::RpcUnavailable(format!("simulateTransaction call: {e}")))?;
 
     let value = sim.get("value").unwrap_or(&serde_json::Value::Null);
     if let Some(err) = value.get("err")

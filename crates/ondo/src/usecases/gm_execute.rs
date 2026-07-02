@@ -189,6 +189,30 @@ pub(crate) fn record_swap_outcome(ctx: SwapAuditCtx, outcome: &Result<SwapExecut
     }
 }
 
+/// Post-execution detection: the pre-sign simulation enforced the
+/// under-delivery floor against a snapshot, but a concurrent balance change
+/// (e.g. parallel basket items sharing the USDC ATA) can skew the simulated
+/// delta. The trade is already executed here — nothing to refuse — so an
+/// actual fill below `quote − slippage` is surfaced loudly instead of
+/// passing silently.
+fn warn_if_fill_below_floor(order: &jupiter::OrderResponse, resp: &jupiter::ExecuteResponse) {
+    let (Ok(quoted), Some(actual)) = (
+        order.out_amount.parse::<u64>(),
+        resp.output_amount_result
+            .as_deref()
+            .and_then(|r| r.parse::<u64>().ok()),
+    ) else {
+        return;
+    };
+    let floor = solana::min_output_floor(quoted, order.slippage_bps);
+    if floor > 0 && actual < floor {
+        eprintln!(
+            "WARNING: fill below quoted floor — received {actual} raw units, quote {quoted} with tolerance floor {floor}. \
+             Check the transaction on Solscan; if this repeats, exclude the router via RWA_EXCLUDE_ROUTERS."
+        );
+    }
+}
+
 pub(crate) async fn execute_with_retry(
     wallet: &wallet::Wallet,
     order: &jupiter::OrderResponse,
@@ -218,7 +242,10 @@ pub(crate) async fn execute_with_retry(
         let ord = current_order_owned.as_ref().unwrap_or(order);
         let execute_result = jupiter::execute_order(wallet, ord, &expected).await;
         match execute_result {
-            Ok(resp) => return Ok(resp),
+            Ok(resp) => {
+                warn_if_fill_below_floor(ord, &resp);
+                return Ok(resp);
+            }
             Err(e) => {
                 let kind = e
                     .downcast_ref::<jupiter::ExecuteFailure>()
