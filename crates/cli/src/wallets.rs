@@ -139,12 +139,15 @@ impl WalletRegistry {
 
     /// If any entry points at `old`, repoint it to `new`. Returns true if changed.
     /// Keeps the registry consistent when `keys encrypt`/`decrypt` renames the
-    /// legacy key file.
+    /// legacy key file. Paths are compared with the parent directory
+    /// canonicalized, so an entry registered via a symlink or `..` form still
+    /// matches instead of silently dangling.
     pub fn repoint_path(&mut self, old: &Path, new: &Path) -> bool {
+        let old_cmp = comparable_path(old);
         let new_s = new.to_string_lossy().to_string();
         let mut changed = false;
         for w in &mut self.wallets {
-            if Path::new(&w.path) == old {
+            if comparable_path(Path::new(&w.path)) == old_cmp {
                 w.path = new_s.clone();
                 changed = true;
             }
@@ -285,6 +288,20 @@ fn prompt_passphrase() -> Result<String> {
     }
     rpassword::prompt_password("Wallet passphrase: ")
         .map_err(|e| eyre!("Failed to read passphrase: {e}"))
+}
+
+/// Normalize a path for identity comparison: canonicalize the parent directory
+/// (which usually still exists even when the file itself was just renamed) and
+/// reattach the file name. Falls back to the path as-is when the parent can't
+/// resolve.
+fn comparable_path(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => dir
+            .canonicalize()
+            .map(|d| d.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Emit a one-time stderr warning when RWA_PASSPHRASE is read from the
@@ -536,6 +553,25 @@ mod tests {
         );
         assert!(changed);
         assert_eq!(reg.find("default").unwrap().path, "/cfg/rwa/key.age");
+    }
+
+    #[test]
+    fn repoint_path_matches_across_dot_segments() {
+        // Entry registered through a `..`-containing form of the same real
+        // directory must still be repointed.
+        let cfg = tmp_config();
+        let via_dots = cfg.join("sub").join("..").join("key.json");
+        std::fs::create_dir_all(cfg.join("sub")).unwrap();
+
+        let mut reg = WalletRegistry::default();
+        reg.add("default", via_dots.to_string_lossy().as_ref()).unwrap();
+        let changed = reg.repoint_path(&cfg.join("key.json"), &cfg.join("key.age"));
+        assert!(changed, "dot-segment form of the same path must match");
+        assert_eq!(
+            reg.find("default").unwrap().path,
+            cfg.join("key.age").to_string_lossy()
+        );
+        let _ = std::fs::remove_dir_all(&cfg);
     }
 
     #[test]
