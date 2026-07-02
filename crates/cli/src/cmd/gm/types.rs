@@ -62,8 +62,12 @@ pub struct TradeJson {
     pub price_impact_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_bps: Option<u32>,
+    /// Absent when Jupiter's quote didn't report it (typical for AMM routes
+    /// via swap/v2) — absence means "unreported", not "false".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gasless: Option<bool>,
+    /// Winning router/market-maker label; absent when Jupiter didn't report
+    /// one. The Metis fallback path always fills both fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<String>,
 }
