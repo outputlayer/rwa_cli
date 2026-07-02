@@ -606,3 +606,94 @@ fn keys_add_import_refuses_to_overwrite_existing_file() {
     // The original file is untouched.
     assert_eq!(std::fs::read(&p).unwrap(), b"do not clobber");
 }
+
+// ── hours / history ──────────────────────────────────────────────────────────
+
+/// Session-limits fixture where both tokens are tradable in EVERY session
+/// (including weekend `offhours`), so assertions hold at any wall-clock time.
+fn always_tradable_limits() -> serde_json::Value {
+    let all = serde_json::json!({
+        "tradable": true, "maxAttestationCount": "500", "maxActiveNotionalValue": "200000"
+    });
+    serde_json::json!({
+        "limits": [
+            { "symbol": "AALon",  "premarket": all, "regular": all, "postmarket": all,
+              "overnight": all, "offhours": all },
+            { "symbol": "TSLAon", "premarket": all, "regular": all, "postmarket": all,
+              "overnight": all, "offhours": all }
+        ]
+    })
+}
+
+/// `gm hours --tradable --json` emits the stable HoursJson shape; with an
+/// all-sessions-tradable fixture the tradable set is wall-clock independent —
+/// including weekends, where the offhours session now applies.
+#[test]
+fn hours_json_emits_shape_and_tradable_set() {
+    let home = test_home("hours-shape");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "hours", "--tradable"])
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert!(matches!(v["status"].as_str(), Some("open" | "closed")));
+    assert!(v["session"].is_string() && v["session_hours"].is_string());
+    assert!(v["now"].as_str().unwrap().contains("ET"));
+    assert!(v["countdown"].is_string());
+    assert_eq!(v["tradable_count"], 2);
+    let tradable: Vec<&str> = v["tradable"].as_array().unwrap()
+        .iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(tradable, vec!["AALon", "TSLAon"]);
+}
+
+/// `gm history --json` emits the HistoryJson shape with hand-derived
+/// aggregates from the mocked candles.
+#[test]
+fn history_json_emits_shape_with_derived_aggregates() {
+    let home = test_home("history-shape");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/tslaon/history")
+            .query_param("range", "1month");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "primaryMarketPrice": [
+                    { "timestamp": 1000, "value": 100.0, "open": 100.0, "high": 111.0, "low": 99.0, "close": 105.0 },
+                    { "timestamp": 2000, "value": 110.0, "open": 105.0, "high": 105.0, "low": 95.0,  "close": 110.0 }
+                ]
+            }));
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "history", "TSLA"])
+        .env("RWA_ONDO_API_URL", server.base_url())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["symbol"], "TSLAon");
+    assert_eq!(v["range"], "1M");
+    assert_eq!(v["candles"], 2);
+    assert_eq!(v["first"]["timestamp"], 1000);
+    assert_eq!(v["first"]["price"], 100.0, "first.price is the opening price");
+    assert_eq!(v["last"]["timestamp"], 2000);
+    assert_eq!(v["last"]["price"], 110.0, "last.price is the closing price");
+    assert_eq!(v["high"], 111.0);
+    assert_eq!(v["low"], 95.0);
+    // (110 - 100) / 100 × 100 = +10%
+    assert_eq!(v["change_pct"], 10.0);
+}

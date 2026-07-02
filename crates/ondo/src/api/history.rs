@@ -43,7 +43,13 @@ pub async fn fetch_history(symbol: &str, range: &str) -> Result<Vec<HistoryCandl
         format!("{normalized}on")
     };
 
-    let url = format!("{ONDO_API_URL}/{sym}/history?range={range_param}");
+    // `RWA_ONDO_API_URL` overrides the base (test seam — not user-facing),
+    // mirroring the assets endpoint.
+    let base = std::env::var("RWA_ONDO_API_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| ONDO_API_URL.to_string());
+    let url = format!("{base}/{sym}/history?range={range_param}");
     super::retry_with_backoff(3, || fetch_history_attempt(&url)).await
 }
 
