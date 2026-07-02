@@ -102,6 +102,7 @@ rwa keys show
 rwa keys add <NAME> --path <PATH>                       # register an existing key file by name
 rwa keys add <NAME> --seed-phrase "..." --path <PATH>   # import a seed phrase to <PATH> (encrypted by default) and register
 rwa keys add <NAME> --private-key <KEY> --path <PATH>   # import a base58/hex/base64 key to <PATH> and register
+rwa keys export --reveal            # print private key (base58 + JSON) and stored recovery phrase
 rwa keys list                       # list named wallets (* = active)
 rwa keys use <NAME>                 # set the active wallet
 rwa keys remove <NAME>              # unregister (key file is NOT deleted)
@@ -141,6 +142,8 @@ rwa update -y
 
 ## Wallet behavior
 
+- `keys generate` is mnemonic-first: the wallet derives from a fresh 12-word BIP39 phrase at `m/44'/501'/0'/0'` (Phantom/Solflare-compatible); the phrase is printed once. Encrypted wallets embed the phrase inside the age payload (`{key, mnemonic}` object; legacy bare arrays still load); plaintext `key.json` never stores it
+- `keys export` prints the base58 keypair (Phantom import format), the solana-keygen JSON array, and the stored recovery phrase; gated behind an interactive confirmation or `--reveal` (mandatory with `--json`)
 - Plaintext wallet: `~/.config/rwa/key.json`
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`

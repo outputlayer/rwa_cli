@@ -50,6 +50,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
 - `rwa --json gm close-all --dry-run` — preview liquidation
 - `rwa --json gm close-all -y` — sell all positions (parallel by default)
+- `rwa --json keys export --reveal` — private key + recovery phrase JSON (SECRET; --reveal is mandatory)
 - `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
 - `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
