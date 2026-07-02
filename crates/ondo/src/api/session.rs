@@ -137,7 +137,11 @@ fn eastern_datetime(
 ) -> chrono::DateTime<chrono_tz::Tz> {
     use chrono::TimeZone;
 
-    let naive = date.and_hms_opt(hour, minute, 0).expect("valid eastern time");
+    // Session hours come from constant tables, so this is always Some; the
+    // midnight fallback just guarantees the calendar can never panic the CLI.
+    let naive = date
+        .and_hms_opt(hour, minute, 0)
+        .unwrap_or_else(|| date.and_time(chrono::NaiveTime::MIN));
     match tz.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt,
         chrono::LocalResult::Ambiguous(early, _) => early,
@@ -150,36 +154,39 @@ fn is_nyse_trading_day(date: chrono::NaiveDate) -> bool {
         && !is_nyse_holiday(date)
 }
 
+/// Holiday helpers return `Option`: date arithmetic here is infallible for
+/// real calendar years, but a `None` must degrade to "not a holiday" (market
+/// treated as open; downstream gates decide) — never panic the whole CLI.
 fn is_nyse_holiday(date: chrono::NaiveDate) -> bool {
     let year = date.year();
+    let d = Some(date);
 
-    date == observed_new_years_day(year)
-        || date == nth_weekday_of_month(year, 1, chrono::Weekday::Mon, 3)
-        || date == nth_weekday_of_month(year, 2, chrono::Weekday::Mon, 3)
-        || date == good_friday(year)
-        || date == last_weekday_of_month(year, 5, chrono::Weekday::Mon)
-        || date == observed_fixed_holiday(year, 6, 19)
-        || date == observed_fixed_holiday(year, 7, 4)
-        || date == nth_weekday_of_month(year, 9, chrono::Weekday::Mon, 1)
-        || date == nth_weekday_of_month(year, 11, chrono::Weekday::Thu, 4)
-        || date == observed_fixed_holiday(year, 12, 25)
+    d == observed_new_years_day(year)
+        || d == nth_weekday_of_month(year, 1, chrono::Weekday::Mon, 3)
+        || d == nth_weekday_of_month(year, 2, chrono::Weekday::Mon, 3)
+        || d == good_friday(year)
+        || d == last_weekday_of_month(year, 5, chrono::Weekday::Mon)
+        || d == observed_fixed_holiday(year, 6, 19)
+        || d == observed_fixed_holiday(year, 7, 4)
+        || d == nth_weekday_of_month(year, 9, chrono::Weekday::Mon, 1)
+        || d == nth_weekday_of_month(year, 11, chrono::Weekday::Thu, 4)
+        || d == observed_fixed_holiday(year, 12, 25)
 }
 
-fn observed_new_years_day(year: i32) -> chrono::NaiveDate {
-    let jan1 = chrono::NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date");
+fn observed_new_years_day(year: i32) -> Option<chrono::NaiveDate> {
+    let jan1 = chrono::NaiveDate::from_ymd_opt(year, 1, 1)?;
     match jan1.weekday() {
-        chrono::Weekday::Sun => jan1.succ_opt().expect("next day"),
-        chrono::Weekday::Sat => jan1,
-        _ => jan1,
+        chrono::Weekday::Sun => jan1.succ_opt(),
+        _ => Some(jan1),
     }
 }
 
-fn observed_fixed_holiday(year: i32, month: u32, day: u32) -> chrono::NaiveDate {
-    let holiday = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date");
+fn observed_fixed_holiday(year: i32, month: u32, day: u32) -> Option<chrono::NaiveDate> {
+    let holiday = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
     match holiday.weekday() {
-        chrono::Weekday::Sat => holiday.pred_opt().expect("previous day"),
-        chrono::Weekday::Sun => holiday.succ_opt().expect("next day"),
-        _ => holiday,
+        chrono::Weekday::Sat => holiday.pred_opt(),
+        chrono::Weekday::Sun => holiday.succ_opt(),
+        _ => Some(holiday),
     }
 }
 
@@ -188,42 +195,37 @@ fn nth_weekday_of_month(
     month: u32,
     weekday: chrono::Weekday,
     nth: u8,
-) -> chrono::NaiveDate {
-    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1).expect("valid date");
+) -> Option<chrono::NaiveDate> {
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1)?;
     let delta = (7 + weekday.num_days_from_monday() as i64
         - first.weekday().num_days_from_monday() as i64)
         % 7;
-    first
-        .checked_add_days(chrono::Days::new(delta as u64 + 7 * u64::from(nth - 1)))
-        .expect("weekday in month")
+    first.checked_add_days(chrono::Days::new(delta as u64 + 7 * u64::from(nth - 1)))
 }
 
 fn last_weekday_of_month(
     year: i32,
     month: u32,
     weekday: chrono::Weekday,
-) -> chrono::NaiveDate {
+) -> Option<chrono::NaiveDate> {
     let (next_year, next_month) = if month == 12 {
         (year + 1, 1)
     } else {
         (year, month + 1)
     };
-    let first_of_next = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("valid date");
-    let last = first_of_next.pred_opt().expect("previous day");
+    let first_of_next = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
+    let last = first_of_next.pred_opt()?;
     let delta = (7 + last.weekday().num_days_from_monday() as i64
         - weekday.num_days_from_monday() as i64)
         % 7;
     last.checked_sub_days(chrono::Days::new(delta as u64))
-        .expect("weekday in month")
 }
 
-fn good_friday(year: i32) -> chrono::NaiveDate {
-    easter_sunday(year)
-        .checked_sub_days(chrono::Days::new(2))
-        .expect("good friday")
+fn good_friday(year: i32) -> Option<chrono::NaiveDate> {
+    easter_sunday(year)?.checked_sub_days(chrono::Days::new(2))
 }
 
-fn easter_sunday(year: i32) -> chrono::NaiveDate {
+fn easter_sunday(year: i32) -> Option<chrono::NaiveDate> {
     let a = year % 19;
     let b = year / 100;
     let c = year % 100;
@@ -238,7 +240,7 @@ fn easter_sunday(year: i32) -> chrono::NaiveDate {
     let m = (a + 11 * h + 22 * l) / 451;
     let month = (h + l - 7 * m + 114) / 31;
     let day = ((h + l - 7 * m + 114) % 31) + 1;
-    chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32).expect("valid easter")
+    chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)
 }
 
 /// Session limits for a single token from Ondo status API.
