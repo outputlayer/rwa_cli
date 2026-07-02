@@ -37,15 +37,30 @@ pub async fn transfer_sol(
     let sender_addr = wallet.pubkey();
     let priority_fee = get_priority_fee_for_accounts(&[&sender_addr, recipient], rpc_url).await;
 
-    // System transfer instruction: program_id_index=3, data=lamports(u32_le(2) + u64_le)
-    let mut ix_data = vec![2, 0, 0, 0]; // Transfer instruction index
+    let tx = build_sol_transfer(&from, &to, amount_lamports, priority_fee);
+    send_legacy_transaction(wallet, &tx.accounts, &tx.instructions, &tx.header, rpc_url, ConfirmLevel::Confirmed).await
+}
+
+/// A fully built (unsigned) legacy transaction: account table, instructions,
+/// and header. Pure output of the builders below, so the exact wire layout is
+/// unit-testable without RPC.
+struct BuiltTx {
+    accounts: Vec<Vec<u8>>,
+    instructions: Vec<Instruction>,
+    header: MessageHeader,
+}
+
+/// System-program SOL transfer with compute-budget instructions.
+fn build_sol_transfer(from: &[u8], to: &[u8], amount_lamports: u64, priority_fee: u64) -> BuiltTx {
+    // System transfer instruction: data = u32_le(2 = Transfer) ++ u64_le(lamports)
+    let mut ix_data = vec![2, 0, 0, 0];
     ix_data.extend_from_slice(&amount_lamports.to_le_bytes());
 
     let accounts = vec![
-        from.clone(),                   // 0: sender (signer, writable)
-        to.clone(),                     // 1: recipient (writable)
+        from.to_vec(),                   // 0: sender (signer, writable)
+        to.to_vec(),                     // 1: recipient (writable)
         COMPUTE_BUDGET_PROGRAM.to_vec(), // 2: compute budget program
-        SYSTEM_PROGRAM.to_vec(),        // 3: system program
+        SYSTEM_PROGRAM.to_vec(),         // 3: system program
     ];
 
     let mut instructions = Vec::new();
@@ -68,13 +83,15 @@ pub async fn transfer_sol(
         data: ix_data,
     });
 
-    let header = MessageHeader {
-        num_required_sigs: 1,
-        num_readonly_signed: 0,
-        num_readonly_unsigned: 2, // compute budget + system program
-    };
-
-    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
+    BuiltTx {
+        accounts,
+        instructions,
+        header: MessageHeader {
+            num_required_sigs: 1,
+            num_readonly_signed: 0,
+            num_readonly_unsigned: 2, // compute budget + system program
+        },
+    }
 }
 
 /// Transfer SPL token (USDC or GM token) to a recipient. Returns transaction result.
@@ -112,94 +129,139 @@ pub async fn transfer_spl(
     );
     let ata_exists = ata_exists?;
 
-    // Build transfer instruction (TransferChecked = index 12)
-    let mut ix_data = vec![12]; // TransferChecked
+    let tx = if ata_exists {
+        build_spl_transfer(
+            &from_pubkey, &from_ata, &to_ata, &mint_pubkey, &token_program,
+            amount_raw, decimals, priority_fee,
+        )
+    } else {
+        build_create_ata_and_transfer(
+            &from_pubkey, &from_ata, &to_ata, &to_pubkey, &mint_pubkey, &token_program,
+            amount_raw, decimals, priority_fee,
+        )
+    };
+    send_legacy_transaction(wallet, &tx.accounts, &tx.instructions, &tx.header, rpc_url, ConfirmLevel::Confirmed).await
+}
+
+/// SPL `TransferChecked` data: discriminant 12 ++ u64_le(amount) ++ decimals.
+fn transfer_checked_data(amount_raw: u64, decimals: u8) -> Vec<u8> {
+    let mut ix_data = vec![12];
     ix_data.extend_from_slice(&amount_raw.to_le_bytes());
     ix_data.push(decimals);
+    ix_data
+}
 
-    let accounts: Vec<Vec<u8>>;
-    let mut instructions: Vec<Instruction> = Vec::new();
+/// SPL transfer when the recipient ATA already exists.
+#[allow(clippy::too_many_arguments)]
+fn build_spl_transfer(
+    from_pubkey: &[u8],
+    from_ata: &[u8],
+    to_ata: &[u8],
+    mint_pubkey: &[u8],
+    token_program: &[u8; 32],
+    amount_raw: u64,
+    decimals: u8,
+    priority_fee: u64,
+) -> BuiltTx {
+    // Accounts: sender, source ATA, dest ATA, compute_budget, mint, token_program
+    let accounts = vec![
+        from_pubkey.to_vec(),               // 0: sender (signer, writable)
+        from_ata.to_vec(),                  // 1: source ATA (writable)
+        to_ata.to_vec(),                    // 2: dest ATA (writable)
+        COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
+        mint_pubkey.to_vec(),               // 4: mint (readonly)
+        token_program.to_vec(),             // 5: token program (readonly)
+    ];
 
-    if ata_exists {
-        // Accounts: sender, source ATA, dest ATA, compute_budget, mint, token_program
-        accounts = vec![
-            from_pubkey.clone(),                // 0: sender (signer, writable)
-            from_ata.clone(),                   // 1: source ATA (writable)
-            to_ata.clone(),                     // 2: dest ATA (writable)
-            COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
-            mint_pubkey.clone(),                // 4: mint (readonly)
-            token_program.to_vec(),             // 5: token program (readonly)
-        ];
+    let mut instructions = Vec::new();
 
-        // Compute budget instructions (program_id_index = 3)
-        let mut cu_limit = compute_unit_limit_ix(200_000);
-        cu_limit.program_id_index = 3;
-        instructions.push(cu_limit);
-        if priority_fee > 0 {
-            let mut cu_price = compute_unit_price_ix(priority_fee);
-            cu_price.program_id_index = 3;
-            instructions.push(cu_price);
-        }
+    // Compute budget instructions (program_id_index = 3)
+    let mut cu_limit = compute_unit_limit_ix(200_000);
+    cu_limit.program_id_index = 3;
+    instructions.push(cu_limit);
+    if priority_fee > 0 {
+        let mut cu_price = compute_unit_price_ix(priority_fee);
+        cu_price.program_id_index = 3;
+        instructions.push(cu_price);
+    }
 
-        // TransferChecked: [source(1), mint(4), dest(2), authority(0)]
-        instructions.push(Instruction {
-            program_id_index: 5,
-            account_indices: vec![1, 4, 2, 0],
-            data: ix_data,
-        });
+    // TransferChecked: [source(1), mint(4), dest(2), authority(0)]
+    instructions.push(Instruction {
+        program_id_index: 5,
+        account_indices: vec![1, 4, 2, 0],
+        data: transfer_checked_data(amount_raw, decimals),
+    });
 
-        let header = MessageHeader {
+    BuiltTx {
+        accounts,
+        instructions,
+        header: MessageHeader {
             num_required_sigs: 1,
             num_readonly_signed: 0,
             num_readonly_unsigned: 3, // compute_budget, mint, token_program
-        };
+        },
+    }
+}
 
-        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
-    } else {
-        // Create recipient ATA, then transfer
-        accounts = vec![
-            from_pubkey.clone(),                // 0: payer/sender (signer, writable)
-            to_ata.clone(),                     // 1: new ATA (writable)
-            from_ata.clone(),                   // 2: source ATA (writable)
-            COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
-            to_pubkey.clone(),                  // 4: owner of new ATA (readonly)
-            mint_pubkey.clone(),                // 5: mint (readonly)
-            SYSTEM_PROGRAM.to_vec(),            // 6: system program (readonly)
-            token_program.to_vec(),             // 7: token program (readonly)
-            ATA_PROGRAM.to_vec(),               // 8: ATA program (readonly)
-        ];
+/// SPL transfer that first creates the recipient's ATA.
+#[allow(clippy::too_many_arguments)]
+fn build_create_ata_and_transfer(
+    from_pubkey: &[u8],
+    from_ata: &[u8],
+    to_ata: &[u8],
+    to_pubkey: &[u8],
+    mint_pubkey: &[u8],
+    token_program: &[u8; 32],
+    amount_raw: u64,
+    decimals: u8,
+    priority_fee: u64,
+) -> BuiltTx {
+    let accounts = vec![
+        from_pubkey.to_vec(),               // 0: payer/sender (signer, writable)
+        to_ata.to_vec(),                    // 1: new ATA (writable)
+        from_ata.to_vec(),                  // 2: source ATA (writable)
+        COMPUTE_BUDGET_PROGRAM.to_vec(),    // 3: compute budget (readonly)
+        to_pubkey.to_vec(),                 // 4: owner of new ATA (readonly)
+        mint_pubkey.to_vec(),               // 5: mint (readonly)
+        SYSTEM_PROGRAM.to_vec(),            // 6: system program (readonly)
+        token_program.to_vec(),             // 7: token program (readonly)
+        ATA_PROGRAM.to_vec(),               // 8: ATA program (readonly)
+    ];
 
-        // Compute budget instructions (program_id_index = 3)
-        let mut cu_limit = compute_unit_limit_ix(400_000); // higher limit for create ATA + transfer
-        cu_limit.program_id_index = 3;
-        instructions.push(cu_limit);
-        if priority_fee > 0 {
-            let mut cu_price = compute_unit_price_ix(priority_fee);
-            cu_price.program_id_index = 3;
-            instructions.push(cu_price);
-        }
+    let mut instructions = Vec::new();
 
-        // Create ATA: [payer(0), ata(1), owner(4), mint(5), system(6), token_prog(7)]
-        instructions.push(Instruction {
-            program_id_index: 8,
-            account_indices: vec![0, 1, 4, 5, 6, 7],
-            data: vec![],
-        });
+    // Compute budget instructions (program_id_index = 3)
+    let mut cu_limit = compute_unit_limit_ix(400_000); // higher limit for create ATA + transfer
+    cu_limit.program_id_index = 3;
+    instructions.push(cu_limit);
+    if priority_fee > 0 {
+        let mut cu_price = compute_unit_price_ix(priority_fee);
+        cu_price.program_id_index = 3;
+        instructions.push(cu_price);
+    }
 
-        // TransferChecked: [source(2), mint(5), dest(1), authority(0)]
-        instructions.push(Instruction {
-            program_id_index: 7,
-            account_indices: vec![2, 5, 1, 0],
-            data: ix_data,
-        });
+    // Create ATA: [payer(0), ata(1), owner(4), mint(5), system(6), token_prog(7)]
+    instructions.push(Instruction {
+        program_id_index: 8,
+        account_indices: vec![0, 1, 4, 5, 6, 7],
+        data: vec![],
+    });
 
-        let header = MessageHeader {
+    // TransferChecked: [source(2), mint(5), dest(1), authority(0)]
+    instructions.push(Instruction {
+        program_id_index: 7,
+        account_indices: vec![2, 5, 1, 0],
+        data: transfer_checked_data(amount_raw, decimals),
+    });
+
+    BuiltTx {
+        accounts,
+        instructions,
+        header: MessageHeader {
             num_required_sigs: 1,
             num_readonly_signed: 0,
             num_readonly_unsigned: 6, // compute_budget, to_pubkey, mint, system, token_prog, ata_prog
-        };
-
-        send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Confirmed).await
+        },
     }
 }
 
@@ -374,6 +436,16 @@ async fn close_account_batch(
     is_token_2022: bool,
     rpc_url: Option<&str>,
 ) -> Result<TransactionResult> {
+    let tx = build_close_batch(owner, batch, token_program, is_token_2022)?;
+    send_legacy_transaction(wallet, &tx.accounts, &tx.instructions, &tx.header, rpc_url, ConfirmLevel::Processed).await
+}
+
+fn build_close_batch(
+    owner: &[u8],
+    batch: &[&EmptyTokenAccount],
+    token_program: &[u8; 32],
+    is_token_2022: bool,
+) -> Result<BuiltTx> {
     // Account layout:
     //   [0]        = owner/destination (signer, writable)
     //   [1..N]     = ATAs to close (writable)
@@ -435,12 +507,183 @@ async fn close_account_batch(
         }
     }
 
-    let header = MessageHeader {
-        num_required_sigs: 1,
-        num_readonly_signed: 0,
-        num_readonly_unsigned,
-    };
-
-    send_legacy_transaction(wallet, &accounts, &instructions, &header, rpc_url, ConfirmLevel::Processed).await
+    Ok(BuiltTx {
+        accounts,
+        instructions,
+        header: MessageHeader {
+            num_required_sigs: 1,
+            num_readonly_signed: 0,
+            num_readonly_unsigned,
+        },
+    })
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Deterministic fixture keys — any distinct 32-byte values work, because
+    // every assertion resolves instruction indices through the account table
+    // and compares against the on-chain ABI, not our internal numbering.
+    fn key(tag: u8) -> Vec<u8> {
+        vec![tag; 32]
+    }
+
+    /// Resolve an instruction's account references through the account table.
+    fn resolved<'a>(tx: &'a BuiltTx, ix: &Instruction) -> Vec<&'a [u8]> {
+        ix.account_indices
+            .iter()
+            .map(|&i| tx.accounts[i as usize].as_slice())
+            .collect()
+    }
+
+    fn program_of<'a>(tx: &'a BuiltTx, ix: &Instruction) -> &'a [u8] {
+        tx.accounts[ix.program_id_index as usize].as_slice()
+    }
+
+    #[test]
+    fn sol_transfer_matches_system_program_abi() {
+        // System Program `Transfer` ABI: program = 11111111111111111111111111111111,
+        // accounts = [funding (signer, writable), recipient (writable)],
+        // data = u32_le(2) ++ u64_le(lamports).
+        let (from, to) = (key(1), key(2));
+        let tx = build_sol_transfer(&from, &to, 123_456_789, 500);
+
+        let ix = tx.instructions.last().unwrap();
+        assert_eq!(program_of(&tx, ix), SYSTEM_PROGRAM.as_slice());
+        assert_eq!(resolved(&tx, ix), vec![from.as_slice(), to.as_slice()]);
+        let mut expected = vec![2, 0, 0, 0];
+        expected.extend_from_slice(&123_456_789u64.to_le_bytes());
+        assert_eq!(ix.data, expected);
+
+        // Fee payer / sole signer is the sender; the readonly tail holds only
+        // program accounts, never the money-moving ones.
+        assert_eq!(tx.header.num_required_sigs, 1);
+        assert_eq!(tx.accounts[0], from);
+        let tail = &tx.accounts[tx.accounts.len() - tx.header.num_readonly_unsigned as usize..];
+        for a in tail {
+            assert!(
+                a.as_slice() == COMPUTE_BUDGET_PROGRAM.as_slice()
+                    || a.as_slice() == SYSTEM_PROGRAM.as_slice(),
+                "readonly tail must contain only programs"
+            );
+        }
+        for cb in &tx.instructions[..tx.instructions.len() - 1] {
+            assert_eq!(program_of(&tx, cb), COMPUTE_BUDGET_PROGRAM.as_slice());
+        }
+    }
+
+    #[test]
+    fn spl_transfer_matches_transfer_checked_abi() {
+        // SPL Token `TransferChecked` ABI: discriminant 12,
+        // accounts = [source, mint, destination, authority],
+        // data = 12 ++ u64_le(amount) ++ decimals.
+        let (owner, from_ata, to_ata, mint) = (key(1), key(2), key(3), key(4));
+        let tx = build_spl_transfer(&owner, &from_ata, &to_ata, &mint, &TOKEN_PROGRAM, 5_000_000, 6, 100);
+
+        let ix = tx.instructions.last().unwrap();
+        assert_eq!(program_of(&tx, ix), TOKEN_PROGRAM.as_slice());
+        assert_eq!(
+            resolved(&tx, ix),
+            vec![from_ata.as_slice(), mint.as_slice(), to_ata.as_slice(), owner.as_slice()],
+            "TransferChecked account order is [source, mint, destination, authority]"
+        );
+        let mut expected = vec![12];
+        expected.extend_from_slice(&5_000_000u64.to_le_bytes());
+        expected.push(6);
+        assert_eq!(ix.data, expected);
+
+        // Owner signs and pays; both ATAs must be writable (not in the
+        // readonly tail) or the transfer fails on-chain.
+        assert_eq!(tx.accounts[0], owner);
+        assert_eq!(tx.header.num_readonly_unsigned, 3);
+        let tail = &tx.accounts[tx.accounts.len() - 3..];
+        assert!(
+            !tail.contains(&from_ata) && !tail.contains(&to_ata) && !tail.contains(&owner),
+            "money-moving accounts must be writable"
+        );
+    }
+
+    #[test]
+    fn create_ata_then_transfer_matches_ata_program_abi() {
+        // ATA `Create` ABI account order: [payer, ata, owner, mint,
+        // system_program, token_program]; empty data. The transfer must then
+        // credit the freshly created ATA.
+        let (payer, from_ata, to_ata, to_owner, mint) = (key(1), key(2), key(3), key(4), key(5));
+        let tx = build_create_ata_and_transfer(
+            &payer, &from_ata, &to_ata, &to_owner, &mint, &TOKEN_2022_PROGRAM_ID, 42, 9, 0,
+        );
+
+        let create = &tx.instructions[tx.instructions.len() - 2];
+        assert_eq!(program_of(&tx, create), ATA_PROGRAM.as_slice());
+        assert_eq!(
+            resolved(&tx, create),
+            vec![
+                payer.as_slice(),
+                to_ata.as_slice(),
+                to_owner.as_slice(),
+                mint.as_slice(),
+                SYSTEM_PROGRAM.as_slice(),
+                TOKEN_2022_PROGRAM_ID.as_slice(),
+            ]
+        );
+        assert!(create.data.is_empty());
+
+        let ix = tx.instructions.last().unwrap();
+        assert_eq!(program_of(&tx, ix), TOKEN_2022_PROGRAM_ID.as_slice());
+        assert_eq!(
+            resolved(&tx, ix),
+            vec![from_ata.as_slice(), mint.as_slice(), to_ata.as_slice(), payer.as_slice()]
+        );
+        assert_eq!(tx.header.num_readonly_unsigned, 6);
+    }
+
+    #[test]
+    fn close_batch_matches_close_account_abi() {
+        // SPL `CloseAccount` ABI: discriminant 9, accounts = [account,
+        // destination, owner] plus the mint for Token-2022 (pausable ext).
+        let owner = key(1);
+        let mint_b58 = bs58::encode(key(9)).into_string();
+        let a1 = EmptyTokenAccount {
+            address: bs58::encode(key(2)).into_string(),
+            mint: mint_b58.clone(),
+            lamports: 2_039_280,
+            is_token_2022: true,
+        };
+        let a2 = EmptyTokenAccount {
+            address: bs58::encode(key(3)).into_string(),
+            mint: mint_b58,
+            lamports: 2_039_280,
+            is_token_2022: true,
+        };
+        let batch = [&a1, &a2];
+        let tx = build_close_batch(&owner, &batch, &TOKEN_2022_PROGRAM_ID, true).unwrap();
+
+        assert_eq!(tx.instructions.len(), 2);
+        for (ix, ata_tag) in tx.instructions.iter().zip([2u8, 3u8]) {
+            assert_eq!(program_of(&tx, ix), TOKEN_2022_PROGRAM_ID.as_slice());
+            let r = resolved(&tx, ix);
+            assert_eq!(r[0], key(ata_tag).as_slice(), "account to close");
+            assert_eq!(r[1], owner.as_slice(), "rent destination");
+            assert_eq!(r[2], owner.as_slice(), "close authority");
+            assert_eq!(r[3], key(9).as_slice(), "mint for pausable extension");
+            assert_eq!(ix.data, vec![9]);
+        }
+        // Shared mint deduplicated; readonly tail = mint + token program.
+        assert_eq!(tx.header.num_readonly_unsigned, 2);
+        assert_eq!(tx.accounts.len(), 5, "owner + 2 ATAs + shared mint + program");
+
+        // Classic SPL variant: no mint account appended.
+        let a3 = EmptyTokenAccount {
+            address: bs58::encode(key(4)).into_string(),
+            mint: bs58::encode(key(8)).into_string(),
+            lamports: 2_039_280,
+            is_token_2022: false,
+        };
+        let tx = build_close_batch(&owner, &[&a3], &TOKEN_PROGRAM, false).unwrap();
+        let ix = tx.instructions.last().unwrap();
+        assert_eq!(resolved(&tx, ix), vec![key(4).as_slice(), owner.as_slice(), owner.as_slice()]);
+        assert_eq!(tx.header.num_readonly_unsigned, 1, "only the token program is readonly");
+    }
+}
