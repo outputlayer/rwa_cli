@@ -125,6 +125,7 @@ rwa update -y
 
 ## Jupiter behavior
 
+- Auto gas refuel: before a real `buy`/`buy-basket`/`send` (never `send SOL`, never dry-run), if SOL < 0.003 and USDC covers the operation + 5 USDC, the CLI buys 5 USDC of SOL first (bootstrap from zero SOL requires a gasless route); interactive runs prompt, `-y`/`--json` auto-approve, `RWA_NO_AUTO_GAS=1` disables; surfaced as optional `gas_refuel: {usdc, sol, tx}` in `TradeJson`/`BuyBasketResultJson`/`SendJson`. Best-effort: an impossible refuel never fails the main operation
 - USDC-only wallets (zero SOL) can trade: the SOL-for-fees check runs AFTER quoting and passes when the route is gasless (Jupiter pays fees + ATA rent); only non-gasless routes (Metis fallback) require ~0.002 SOL, surfaced as `insufficient_funds`. `send` and `reclaim` always need SOL
 - Jupiter requests use `api.jup.ag` (deprecated `lite-api.jup.ag` retired); set `RWA_JUPITER_API_KEY` to raise limits. Transient `/execute` failures surface as `execute_unavailable` and auto-retry; ambiguous timeouts are not retried.
 - Public routing order is `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback
