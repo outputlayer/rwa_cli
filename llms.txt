@@ -22,7 +22,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ## Critical agent rules
 
 - NEVER run `rwa` wallet-changing commands in parallel processes or with `&`
-- For multi-token trading WITHIN a single call, use `--parallel` flag — safe and fast
+- Multi-token calls (baskets, close-all) run in parallel by default — safe (bounded internally) and fast; `--sequential` is the rate-limit fallback
 - Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
 - Use `-y` only for real execution, not for `--dry-run`
@@ -48,8 +48,8 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm sell <SYM> <AMT> --dry-run` — preview sell
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
 - `rwa --json gm close-all --dry-run` — preview liquidation
-- `rwa --json gm close-all -y` — sell all positions sequentially
-- `rwa --json gm close-all --parallel -y` — sell all positions in parallel (~4–11x faster for 4+ tokens)
+- `rwa --json gm close-all -y` — sell all positions (parallel by default)
+- `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
 - `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
 - `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens sequentially

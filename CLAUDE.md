@@ -75,15 +75,15 @@ rwa gm sell <SYM> <AMT> --dry-run
 rwa gm sell <SYM> <AMT> -y
 rwa gm close-all --dry-run
 rwa gm close-all -y
-rwa gm close-all --parallel -y
+rwa gm close-all --sequential -y   # rate-limit-friendly fallback
 rwa gm close-all 50% -y
 
 rwa gm buy-basket AAPL 10 TSLA 15 NVDA 5 --dry-run
 rwa gm buy-basket AAPL 10 TSLA 15 -y
-rwa gm buy-basket AAPL 10 TSLA 15 --parallel -y
+rwa gm buy-basket AAPL 10 TSLA 15 --sequential -y
 rwa gm sell-basket SPY 5 TSLA all --dry-run
 rwa gm sell-basket SPY 5 TSLA 3 -y
-rwa gm sell-basket SPY 5 TSLA 3 --parallel -y
+rwa gm sell-basket SPY 5 TSLA 3 --sequential -y
 
 rwa gm portfolio [WALLET]
 rwa gm history <SYM> [-r RANGE]
@@ -120,7 +120,7 @@ rwa update -y
 - Ondo assets and session-limits responses are disk-cached read-through for 60s (`~/.config/rwa/.cache/`); stale fallback on network failure (assets 1h, limits 10m). Explicit URL overrides bypass the cache
 - `buy` and `sell` check tradability before calling Jupiter
 - `close-all` skips tiny positions and non-tradable tokens
-- `close-all` and basket trading default to sequential (3s spacing); use `--parallel` for concurrent swaps
+- `close-all` and basket trading default to **parallel** (bounded by internal order/execute semaphores); `--sequential` opts into one-at-a-time with 3s spacing (rate-limit fallback); `--parallel` is accepted as a no-op for compatibility
 - Swap confirmation happens server-side in Jupiter `/execute` (no local wait); `send` and Metis-fallback swaps confirm locally at `confirmed` commitment; `reclaim` batches confirm at `processed` (fast path — low-stakes rent, err field already authoritative)
 
 ## Jupiter behavior
@@ -163,7 +163,7 @@ rwa update -y
 - Use `gm tradable <SYM...>` to check one or many symbols
 - Use `gm search --tradable-only ...` for bulk scans without Python
 - Use `hours --tradable` only when the user wants the full currently tradable set
-- Use `buy-basket` / `sell-basket` for multi-token trades; prefer `--parallel` for speed
+- Use `buy-basket` / `sell-basket` for multi-token trades; parallel is the default (use `--sequential` only if rate-limited)
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 - Use `--wallet <name>` (or `RWA_WALLET`) to pick among named wallets; `rwa keys list --json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`
 

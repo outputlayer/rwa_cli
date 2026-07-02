@@ -150,9 +150,12 @@ pub enum GmAction {
         /// Show what would be sold without executing
         #[arg(long)]
         dry_run: bool,
-        /// Fetch all orders and execute all swaps in parallel (faster for many positions)
-        #[arg(long)]
+        /// Parallel execution is the default; this flag is a no-op kept for compatibility
+        #[arg(long, conflicts_with = "sequential")]
         parallel: bool,
+        /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
+        #[arg(long)]
+        sequential: bool,
         /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
@@ -180,9 +183,12 @@ pub enum GmAction {
         /// Show quotes without executing
         #[arg(long)]
         dry_run: bool,
-        /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
-        #[arg(long)]
+        /// Parallel execution is the default; this flag is a no-op kept for compatibility
+        #[arg(long, conflicts_with = "sequential")]
         parallel: bool,
+        /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
+        #[arg(long)]
+        sequential: bool,
         /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
@@ -203,9 +209,12 @@ pub enum GmAction {
         /// Show quotes without executing
         #[arg(long)]
         dry_run: bool,
-        /// Fetch all orders and execute all swaps in parallel (faster for many tokens)
-        #[arg(long)]
+        /// Parallel execution is the default; this flag is a no-op kept for compatibility
+        #[arg(long, conflicts_with = "sequential")]
         parallel: bool,
+        /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
+        #[arg(long)]
+        sequential: bool,
         /// Max slippage in basis points (e.g. 50 = 0.5%). Default: 100 (1%)
         #[arg(long)]
         slippage: Option<u32>,
@@ -270,21 +279,24 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             amount,
             yes,
             dry_run,
-            parallel,
+            parallel: _,
+            sequential,
             slippage,
             max_bps,
         } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            close_all::close_all(amount.as_deref(), yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
+            // Parallel is the default (bounded by the order/execute semaphores);
+            // --sequential opts into one-at-a-time with 3s spacing.
+            close_all::close_all(amount.as_deref(), yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
-        GmAction::BuyBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
+        GmAction::BuyBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            basket::buy_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
+            basket::buy_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
-        GmAction::SellBasket { tokens, yes, dry_run, parallel, slippage, max_bps } => {
+        GmAction::SellBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
-            basket::sell_basket(&tokens, yes, dry_run, parallel, json, rpc_url, slippage, max_bps, selected).await
+            basket::sell_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
     }
 }

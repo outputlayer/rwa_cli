@@ -38,9 +38,9 @@ Fund your wallet with **SOL** (network fees) and **USDC** (trading) before your 
 | `rwa gm tradable [SYM ...]` | Check tradable status for one or many symbols |
 | `rwa gm buy <SYM> <AMT> [-y] [--dry-run] [--slippage <BPS>]` | Buy with USDC |
 | `rwa gm sell <SYM> <AMT> [-y] [--dry-run]` | Sell for USDC (exact, `50%`, or `all`) |
-| `rwa gm close-all [<PCT>] [-y] [--parallel]` | Sell every position (or a % of each) |
-| `rwa gm buy-basket <SYM AMT ...> [-y] [--parallel]` | Buy multiple tokens at once |
-| `rwa gm sell-basket <SYM AMT ...> [-y] [--parallel]` | Sell multiple tokens at once |
+| `rwa gm close-all [<PCT>] [-y] | Sell every position (or a % of each), in parallel |
+| `rwa gm buy-basket <SYM AMT ...> [-y] | Buy multiple tokens at once, in parallel |
+| `rwa gm sell-basket <SYM AMT ...> [-y] | Sell multiple tokens at once, in parallel |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm history <SYM> [-r RANGE]` | Price history (1D/1W/1M/3M/1Y/ALL) |
 | `rwa gm send <TOKEN> <AMT> <TO> [-y] [--dry-run]` | Send SOL/USDC/tokens to another wallet |
@@ -56,7 +56,7 @@ Fund your wallet with **SOL** (network fees) and **USDC** (trading) before your 
 - **`--max-bps <N>`** (buy/sell, baskets, close-all) rejects the trade if the quoted all-in cost (spread + Jupiter fee) exceeds N basis points — a tunable ceiling tighter than the 3% slippage block. Set a global default with `RWA_MAX_BPS`. Applies in `--dry-run`/`--quote-only` too, so agents can use it as a pass/fail cost check.
 - **Amounts**: exact (`100`), percentage (`50%`), or `all`. Converted with exact on-chain precision — too many decimals is rejected, never silently rounded.
 - **`send` ≠ `sell`.** `sell` swaps a token to USDC; `send` transfers assets to another wallet. `send USDC all` sends your *entire* USDC balance, not just recent proceeds.
-- **`close-all`** is the canonical way to exit many positions; it skips dust (< $1.50) and reports it. Use `--parallel` to run all swaps at once.
+- **`close-all`** is the canonical way to exit many positions; it skips dust (< $1.50) and reports it. Swaps run in parallel by default (bounded internally); `--sequential` is the rate-limit fallback.
 - **Named wallets**: register multiple key files with `rwa keys add <name> --path <path>` (or import a key in one step with `rwa keys add <name> --seed-phrase "..." --path <path>` / `--private-key <key>`, encrypted by default), switch the active wallet with `rwa keys use <name>`, or pick one for a single command with `rwa --wallet <name>`. Selection priority: `--wallet` / `RWA_WALLET` > registry active > legacy default. `rwa keys list` shows all registered wallets.
 - **Slippage**: default 1% (100 bps), tunable with `--slippage`; swaps above 3% are blocked.
 - **Trading sessions are ET-based** and not every token trades in every session:
@@ -118,10 +118,10 @@ If the Solana RPC read fails entirely, `gm portfolio` automatically falls back t
 | `gm portfolio` | ~1.0 s (RPC + Ondo, parallel) |
 | `gm list` | ~1.3 s |
 | `gm buy` / `sell` | ~22 s (swap confirmation) |
-| `close-all` / baskets, sequential | N×22 s + (N−1)×3 s |
-| `close-all` / baskets, `--parallel` | ~22 s flat |
+| `close-all` / baskets, `--sequential` | N×22 s + (N−1)×3 s |
+| `close-all` / baskets (default, parallel) | ~22 s flat |
 
-`--parallel` runs all swaps of *different* tokens concurrently from one wallet at normal spread (live-tested: 4-token parallel buy → immediate parallel sell, all 8 swaps at 0.2–0.7%):
+Parallel mode (the default) runs all swaps of *different* tokens concurrently from one wallet at normal spread (live-tested: 4-token parallel buy → immediate parallel sell, all 8 swaps at 0.2–0.7%):
 
 | Tokens | Sequential | Parallel | Speedup |
 |--------|-----------|----------|---------|
