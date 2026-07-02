@@ -1,4 +1,4 @@
-mod parser;
+pub(crate) mod parser;
 pub mod verify;
 
 pub use verify::{decode_and_verify, ExpectedSwap, VerifyError};

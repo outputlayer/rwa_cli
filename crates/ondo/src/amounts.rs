@@ -275,9 +275,10 @@ mod tests {
 
     #[test]
     fn pct_large_value() {
-        let large: u128 = 999_999_999_999_999_999;
-        let result = pct_of_u128(large, 50.0);
-        assert_eq!(result, large * 5000 / 10_000);
+        // 50% of 999_999_999_999_999_999 floors to 499_999_999_999_999_999
+        // (hand-derived constant — not re-computed with the production
+        // formula, which would hide a shared rounding/overflow bug).
+        assert_eq!(pct_of_u128(999_999_999_999_999_999, 50.0), 499_999_999_999_999_999);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -471,9 +471,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_list_has_expected_count() {
+    fn token_list_is_not_truncated() {
+        // Guards against an accidentally truncated vendored JSON; the exact
+        // count changes with every legitimate Ondo listing update, so pin a
+        // floor rather than the moving number.
         let tokens = get_token_list();
-        assert_eq!(tokens.len(), 438, "expected 438 GM tokens");
+        assert!(tokens.len() >= 400, "token list suspiciously small: {}", tokens.len());
     }
 
     #[test]

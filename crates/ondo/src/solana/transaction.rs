@@ -447,16 +447,16 @@ mod tests {
 
     #[test]
     fn compact_u16_two_bytes() {
+        // Independently specified encodings (Solana short-vec format): the
+        // expected bytes are written out by hand, not re-derived via bit math
+        // that could share a bug with the encoder.
         let mut buf = Vec::new();
         encode_compact_u16(128, &mut buf);
-        assert_eq!(buf.len(), 2);
+        assert_eq!(buf, vec![0x80, 0x01]);
 
         buf.clear();
         encode_compact_u16(255, &mut buf);
-        assert_eq!(buf.len(), 2);
-        // Decode back: (buf[0] & 0x7f) | (buf[1] << 7)
-        let val = (buf[0] as u16 & 0x7f) | ((buf[1] as u16) << 7);
-        assert_eq!(val, 255);
+        assert_eq!(buf, vec![0xff, 0x01]);
     }
 
     #[test]
@@ -478,22 +478,25 @@ mod tests {
     fn compact_u16_three_bytes() {
         let mut buf = Vec::new();
         encode_compact_u16(0x4000, &mut buf);
-        assert_eq!(buf.len(), 3);
+        assert_eq!(buf, vec![0x80, 0x80, 0x01]);
 
         buf.clear();
         encode_compact_u16(u16::MAX, &mut buf);
-        assert_eq!(buf.len(), 3);
-        let val = (buf[0] as u16 & 0x7f) | (((buf[1] as u16) & 0x7f) << 7) | ((buf[2] as u16) << 14);
-        assert_eq!(val, u16::MAX);
+        assert_eq!(buf, vec![0xff, 0xff, 0x03]);
     }
 
     #[test]
-    fn compact_u16_roundtrip() {
+    fn compact_u16_roundtrip_against_independent_decoder() {
+        // Round-trip through the wallet parser's decoder — a separate
+        // implementation of the short-vec spec, so a matching encode/decode
+        // bug in this file cannot cancel out.
         for val in [0, 1, 127, 128, 255, 256, 1000, 16383, 16384, 65535u16] {
             let mut buf = Vec::new();
             encode_compact_u16(val, &mut buf);
-            // Verify it encodes to 1-3 bytes
-            assert!(!buf.is_empty() && buf.len() <= 3, "val={val} encoded to {} bytes", buf.len());
+            let (decoded, consumed) = crate::wallet::parser::decode_compact_u16(&buf)
+                .expect("parser decodes our encoding");
+            assert_eq!(decoded, val);
+            assert_eq!(consumed, buf.len());
         }
     }
 

@@ -369,6 +369,30 @@ mod tests {
     }
 
     #[test]
+    fn nyse_holiday_calendar_2026_2027() {
+        // Dates cross-checked against a calendar (weekday noted), not
+        // re-derived with the production date math.
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+
+        // 2026 holidays — market closed.
+        assert!(!is_nyse_trading_day(d(2026, 1, 19)), "MLK Day (3rd Mon Jan)");
+        assert!(!is_nyse_trading_day(d(2026, 5, 25)), "Memorial Day (last Mon May)");
+        assert!(!is_nyse_trading_day(d(2026, 6, 19)), "Juneteenth (Fri)");
+        assert!(!is_nyse_trading_day(d(2026, 7, 3)), "July 4 observed Fri (the 4th is a Sat)");
+        assert!(!is_nyse_trading_day(d(2026, 9, 7)), "Labor Day (1st Mon Sep)");
+        assert!(!is_nyse_trading_day(d(2026, 11, 26)), "Thanksgiving (4th Thu Nov)");
+
+        // Saturday-holiday observance shifts to Friday.
+        assert!(!is_nyse_trading_day(d(2027, 12, 24)), "Christmas 2027 observed Fri (25th is a Sat)");
+        assert!(!is_nyse_trading_day(d(2027, 6, 18)), "Juneteenth 2027 observed Fri (19th is a Sat)");
+
+        // Ordinary adjacent weekdays — market open.
+        assert!(is_nyse_trading_day(d(2026, 1, 20)), "Tue after MLK");
+        assert!(is_nyse_trading_day(d(2026, 11, 27)), "Fri after Thanksgiving (half-day, still trading)");
+        assert!(is_nyse_trading_day(d(2027, 6, 21)), "Mon after observed Juneteenth 2027");
+    }
+
+    #[test]
     fn session_limits_tradable() {
         let limits = SessionLimits {
             symbol: "TSLAon".into(),
