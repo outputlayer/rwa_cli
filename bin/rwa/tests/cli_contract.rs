@@ -697,3 +697,156 @@ fn history_json_emits_shape_with_derived_aggregates() {
     // (110 - 100) / 100 × 100 = +10%
     assert_eq!(v["change_pct"], 10.0);
 }
+
+// ── send / reclaim / close-all ───────────────────────────────────────────────
+
+/// One USDC token-account entry in `getTokenAccountsByOwner` shape.
+fn usdc_account_entry(raw_amount: u64) -> serde_json::Value {
+    serde_json::json!({
+        "pubkey": "SomeUsdcAtaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "account": {
+            "data": {
+                "parsed": {
+                    "info": {
+                        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                        "owner": WALLET,
+                        "tokenAmount": {
+                            "amount": raw_amount.to_string(),
+                            "decimals": 6,
+                            "uiAmount": raw_amount as f64 / 1_000_000.0,
+                            "uiAmountString": (raw_amount as f64 / 1_000_000.0).to_string()
+                        }
+                    },
+                    "type": "account"
+                },
+                "program": "spl-token",
+                "space": 165
+            },
+            "executable": false,
+            "lamports": 2039280,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "rentEpoch": 0
+        }
+    })
+}
+
+/// Mock the RPC methods the send/reclaim paths touch, dispatched by method
+/// name in the request body.
+fn mock_rpc_for_transfers(server: &MockServer, usdc_raw: u64, token_accounts: serde_json::Value) {
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value": 76_600_000u64 } // 0.0766 SOL
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value":
+                if usdc_raw > 0 { serde_json::json!([usdc_account_entry(usdc_raw)]) } else { token_accounts.clone() } }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getRecentPrioritizationFees");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": []
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getMinimumBalanceForRentExemption");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": 2_039_280u64
+        }));
+    });
+}
+
+/// `gm send USDC <amt> <to> --dry-run --json` emits the SendJson dry_run shape
+/// and never submits a transaction (no sendTransaction call possible — the
+/// mock has no handler for it, so submission would fail loudly).
+#[test]
+fn send_usdc_dry_run_emits_send_json_shape() {
+    let home = test_home("send-dry-run");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 82_310_000, serde_json::json!([]));
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let recipient = "Dn9EqxugBePrno7gzCjbGeYxY3VJE9RB2WE2FH7t7qmH";
+    let out = rwa(&home)
+        .args(["--json", "gm", "send", "USDC", "0.1", recipient, "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "dry_run");
+    assert_eq!(v["token"], "USDC");
+    assert_eq!(v["amount"], "0.1");
+    assert_eq!(v["recipient"], recipient);
+    assert_eq!(v["tx"], "", "dry run must not carry a tx link");
+}
+
+/// `gm reclaim --json` with no empty token accounts: success, zero closed,
+/// zero reclaimed — and exit 0.
+#[test]
+fn reclaim_json_reports_nothing_to_reclaim() {
+    let home = test_home("reclaim-empty");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([]));
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "reclaim"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "success");
+    assert_eq!(v["accounts_closed"], 0);
+    assert_eq!(v["sol_reclaimed"], "0");
+    assert_eq!(v["signatures"].as_array().unwrap().len(), 0);
+}
+
+/// `gm close-all --dry-run --json` with no GM positions: success with empty
+/// arrays and total "0".
+#[test]
+fn close_all_dry_run_reports_no_positions() {
+    let home = test_home("close-all-empty");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([]));
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "success");
+    assert_eq!(v["sold"].as_array().unwrap().len(), 0);
+    assert_eq!(v["failed"].as_array().unwrap().len(), 0);
+    assert!(v.get("skipped").is_none(), "empty skipped must be omitted");
+    assert_eq!(v["total_usdc"], "0");
+}
