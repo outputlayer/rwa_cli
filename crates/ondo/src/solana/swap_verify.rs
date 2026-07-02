@@ -299,6 +299,129 @@ mod tests {
         assert_eq!(min_output_floor(0, Some(100)), 0);
     }
 
+    fn token_account_json(amount: u64) -> serde_json::Value {
+        use base64::Engine;
+        // Real SPL token-account layout: mint[32] owner[32] amount[8 LE].
+        let mut data = vec![0u8; 72];
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        serde_json::json!({ "data": [b64, "base64"] })
+    }
+
+    /// End-to-end orchestration over mock RPC: the load-bearing watch-index
+    /// contract is [input_ata, input_ata_2022, output_ata, output_ata_2022] —
+    /// pre[0..2]/post[0..2] must be read as INPUT and [2..4] as OUTPUT. A
+    /// swapped range would compare the wrong balances while every pure unit
+    /// test still passes.
+    #[tokio::test]
+    async fn verify_swap_simulation_maps_watch_ranges_and_accepts_honest_fill() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                // input ATA holds 50 USDC pre-swap; output ATA empty.
+                "result": { "value": [token_account_json(50_000_000), null, token_account_json(0), null] }
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                // Post-swap: input debited exactly 40 USDC, output credited at the floor.
+                "result": { "value": {
+                    "err": null,
+                    "accounts": [token_account_json(10_000_000), null, token_account_json(39_870_424), null],
+                    "logs": []
+                }}
+            }));
+        }).await;
+
+        verify_swap_simulation(
+            "AQID",
+            &[2u8; 32],
+            40_000_000,
+            &[3u8; 32],
+            39_870_424,
+            &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+        .expect("honest fill must pass the gate");
+    }
+
+    #[tokio::test]
+    async fn verify_swap_simulation_refuses_under_credit_end_to_end() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [token_account_json(50_000_000), null, token_account_json(0), null] }
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                // Credits one unit BELOW the floor — a dishonest fill.
+                "result": { "value": {
+                    "err": null,
+                    "accounts": [token_account_json(10_000_000), null, token_account_json(39_870_423), null],
+                    "logs": []
+                }}
+            }));
+        }).await;
+
+        let err = verify_swap_simulation(
+            "AQID", &[2u8; 32], 40_000_000, &[3u8; 32], 39_870_424, &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+        .expect_err("under-delivery must refuse to sign");
+        assert!(
+            matches!(err.downcast_ref::<SwapSimError>(), Some(SwapSimError::OutputBelowQuote(_))),
+            "wrong error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_swap_simulation_refuses_on_chain_failure_end_to_end() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [null, null, null, null] }
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": {
+                    "err": { "InstructionError": [2, "Custom"] },
+                    "accounts": null,
+                    "logs": ["Program log: insufficient funds for RFQ fill"]
+                }}
+            }));
+        }).await;
+
+        let err = verify_swap_simulation(
+            "AQID", &[2u8; 32], 40_000_000, &[3u8; 32], 0, &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+        .expect_err("failing simulation must refuse to sign");
+        assert!(
+            matches!(err.downcast_ref::<SwapSimError>(), Some(SwapSimError::OnChainWouldFail(_))),
+            "wrong error: {err}"
+        );
+    }
+
     #[test]
     fn token_amount_decodes_offset_64() {
         // Build a 72-byte token account: mint[32] owner[32] amount[8].
