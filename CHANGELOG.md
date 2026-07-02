@@ -9,6 +9,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.2] — 2026-07-02 — Trade ledger + P&L, full tag taxonomy in search
+
+### Added
+
+- **Per-wallet trade ledger.** Every CLI money operation (buys/sells with both raw legs, gas refuels, transfers, reclaims) is appended to `~/.config/rwa/ledger/<pubkey>.jsonl` — one file per wallet, raw on-chain units. Single `buy`/`sell` previously bypassed even the audit log (only basket paths recorded); both now record everywhere.
+- **`rwa gm pnl`** — average entry price, invested basis, unrealized (vs live market price) and realized P&L per token, plus wallet totals. Built **from your own buys/sells only** (deposits/withdrawals are cash movements and are ignored by design); sells beyond CLI-recorded buys are flagged as acquired-elsewhere and excluded rather than corrupting the averages. Stable `PnlJson` shape.
+- **Full Ondo tag taxonomy in `list`/`search`.** 81 tokens (almost every ETF) previously listed with no classification because only 2 of Ondo's 5 tag categories were read. Sector-less tokens now display `asset class · region` (Equities · Asia, Fixed Income · US, Crypto-Native Assets · Global); JSON items carry additive optional `asset_class`/`region`; new `--tag <label>` filters across all categories including 24 factor/risk labels (`--tag asia`, `--tag dividend`, `--tag "fixed income"`), and `--search` matches the full tag set too.
+
+---
+
 ## [0.3.1] — 2026-07-02 — USDC-only wallets, auto gas refuel, parallel by default, key export
 
 ### Added

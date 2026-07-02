@@ -36,7 +36,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm pnl` | Avg entry price + realized/unrealized P&L (from your CLI trades) |
 | `rwa gm hours [--tradable]` | Current session (+ what trades right now) |
-| `rwa gm list` / `search` / `tradable` | Browse & filter the token list |
+| `rwa gm list` / `search` / `tradable` | Browse & filter (sector, `--tag asia/dividend/...`) |
 | `rwa gm history <SYM> [-r 1D..ALL]` | Price history |
 | `rwa gm send <TOKEN> <AMT> <TO> [-y]` | Transfer SOL/USDC/tokens to another wallet |
 | `rwa gm reclaim` | Close empty token accounts, reclaim SOL rent |
@@ -51,6 +51,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC.
+- **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.
 - **Slippage**: 1% default, hard-blocked above 3%; unfillable routes are retried through another market maker automatically.
