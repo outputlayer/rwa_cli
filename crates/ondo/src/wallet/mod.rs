@@ -281,6 +281,22 @@ impl Wallet {
         Ok(path)
     }
 
+    /// The 64-byte secret+public keypair (solana-keygen layout), for export.
+    #[must_use]
+    pub fn to_keypair_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut kp = Zeroizing::new(Vec::with_capacity(64));
+        kp.extend_from_slice(self.signing_key.as_bytes());
+        kp.extend_from_slice(self.verifying_key().as_bytes());
+        kp
+    }
+
+    /// Base58 of the 64-byte keypair — the format Phantom/Solflare import as
+    /// a "private key".
+    #[must_use]
+    pub fn to_base58_keypair(&self) -> Zeroizing<String> {
+        Zeroizing::new(bs58::encode(self.to_keypair_bytes().as_slice()).into_string())
+    }
+
     /// Base58-encoded public key (Solana address).
     #[must_use]
     pub fn pubkey(&self) -> String {

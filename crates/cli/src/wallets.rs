@@ -280,8 +280,40 @@ pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
     load_target(&target, prompt_passphrase)
 }
 
+/// Like `load_target`, but also returns the stored recovery mnemonic when the
+/// encrypted payload carries one (plaintext wallets never store it).
+pub fn load_target_full(
+    target: &WalletTarget,
+    passphrase: impl FnOnce() -> Result<String>,
+) -> Result<(Wallet, Option<String>)> {
+    match target {
+        WalletTarget::Path(path) => {
+            if !path.exists() {
+                return Err(eyre!(
+                    "Wallet key file not found: {}. Re-add it with `rwa keys add`.",
+                    path.display()
+                ));
+            }
+            if wallet::is_age_encrypted(path)? {
+                let pass = passphrase()?;
+                Wallet::from_encrypted_file_full(path, &pass)
+            } else {
+                Ok((Wallet::from_file(path)?, None))
+            }
+        }
+        WalletTarget::LegacyDefault => {
+            if wallet::is_wallet_encrypted() {
+                let pass = passphrase()?;
+                Wallet::from_encrypted_file_full(&wallet::encrypted_key_path()?, &pass)
+            } else {
+                Ok((Wallet::load_default()?, None))
+            }
+        }
+    }
+}
+
 /// Read the wallet passphrase from `RWA_PASSPHRASE` (one-time warning) or prompt.
-fn prompt_passphrase() -> Result<String> {
+pub(crate) fn prompt_passphrase() -> Result<String> {
     if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
         warn_passphrase_env_once();
         return Ok(p);

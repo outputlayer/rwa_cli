@@ -67,6 +67,13 @@ pub enum KeysAction {
         allow_plaintext: bool,
     },
 
+    /// Export the wallet's secret key (and recovery phrase, when stored)
+    Export {
+        /// Confirm printing SECRET material (required with --json; skips the prompt)
+        #[arg(long)]
+        reveal: bool,
+    },
+
     /// List registered wallets
     List,
 
@@ -113,6 +120,7 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
         KeysAction::Add { name, path, seed_phrase, private_key, allow_plaintext } => {
             add(&name, &path, seed_phrase, private_key, allow_plaintext, json).await
         }
+        KeysAction::Export { reveal } => export(selected, reveal, json).await,
         KeysAction::List => list(json).await,
         KeysAction::Use { name } => use_wallet(&name, json).await,
         KeysAction::Remove { name } => remove(&name, json).await,
@@ -242,6 +250,68 @@ async fn show(selected: Option<&str>) -> Result<()> {
     }
     println!("Address:  {}", w.pubkey());
     println!("Key file: {path_str} {}", if encrypted { "(encrypted)" } else { "" });
+    Ok(())
+}
+
+/// Print the wallet's secret material: base58 keypair (the format
+/// Phantom/Solflare import), the solana-keygen JSON array, and the recovery
+/// phrase when the encrypted payload stores one. Gated behind --reveal (or an
+/// interactive confirmation) so it can never happen by accident.
+async fn export(selected: Option<&str>, reveal: bool, json: bool) -> Result<()> {
+    let cfg = config_dir()?;
+    let reg = crate::wallets::WalletRegistry::load(&cfg)?;
+    let target = reg.resolve(selected)?;
+
+    if !reveal {
+        if json {
+            return Err(eyre::eyre!(
+                "keys export prints SECRET key material; pass --reveal to confirm (required with --json)"
+            ));
+        }
+        let ok = {
+            use std::io::Write as _;
+            print!("This will print your SECRET key and recovery phrase to the terminal. Continue? [y/N] ");
+            std::io::stdout().flush().ok();
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).ok();
+            matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        };
+        if !ok {
+            return Err(eyre::eyre!("Cancelled"));
+        }
+    }
+
+    let (w, mnemonic) = crate::wallets::load_target_full(&target, crate::wallets::prompt_passphrase)?;
+    let keypair = w.to_keypair_bytes();
+    let b58 = w.to_base58_keypair();
+
+    eprintln!(
+        "WARNING: secret material follows — anyone holding it controls the funds. Clear your terminal scrollback/history afterwards."
+    );
+    if json {
+        let obj = serde_json::json!({
+            "pubkey": w.pubkey(),
+            "private_key_base58": &*b58,
+            "private_key_json": &*keypair,
+            "mnemonic": mnemonic,
+        });
+        println!("{obj}");
+        return Ok(());
+    }
+    println!("Address:  {}", w.pubkey());
+    println!("Private key (base58 — import in Phantom/Solflare):");
+    println!("  {}", &*b58);
+    println!("Private key (JSON array — solana-keygen format):");
+    println!("  {}", serde_json::to_string(&*keypair)?);
+    match mnemonic {
+        Some(m) => {
+            println!("Recovery phrase:");
+            println!("  {m}");
+        }
+        None => println!(
+            "Recovery phrase: not stored — plaintext wallets and private-key imports don't keep it (it was shown once at creation, if any)."
+        ),
+    }
     Ok(())
 }
 
