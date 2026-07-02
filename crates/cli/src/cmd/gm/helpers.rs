@@ -7,7 +7,7 @@
 //! list/search flows.
 
 use eyre::Result;
-use rwa_ondo::{gm, token_list, types::{Mint, Symbol}, usecases, wallet};
+use rwa_ondo::{usecases, wallet};
 use serde::Serialize;
 use std::future::Future;
 use std::io::{self, Write};
@@ -209,16 +209,8 @@ pub(super) fn load_wallet(selected: Option<&str>) -> Result<wallet::Wallet> {
     crate::wallets::load_selected(selected)
 }
 
-pub(super) fn resolve_gm_mint(
-    symbol: &str,
-    tokens: &[token_list::GmTokenEntry],
-) -> Result<(Symbol, Mint)> {
-    let entry = gm::resolve_token(symbol, tokens)?;
-    let mint = entry
-        .solana_address
-        .ok_or_else(|| eyre::eyre!("No Solana address for {}", entry.symbol))?;
-    Ok((Symbol::from(entry.symbol), Mint::from(mint)))
-}
+// One canonical symbol->mint resolution path for the whole workspace.
+pub(super) use usecases::gm::resolve_gm_mint;
 
 pub(super) fn clean_name(name: &str) -> String {
     name.replace(" (Ondo Tokenized)", "")

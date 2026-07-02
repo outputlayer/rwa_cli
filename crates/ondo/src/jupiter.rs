@@ -27,7 +27,9 @@ pub use types::{
 pub use crate::USDC_MINT;
 
 /// Wrapped SOL on Solana
-pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+// Single source of truth for the wrapped-SOL mint lives in `spl` (the
+// verification layer compares against it); re-exported here for quoting.
+pub use crate::spl::WSOL_MINT as SOL_MINT;
 pub const USDC_DECIMALS: u8 = 6;
 /// Ondo GM tokens on Solana use 9 decimals (Solana standard).
 pub const GM_SOL_DECIMALS: u8 = 9;

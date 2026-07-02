@@ -56,10 +56,10 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
 - `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
-- `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens sequentially
+- `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens (parallel by default)
 - `rwa --json gm buy-basket <SYM AMT ...> --parallel -y` — buy multiple tokens in parallel
 - `rwa --json gm sell-basket <SYM AMT ...> --dry-run` — preview basket sell quotes
-- `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens sequentially
+- `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens (parallel by default)
 - `rwa --json gm sell-basket <SYM AMT ...> --parallel -y` — sell multiple tokens in parallel
 
 ### Portfolio & history

@@ -16,6 +16,12 @@ use rwa_ondo::usecases;
 use helpers::*;
 
 /// Resolve `RWA_MAX_BPS` from its raw env value: a valid `u32`, else `None`.
+/// CLI value, falling back to the `RWA_MAX_BPS` env default — the single
+/// chokepoint so a new trading subcommand can't forget the env fallback.
+fn effective_max_bps(cli: Option<u32>) -> Option<u32> {
+    cli.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()))
+}
+
 fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
     raw.and_then(|s| s.trim().parse::<u32>().ok())
 }
@@ -82,7 +88,7 @@ pub enum GmAction {
         max_bps: Option<u32>,
     },
 
-    /// Portfolio positions and P&L (Solana)
+    /// Portfolio positions and 24h change (Solana); for entry prices/P&L use `pnl`
     Portfolio {
         /// Wallet address (default: local wallet)
         wallet: Option<String>,
@@ -146,7 +152,7 @@ pub enum GmAction {
         dry_run: bool,
     },
 
-    /// Close all GM positions — sell every token for USDC sequentially
+    /// Close all GM positions — sell every token for USDC (parallel by default)
     CloseAll {
         /// Percentage of each position to sell (e.g. 10%, 50%). Sells 100% if omitted.
         amount: Option<String>,
@@ -237,7 +243,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
         GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps } => {
-            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            let max_bps = effective_max_bps(max_bps);
             trade::buy(
                 &symbol,
                 &amount,
@@ -253,7 +259,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             .await
         }
         GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps } => {
-            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            let max_bps = effective_max_bps(max_bps);
             trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps, selected).await
         }
         GmAction::Portfolio { wallet } => {
@@ -295,7 +301,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             slippage,
             max_bps,
         } => {
-            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            let max_bps = effective_max_bps(max_bps);
             // Parallel is the default (bounded by the order/execute semaphores);
             // --sequential opts into one-at-a-time with 3s spacing.
             close_all::close_all(amount.as_deref(), yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
@@ -303,11 +309,11 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
         GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
         GmAction::BuyBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
-            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            let max_bps = effective_max_bps(max_bps);
             basket::buy_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
         GmAction::SellBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
-            let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));
+            let max_bps = effective_max_bps(max_bps);
             basket::sell_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
     }

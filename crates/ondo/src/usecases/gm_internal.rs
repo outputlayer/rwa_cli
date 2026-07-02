@@ -26,7 +26,7 @@ pub(crate) fn min_usdc_raw() -> u128 {
     10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128
 }
 
-pub(crate) fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
+pub fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
     let entry = gm::resolve_token(symbol, tokens)?;
     let mint = entry
         .solana_address

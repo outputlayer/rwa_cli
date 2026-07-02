@@ -14,8 +14,9 @@ pub use super::gm_positions::{
 };
 use super::gm_order::check_cost_gate;
 
+pub use super::gm_internal::resolve_gm_mint;
 use super::gm_internal::{
-    resolve_gm_mint, check_tradable, check_sol_for_route, preflight_buy_raw,
+    check_tradable, check_sol_for_route, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
 };
 use super::gm_execute::{execute_with_retry, finalize_execution, record_swap_outcome, SwapAuditCtx, SwapParams};
