@@ -7,6 +7,7 @@ use crate::types::{Mint, Symbol};
 pub use super::gm_execute::{execute_sell_from_order, execute_buy_from_order};
 pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy};
 pub use super::gm_gas::{ensure_gas, GasRefuel, REFUEL_USDC_RAW, SOL_LOW_WATER_LAMPORTS};
+pub use super::gm_pnl::{compute_pnl, PnlSummary, TokenPnl};
 pub use super::gm_positions::{
     compute_portfolio, filter_close_positions, ClosePosition, PortfolioPosition,
     PortfolioSummary, PortfolioUnavailable,
