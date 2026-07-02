@@ -504,12 +504,27 @@ mod tests {
     }
 
     #[test]
-    fn from_mnemonic_valid() {
-        // Standard 12-word test mnemonic
+    fn from_mnemonic_derives_the_reference_solana_address() {
+        // Reference vector for the standard BIP-39 test mnemonic at
+        // m/44'/501'/0'/0'. Independently derived: BIP-39 seed via
+        // PBKDF2-HMAC-SHA512(mnemonic, "mnemonic", 2048) then SLIP-10 ed25519
+        // chain (python stdlib hmac/hashlib, no shared code with this crate);
+        // secret 37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445.
+        // This is also the address Phantom/Solflare derive for account #0 —
+        // a wrong path, endianness, or hardened-index bug would produce a
+        // stable, valid-looking, but DIFFERENT wallet and silently strand an
+        // imported seed.
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let w = Wallet::from_mnemonic(phrase).unwrap();
-        let pk = w.pubkey();
-        assert!(pk.len() >= 32 && pk.len() <= 44);
+        assert_eq!(w.pubkey(), "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk");
+
+        // The same secret imported directly must land on the same keypair —
+        // pins from_private_key's hex path against the same vector.
+        let direct = Wallet::from_private_key(
+            "37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445",
+        )
+        .unwrap();
+        assert_eq!(direct.pubkey(), w.pubkey());
     }
 
     #[test]
