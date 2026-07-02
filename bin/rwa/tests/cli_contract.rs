@@ -850,3 +850,70 @@ fn close_all_dry_run_reports_no_positions() {
     assert!(v.get("skipped").is_none(), "empty skipped must be omitted");
     assert_eq!(v["total_usdc"], "0");
 }
+
+/// `gm sell <SYM> all --dry-run --json` walks the full prepare path — RPC
+/// balance, session-limits tradability (all-sessions fixture, wall-clock
+/// independent), Jupiter quote — and emits the dry_run TradeJson shape
+/// without executing.
+#[test]
+fn sell_all_dry_run_emits_trade_json_shape() {
+    let home = test_home("sell-dry-run");
+    let server = MockServer::start();
+
+    // AAL position: 2.0 tokens (9 decimals) on the wallet.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 },
+                        "value": [token_entry(AAL_MINT, 2.0, "2000000000")] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+    let order = server.mock(|when, then| {
+        when.method(GET)
+            .path("/order")
+            // Selling ALL must quote the full raw balance of the GM mint.
+            .query_param("inputMint", AAL_MINT)
+            .query_param("amount", "2000000000");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-sell-1",
+                "inAmount": "2000000000",
+                "outAmount": "25000000",
+                "inUsdValue": 25.0,
+                "outUsdValue": 24.97,
+                "feeBps": 10,
+                "gasless": false,
+                "router": "jupiterz",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "sell", "AAL", "all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "dry_run");
+    assert_eq!(v["token"], "AALon");
+    assert_eq!(v["amount"], "2", "sell all = the whole 2.0 position");
+    assert_eq!(v["counter_token"], "USDC");
+    assert_eq!(v["counter_amount"], "25", "quoted outAmount formatted to USDC");
+    assert_eq!(v["tx"], "", "dry run must not carry a tx link");
+    assert_eq!(v["fee_bps"], 10);
+    assert_eq!(v["router"], "jupiterz");
+    order.assert_hits(1);
+}
