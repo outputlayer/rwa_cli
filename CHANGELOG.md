@@ -9,6 +9,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.1] — 2026-07-02 — USDC-only wallets, auto gas refuel, parallel by default, key export
+
+### Added
+
+- **Fund with USDC only.** The SOL-for-fees check moved from preflight to after quoting: gasless routes (Jupiter pays fees and ATA rent — the common case for RFQ market makers) need no SOL at all, so a wallet holding only USDC can trade. Only non-gasless routes (the Metis fallback) still require ~0.002 SOL, surfaced as `insufficient_funds` with a route-aware message. The sign-time guard now also understands native-SOL output (wSOL unwrap credits lamports on the owner, not a token ATA) — verified end-to-end over mock RPC.
+- **Automatic SOL gas refuel.** Before a real `buy`/`buy-basket`/`send` (never `send SOL`, never dry-run), if SOL is below 0.003 and USDC covers the operation plus 5 USDC, the CLI buys SOL first. The size is **dynamic**: target = 2× (50 transactions at the live network fee estimate + 5 token-account rents), converted to USDC at the quote's own implied SOL price, clamped to [5, 25] USDC. Bootstrapping from zero SOL requires a gasless route. Interactive runs prompt; `-y`/`--json` auto-approve; `RWA_NO_AUTO_GAS=1` disables. Reported as an optional `gas_refuel: {usdc, sol, tx}` object in `TradeJson`/`BuyBasketResultJson`/`SendJson` (additive). Best-effort: an impossible refuel never fails the main operation.
+- **`rwa keys export [--reveal]`** prints the base58 keypair (the format Phantom/Solflare import), the solana-keygen JSON array, and the stored recovery phrase. Gated behind an interactive confirmation or an explicit `--reveal` (mandatory with `--json`).
+- **Mnemonic-first `keys generate`.** New wallets derive from a fresh 12-word BIP39 phrase at the standard Solana path (`m/44'/501'/0'/0'` — restorable in Phantom/Solflare; derivation pinned against an independent reference vector). The phrase is printed once; encrypted wallets embed it inside the age payload so `keys export` can reveal it later (legacy payloads still load). Plaintext `key.json` stays a pure solana-keygen array and never stores the phrase. Seed-phrase imports keep the phrase the same way.
+
+### Changed
+
+- **Baskets and `close-all` execute in parallel by default** (live-measured: 1.4 s vs 13.8 s for a 2-position basket; concurrency stays bounded by internal quote/execute semaphores with per-item retries). `--sequential` opts into the old one-at-a-time 3 s spacing as a rate-limit fallback; `--parallel` is still accepted as a no-op for script compatibility.
+- README rewritten: current timings, USDC-only quick start, no stale duplication.
+
+---
+
 ## [0.3.0] — 2026-07-02 — 24/7 off-hours trading, 5 USDC minimum, safety hardening
 
 ### Breaking
