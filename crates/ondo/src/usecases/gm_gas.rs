@@ -14,9 +14,17 @@ use crate::{amounts, jupiter, solana, wallet};
 /// Refuel triggers below this SOL balance (0.003 SOL ≈ 1.5× the fee floor:
 /// enough for one ATA rent + fees, but already "running on reserve").
 pub const SOL_LOW_WATER_LAMPORTS: u64 = 3_000_000;
-/// Refuel size in raw USDC — the trade minimum (5 USDC ≈ 0.02+ SOL: months of
-/// fees and ~10 ATA creations).
+/// Minimum refuel size in raw USDC — our own trade minimum. The actual size is
+/// dynamic (see `gas_target_lamports`/`refuel_usdc_raw_for`), bounded to
+/// [5, 25] USDC.
 pub const REFUEL_USDC_RAW: u128 = 5_000_000;
+/// Cap on a single refuel, so a fee spike or price glitch can never spend an
+/// outsized chunk of the wallet on gas.
+pub const REFUEL_USDC_MAX_RAW: u128 = 25_000_000;
+/// The gas target covers this many simple transactions...
+const TARGET_TXS: u64 = 50;
+/// ...plus this many new token-account creations (ATA rent dominates).
+const TARGET_NEW_ATAS: u64 = 5;
 /// Below this the wallet can't even pay a single tx fee itself, so the
 /// bootstrap swap must ride a gasless route (Jupiter as fee payer).
 const BOOTSTRAP_LAMPORTS: u64 = 100_000;
@@ -29,10 +37,36 @@ pub struct GasRefuel {
 }
 
 /// Pure decision: SOL below the low-water mark AND enough USDC to cover both
-/// the upcoming operation (`reserved_usdc_raw`) and the refuel itself.
+/// the upcoming operation (`reserved_usdc_raw`) and the minimum refuel.
 pub(crate) fn needs_refuel(sol_lamports: u64, usdc_raw: u128, reserved_usdc_raw: u128) -> bool {
     sol_lamports < SOL_LOW_WATER_LAMPORTS
         && usdc_raw >= reserved_usdc_raw.saturating_add(REFUEL_USDC_RAW)
+}
+
+/// Dynamic gas target at CURRENT network conditions: enough lamports for
+/// `TARGET_TXS` transfers at the live fee estimate plus `TARGET_NEW_ATAS`
+/// token-account rents, doubled as a safety buffer against fee/price drift.
+pub(crate) fn gas_target_lamports(fee_per_tx: u64, ata_rent: u64) -> u64 {
+    2 * (TARGET_TXS.saturating_mul(fee_per_tx) + TARGET_NEW_ATAS.saturating_mul(ata_rent))
+}
+
+/// USDC to spend to buy `missing_lamports`, priced from the probe quote
+/// (`REFUEL_USDC_RAW` → `probe_out_lamports`). Clamped to [5, 25] USDC and to
+/// what remains after the main operation; `None` when even the 5 USDC minimum
+/// doesn't fit (or the probe is degenerate).
+pub(crate) fn refuel_usdc_raw_for(
+    missing_lamports: u64,
+    probe_out_lamports: u64,
+    usdc_available_after_op: u128,
+) -> Option<u128> {
+    if probe_out_lamports == 0 || usdc_available_after_op < REFUEL_USDC_RAW {
+        return None;
+    }
+    let needed = (missing_lamports as u128)
+        .saturating_mul(REFUEL_USDC_RAW)
+        .div_ceil(probe_out_lamports as u128);
+    let clamped = needed.clamp(REFUEL_USDC_RAW, REFUEL_USDC_MAX_RAW);
+    Some(clamped.min(usdc_available_after_op))
 }
 
 /// Check balances and, with the caller's consent, top up SOL by swapping
@@ -72,7 +106,8 @@ pub async fn ensure_gas(
         return Ok(None);
     }
 
-    match refuel(w, &taker, sol_lamports, json).await {
+    let usdc_after_op = usdc_raw.saturating_sub(reserved_usdc_raw);
+    match refuel(w, &taker, sol_lamports, usdc_after_op, rpc_url, json).await {
         Ok(refueled) => Ok(refueled),
         Err(e) => {
             // Best-effort: a failed refuel must not fail the user's trade —
@@ -87,19 +122,55 @@ async fn refuel(
     w: &wallet::Wallet,
     taker: &str,
     sol_lamports: u64,
+    usdc_available_after_op: u128,
+    rpc_url: Option<&str>,
     json: bool,
 ) -> Result<Option<GasRefuel>> {
-    let refuel_raw = REFUEL_USDC_RAW.to_string();
-    let (order, _slippage) = get_order_checked(
+    // Size the refuel from live network conditions: fee estimate + ATA rent
+    // set the lamports target; the probe quote's implied SOL price converts
+    // the missing amount to USDC.
+    let (fee_per_tx, ata_rent) = tokio::join!(
+        solana::estimate_tx_fee_lamports(rpc_url),
+        solana::ata_rent_lamports(rpc_url),
+    );
+    let target = gas_target_lamports(fee_per_tx, ata_rent);
+    let missing = target.saturating_sub(sol_lamports);
+
+    let probe_raw = REFUEL_USDC_RAW.to_string();
+    let (probe, _slippage) = get_order_checked(
         jupiter::USDC_MINT,
         jupiter::SOL_MINT,
-        &refuel_raw,
+        &probe_raw,
         taker,
         None,
         json,
         None,
     )
     .await?;
+    let probe_out: u64 = probe.out_amount.parse().unwrap_or(0);
+    let Some(spend_raw) = refuel_usdc_raw_for(missing, probe_out, usdc_available_after_op) else {
+        eprintln!("Note: cannot size a SOL refuel right now; continuing without.");
+        return Ok(None);
+    };
+
+    // Reuse the probe order when the minimum suffices; otherwise requote at
+    // the computed size.
+    let refuel_raw = spend_raw.to_string();
+    let order = if spend_raw == REFUEL_USDC_RAW {
+        probe
+    } else {
+        let (order, _s) = get_order_checked(
+            jupiter::USDC_MINT,
+            jupiter::SOL_MINT,
+            &refuel_raw,
+            taker,
+            None,
+            json,
+            None,
+        )
+        .await?;
+        order
+    };
 
     // Bootstrap: with (almost) no SOL only a gasless route can execute — the
     // wallet cannot pay the swap's own fee.
@@ -131,6 +202,44 @@ async fn refuel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gas_target_scales_with_live_network_conditions() {
+        // 50 txs × 15_000 lamports + 5 ATAs × 2_039_280 rent, doubled:
+        // 2 × (750_000 + 10_196_400) = 21_892_800 (hand-derived).
+        assert_eq!(gas_target_lamports(15_000, 2_039_280), 21_892_800);
+        // Fee spike 10×: target grows accordingly — dynamic, not fixed.
+        assert_eq!(gas_target_lamports(150_000, 2_039_280), 2 * (7_500_000 + 10_196_400));
+    }
+
+    #[test]
+    fn refuel_size_follows_sol_price_within_bounds() {
+        // Cheap SOL (probe: 5 USDC → 0.025 SOL): the minimum already covers
+        // the target → clamp up to the 5 USDC floor.
+        assert_eq!(
+            refuel_usdc_raw_for(21_892_800, 25_000_000, 100_000_000),
+            Some(REFUEL_USDC_RAW)
+        );
+        // Expensive SOL (probe: 5 USDC → 0.008 SOL, ≈$625/SOL): need more —
+        // ceil(21_892_800 × 5M / 8M) = 13_683_000 raw (13.68 USDC).
+        assert_eq!(
+            refuel_usdc_raw_for(21_892_800, 8_000_000, 100_000_000),
+            Some(13_683_000)
+        );
+        // Absurd fee spike: capped at 25 USDC, never drains the wallet.
+        assert_eq!(
+            refuel_usdc_raw_for(100_000_000, 8_000_000, 100_000_000),
+            Some(REFUEL_USDC_MAX_RAW)
+        );
+        // Only 6 USDC left after the trade: spend what's available.
+        assert_eq!(
+            refuel_usdc_raw_for(21_892_800, 8_000_000, 6_000_000),
+            Some(6_000_000)
+        );
+        // Less than the 5 USDC minimum left, or a degenerate probe: no refuel.
+        assert_eq!(refuel_usdc_raw_for(21_892_800, 8_000_000, 4_999_999), None);
+        assert_eq!(refuel_usdc_raw_for(21_892_800, 0, 100_000_000), None);
+    }
 
     #[test]
     fn needs_refuel_matrix() {

@@ -95,6 +95,12 @@ pub async fn estimate_gas_needed(needs_ata: bool, is_token_2022: bool, rpc_url: 
     with_buffer as f64 / 1_000_000_000.0
 }
 
+/// Rent-exempt minimum for a classic SPL token account, from live RPC
+/// (cached 5 min; falls back to the well-known constant when unreachable).
+pub async fn ata_rent_lamports(rpc_url: Option<&str>) -> u64 {
+    get_rent_exempt_cached(SPL_TOKEN_ACCOUNT_SIZE, rpc_url).await
+}
+
 /// Get cached priority fee, refreshing from RPC if stale.
 async fn get_priority_fee_cached(rpc_url: Option<&str>) -> u64 {
     if let Ok(cache) = FEE_CACHE.lock()

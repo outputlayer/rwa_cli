@@ -22,7 +22,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ## Critical agent rules
 
 - NEVER run `rwa` wallet-changing commands in parallel processes or with `&`
-- Fund a wallet with USDC only: trading works on gasless routes, and the CLI auto-buys 5 USDC of SOL when it runs low (reported as `gas_refuel` in the JSON output; disable with RWA_NO_AUTO_GAS=1)
+- Fund a wallet with USDC only: trading works on gasless routes, and the CLI auto-buys SOL when it runs low (dynamic 5-25 USDC: ~50 txs + 5 ATAs at live fees, x2 buffer) (reported as `gas_refuel` in the JSON output; disable with RWA_NO_AUTO_GAS=1)
 - Multi-token calls (baskets, close-all) run in parallel by default — safe (bounded internally) and fast; `--sequential` is the rate-limit fallback
 - Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
