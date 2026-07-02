@@ -500,6 +500,194 @@ mod tests {
         }
     }
 
+    // ── send_legacy_transaction pipeline (mock RPC) ──────────
+
+    /// Deterministic wallet from the repo's reference vector, so the
+    /// non-capturing httpmock matcher below can hardcode its pubkey.
+    const PIPELINE_TEST_SECRET: &str =
+        "37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445";
+    const PIPELINE_TEST_PUBKEY: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+    /// Blockhash the mock hands out — must appear verbatim in the sent message.
+    const PIPELINE_TEST_BLOCKHASH: [u8; 32] = [7u8; 32];
+
+    /// Contract matcher for the submitted transaction. Returns true only when
+    /// the wire bytes prove the whole pipeline worked:
+    ///   1. a real ed25519 signature by our wallet over the message,
+    ///   2. the mocked blockhash embedded in the message,
+    ///   3. the CU limit tightened to unitsConsumed × 1.1 (50_000 → 55_000).
+    /// `MockMatcherFunction` is a plain fn pointer, hence the constants above.
+    fn sent_tx_satisfies_pipeline_contract(req: &httpmock::prelude::HttpMockRequest) -> bool {
+        use base64::Engine;
+        use crate::wallet::parser::decode_compact_u16 as dec;
+
+        let Some(body) = req.body.as_ref() else { return false };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else { return false };
+        if v["method"] != "sendTransaction" {
+            return false;
+        }
+        let Some(tx_b64) = v["params"][0].as_str() else { return false };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(tx_b64) else {
+            return false;
+        };
+
+        // 1. Signature verifies against the wallet pubkey over the message.
+        let Ok((num_sigs, prefix)) = dec(&bytes) else { return false };
+        if num_sigs != 1 {
+            return false;
+        }
+        let sigs_end = prefix + 64;
+        let message = &bytes[sigs_end..];
+        let Ok(pk_vec) = bs58::decode(PIPELINE_TEST_PUBKEY).into_vec() else { return false };
+        let Ok(pk): std::result::Result<[u8; 32], _> = pk_vec.try_into() else { return false };
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&pk) else { return false };
+        let Ok(sig_bytes): std::result::Result<[u8; 64], _> =
+            bytes[prefix..sigs_end].try_into() else { return false };
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        if vk.verify_strict(message, &sig).is_err() {
+            return false;
+        }
+
+        // 2 + 3. Walk the message: header, accounts, blockhash, instructions.
+        let mut pos = 3; // header bytes
+        let Ok((n_accounts, c)) = dec(&message[pos..]) else { return false };
+        pos += c + n_accounts as usize * 32;
+        if message.len() < pos + 32 || message[pos..pos + 32] != PIPELINE_TEST_BLOCKHASH {
+            return false;
+        }
+        pos += 32;
+        let Ok((n_ix, c)) = dec(&message[pos..]) else { return false };
+        pos += c;
+        let mut cu_limit_tightened = false;
+        for _ in 0..n_ix {
+            pos += 1; // program_id_index
+            let Ok((n_acc, c)) = dec(&message[pos..]) else { return false };
+            pos += c + n_acc as usize;
+            let Ok((dlen, c)) = dec(&message[pos..]) else { return false };
+            pos += c;
+            let data = &message[pos..pos + dlen as usize];
+            pos += dlen as usize;
+            if data.first() == Some(&2) && data.len() == 5 {
+                let units = u32::from_le_bytes(data[1..5].try_into().unwrap());
+                if units != 55_000 {
+                    return false; // CU present but not tightened correctly
+                }
+                cu_limit_tightened = true;
+            }
+        }
+        cu_limit_tightened
+    }
+
+    #[tokio::test]
+    async fn send_legacy_pipeline_tightens_cu_signs_and_confirms() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getLatestBlockhash");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": {
+                    "blockhash": bs58::encode(PIPELINE_TEST_BLOCKHASH).into_string(),
+                    "lastValidBlockHeight": 100
+                }}
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": { "err": null, "unitsConsumed": 50_000, "logs": [] } }
+            }));
+        }).await;
+        let fake_sig = bs58::encode([9u8; 64]).into_string();
+        let sent = server.mock_async(|when, then| {
+            when.method(POST)
+                .body_contains("sendTransaction")
+                .matches(sent_tx_satisfies_pipeline_contract);
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": bs58::encode([9u8; 64]).into_string()
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getSignatureStatuses");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [ { "confirmationStatus": "confirmed", "err": null } ] }
+            }));
+        }).await;
+
+        let wallet = Wallet::from_private_key(PIPELINE_TEST_SECRET).unwrap();
+        assert_eq!(wallet.pubkey(), PIPELINE_TEST_PUBKEY);
+        let tx = super::super::transfer::test_fixture_sol_transfer(&wallet, 1_000_000);
+
+        let result = send_legacy_transaction(
+            &wallet, &tx.0, &tx.1, &tx.2,
+            Some(&server.base_url()),
+            ConfirmLevel::Confirmed,
+        )
+        .await
+        .expect("pipeline must succeed against honest RPC");
+
+        // The strict matcher accepted exactly one submission, and the caller
+        // got the network's signature back, confirmed.
+        sent.assert_hits_async(1).await;
+        assert_eq!(result.signature, fake_sig);
+        assert!(result.confirmed);
+    }
+
+    #[tokio::test]
+    async fn send_legacy_pipeline_fails_closed_when_simulation_fails() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getLatestBlockhash");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": {
+                    "blockhash": bs58::encode(PIPELINE_TEST_BLOCKHASH).into_string(),
+                    "lastValidBlockHeight": 100
+                }}
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": {
+                    "err": { "InstructionError": [1, "Custom"] },
+                    "logs": ["Program log: would fail on-chain"]
+                }}
+            }));
+        }).await;
+        let sent = server.mock_async(|when, then| {
+            when.method(POST).body_contains("sendTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": "never"
+            }));
+        }).await;
+
+        let wallet = Wallet::from_private_key(PIPELINE_TEST_SECRET).unwrap();
+        let tx = super::super::transfer::test_fixture_sol_transfer(&wallet, 1_000_000);
+
+        let err = match send_legacy_transaction(
+            &wallet, &tx.0, &tx.1, &tx.2,
+            Some(&server.base_url()),
+            ConfirmLevel::Confirmed,
+        )
+        .await
+        {
+            Ok(_) => panic!("failing simulation must abort the pipeline"),
+            Err(e) => e,
+        };
+
+        // Fail closed: NOTHING was submitted to the network.
+        sent.assert_hits_async(0).await;
+        let te = err.downcast_ref::<TransactionError>().expect("typed error");
+        assert_eq!(te.kind, TransactionErrorKind::SimulationFailure);
+    }
+
     // ── compute budget instructions ──────────────────────────
 
     #[test]

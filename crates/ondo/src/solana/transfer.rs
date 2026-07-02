@@ -519,6 +519,19 @@ fn build_close_batch(
 }
 
 
+/// Test-only: a real SOL-transfer BuiltTx, decomposed for the send pipeline
+/// test in `transaction.rs`.
+#[cfg(test)]
+pub(super) fn test_fixture_sol_transfer(
+    wallet: &Wallet,
+    lamports: u64,
+) -> (Vec<Vec<u8>>, Vec<Instruction>, MessageHeader) {
+    let from = bs58::decode(wallet.pubkey()).into_vec().expect("valid pubkey");
+    let to = vec![42u8; 32];
+    let tx = build_sol_transfer(&from, &to, lamports, 0);
+    (tx.accounts, tx.instructions, tx.header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
