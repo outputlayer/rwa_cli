@@ -21,6 +21,23 @@ pub(crate) const ATA_PROGRAM: [u8; 32] = [
     11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
 ];
 
+/// Wrapped-SOL mint — native SOL in SPL form.
+pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+/// True when `mint` is wrapped SOL. Routes that output SOL unwrap it, so the
+/// credit lands as native lamports on the owner account rather than a token
+/// ATA — verification must account for that.
+pub(crate) fn is_wsol(mint: &[u8; 32]) -> bool {
+    static WSOL: std::sync::LazyLock<[u8; 32]> = std::sync::LazyLock::new(|| {
+        bs58::decode(WSOL_MINT)
+            .into_vec()
+            .expect("const mint decodes")
+            .try_into()
+            .expect("32 bytes")
+    });
+    mint == &*WSOL
+}
+
 /// Derive the ATA pubkey for fixed-size keys.
 ///
 /// `owner` and `mint` are 32-byte Solana pubkeys; `token_program` is either

@@ -20,7 +20,7 @@ use base64::Engine;
 use eyre::Result;
 
 use super::rpc::{RpcMode, rpc_call_simple};
-use crate::spl::mint_atas;
+use crate::spl::{is_wsol, mint_atas};
 
 /// Why a pre-sign swap simulation refused. The execute layer maps each to the
 /// right action: an unfillable route is retried (with that router excluded), an
@@ -80,6 +80,15 @@ fn token_amount_from_account(account: Option<&serde_json::Value>) -> u128 {
     let mut amt = [0u8; 8];
     amt.copy_from_slice(&bytes[TOKEN_AMOUNT_OFFSET..TOKEN_AMOUNT_OFFSET + 8]);
     u64::from_le_bytes(amt) as u128
+}
+
+/// Native lamports of an account entry; `0` for `null`/malformed so a missing
+/// account reads as zero balance.
+fn lamports_from_account(account: Option<&serde_json::Value>) -> u128 {
+    account
+        .and_then(|a| a.get("lamports"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u128
 }
 
 /// Pure safety decision over the simulated balance deltas.
@@ -148,11 +157,18 @@ pub async fn verify_swap_simulation(
     // real ATA is whichever the mint actually uses.
     let input_atas = mint_atas(owner, input_mint)?;
     let output_atas = mint_atas(owner, output_mint)?;
-    let watch: Vec<String> = input_atas
+    // A native-SOL output (wSOL) is unwrapped by the route: the credit lands
+    // as lamports on the owner account, not on a token ATA — watch the owner
+    // too and count its lamports delta as output credit.
+    let wsol_out = is_wsol(output_mint);
+    let mut watch: Vec<String> = input_atas
         .iter()
         .chain(output_atas.iter())
         .map(|a| bs58::encode(a).into_string())
         .collect();
+    if wsol_out {
+        watch.push(bs58::encode(owner).into_string());
+    }
 
     // Pre-balances (current on-chain state).
     let pre: serde_json::Value = rpc_call_simple(
@@ -210,11 +226,17 @@ pub async fn verify_swap_simulation(
             .map(|i| token_amount_from_account(accounts.and_then(|a| a.get(i))))
             .sum()
     };
-    // watch order: [input_token, input_token2022, output_token, output_token2022]
+    // watch order: [input_token, input_token2022, output_token, output_token2022, owner?]
     let input_pre = sum(pre_accounts, 0..2);
     let input_post = sum(post_accounts, 0..2);
-    let output_pre = sum(pre_accounts, 2..4);
-    let output_post = sum(post_accounts, 2..4);
+    let mut output_pre = sum(pre_accounts, 2..4);
+    let mut output_post = sum(post_accounts, 2..4);
+    if wsol_out {
+        // Owner lamports delta = unwrapped SOL credit (minus the tx fee when
+        // the owner is fee payer — noise well inside the slippage tolerance).
+        output_pre += lamports_from_account(pre_accounts.and_then(|a| a.get(4)));
+        output_post += lamports_from_account(post_accounts.and_then(|a| a.get(4)));
+    }
 
     let input_debited = input_pre.saturating_sub(input_post);
     let output_credited = output_post.saturating_sub(output_pre);
@@ -418,6 +440,92 @@ mod tests {
         .expect_err("failing simulation must refuse to sign");
         assert!(
             matches!(err.downcast_ref::<SwapSimError>(), Some(SwapSimError::OnChainWouldFail(_))),
+            "wrong error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wsol_output_counts_owner_lamports_delta() {
+        // Buying native SOL: the route unwraps, so token ATAs stay empty and
+        // the credit arrives as lamports on the owner (watch index 4).
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [
+                    token_account_json(50_000_000), null, null, null,
+                    { "lamports": 1_000_000u64, "data": ["", "base64"] }
+                ]}
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                // 5 USDC debited; owner gains 25_000_000 lamports (0.025 SOL).
+                "result": { "value": {
+                    "err": null,
+                    "accounts": [
+                        token_account_json(45_000_000), null, null, null,
+                        { "lamports": 26_000_000u64, "data": ["", "base64"] }
+                    ],
+                    "logs": []
+                }}
+            }));
+        }).await;
+
+        let wsol: [u8; 32] = bs58::decode(crate::spl::WSOL_MINT)
+            .into_vec().unwrap().try_into().unwrap();
+        verify_swap_simulation(
+            "AQID", &[2u8; 32], 5_000_000, &wsol, 25_000_000, &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+        .expect("unwrapped SOL credit must satisfy the floor");
+    }
+
+    #[tokio::test]
+    async fn wsol_output_under_credit_refuses() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [
+                    token_account_json(50_000_000), null, null, null,
+                    { "lamports": 1_000_000u64, "data": ["", "base64"] }
+                ]}
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                // One lamport below the floor.
+                "result": { "value": {
+                    "err": null,
+                    "accounts": [
+                        token_account_json(45_000_000), null, null, null,
+                        { "lamports": 25_999_999u64, "data": ["", "base64"] }
+                    ],
+                    "logs": []
+                }}
+            }));
+        }).await;
+
+        let wsol: [u8; 32] = bs58::decode(crate::spl::WSOL_MINT)
+            .into_vec().unwrap().try_into().unwrap();
+        let err = verify_swap_simulation(
+            "AQID", &[2u8; 32], 5_000_000, &wsol, 25_000_000, &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+        .expect_err("under-delivered lamports must refuse to sign");
+        assert!(
+            matches!(err.downcast_ref::<SwapSimError>(), Some(SwapSimError::OutputBelowQuote(_))),
             "wrong error: {err}"
         );
     }

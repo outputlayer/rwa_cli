@@ -223,6 +223,19 @@ fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
             return Ok(());
         }
     }
+    // Native-SOL output (wSOL unwrap): the credit lands as lamports on the
+    // owner account itself, not on a token ATA — there may be no output ATA
+    // to find. Accept when the owner is a writable account; the simulation
+    // gate verifies the actual lamports delta before signing.
+    if crate::spl::is_wsol(&expected.output_mint) {
+        let owner_writable = msg
+            .writable_static_indices()
+            .filter_map(|i| msg.keys.get(i))
+            .any(|k| k == &expected.owner_pubkey);
+        if owner_writable {
+            return Ok(());
+        }
+    }
     Err(VerifyError::OutputAtaMissing.into())
 }
 
@@ -452,6 +465,54 @@ mod tests {
             owner_pubkey: owner,
         };
         assert_err_kind(decode_and_verify(&b64, &expected), VerifyError::OutputAtaMissing);
+    }
+
+    #[test]
+    fn wsol_output_accepts_owner_writable_without_output_ata() {
+        // Buying native SOL: the unwrap credits the owner's lamports, so no
+        // wSOL output ATA may exist in the tx at all. With a visible input
+        // leg the verifier must accept (owner is writable) and defer the
+        // economic check to the simulation gate — the identical shape with a
+        // non-wSOL output mint is rejected as OutputAtaMissing (test above).
+        let owner = filled(0x11);
+        let input_mint = filled(0x22);
+        let output_mint: [u8; 32] = bs58::decode(crate::spl::WSOL_MINT)
+            .into_vec().unwrap().try_into().unwrap();
+        let input_amount = 5_000_000u64;
+        let input_ata = derive_ata_pubkey(&owner, &input_mint, &TOKEN_PROGRAM_ID).unwrap();
+        let blockhash = filled(0x55);
+        let intermediate = filled(0x44);
+        let token_program = TOKEN_PROGRAM_ID;
+
+        let keys: Vec<[u8; 32]> = vec![
+            owner, input_ata, intermediate, token_program, input_mint,
+        ];
+        let header = (1u8, 0u8, 2u8);
+
+        let mut ix_data = vec![12u8];
+        ix_data.extend_from_slice(&input_amount.to_le_bytes());
+        ix_data.push(6);
+        let ix = ParsedInstruction {
+            program_id_index: 3,
+            account_indices: vec![1, 4, 2, 0],
+            data: ix_data,
+        };
+
+        let msg_bytes = serialize_v0_message(header, &keys, &blockhash, &[ix]);
+        let mut tx = Vec::new();
+        encode_compact_u16(1, &mut tx);
+        tx.extend_from_slice(&[0u8; 64]);
+        tx.extend_from_slice(&msg_bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        let expected = ExpectedSwap {
+            input_mint,
+            input_amount,
+            output_mint,
+            owner_pubkey: owner,
+        };
+        decode_and_verify(&b64, &expected)
+            .expect("wSOL output with writable owner must defer to the sim gate");
     }
 
     // ── AC-1.3 amount mismatch ───────────────────────────────────────────
