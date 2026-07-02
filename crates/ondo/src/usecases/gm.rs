@@ -13,7 +13,7 @@ pub use super::gm_positions::{
 use super::gm_order::check_cost_gate;
 
 use super::gm_internal::{
-    resolve_gm_mint, check_tradable, preflight_buy_raw,
+    resolve_gm_mint, check_tradable, check_sol_for_route, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
 };
 use super::gm_execute::{execute_with_retry, finalize_execution, SwapParams};
@@ -207,7 +207,7 @@ pub async fn prepare_buy(
         preflight_buy_raw(&taker, &raw_usdc, rpc_url, !quote_only),
         check_tradable(&symbol, None),
     );
-    preflight_res?;
+    let sol_lamports = preflight_res?;
     tradable_res?;
 
     let (order, slippage_pct) = get_order_checked(
@@ -222,6 +222,11 @@ pub async fn prepare_buy(
     .await?;
 
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
+    // Route-aware SOL gate: gasless routes need no SOL (USDC-only wallets
+    // trade); self-paid routes (Metis) need MIN_SOL_FOR_FEES.
+    if !quote_only {
+        check_sol_for_route(order.gasless, sol_lamports)?;
+    }
 
     Ok(SwapPlan {
         symbol,

@@ -40,6 +40,7 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
 // the JSON entry + USDC delta on success, or a CloseFailJson on failure.
 // Used by both the sequential and parallel orchestrators below.
 
+#[allow(clippy::too_many_arguments)]
 async fn process_buy_item(
     wallet: Arc<rwa_ondo::wallet::Wallet>,
     taker: String,
@@ -48,8 +49,9 @@ async fn process_buy_item(
     json: bool,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    sol_lamports: u64,
 ) -> std::result::Result<(BuyBasketItemJson, f64), CloseFailJson> {
-    let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps).await {
+    let order = match usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps, Some(sol_lamports)).await {
         Ok(o) => o,
         Err(e) => {
             if !json {
@@ -176,7 +178,7 @@ pub async fn buy_basket(
         items.push((sym.clone(), raw_u));
         raw_amounts.push(raw);
     }
-    usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url).await?;
+    let sol_lamports = usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url).await?;
 
     if !json {
         let mode = if parallel { " (parallel)" } else { "" };
@@ -216,7 +218,7 @@ pub async fn buy_basket(
         |(sym, raw)| {
             format!("Buying {} {} USDC ...", sym, amounts::format_amount(raw, jupiter::USDC_DECIMALS))
         },
-        |(sym, raw)| process_buy_item(wallet_arc.clone(), taker.clone(), sym, raw, json, slippage, max_bps),
+        |(sym, raw)| process_buy_item(wallet_arc.clone(), taker.clone(), sym, raw, json, slippage, max_bps, sol_lamports),
     )
     .await;
 
@@ -262,7 +264,7 @@ async fn buy_basket_dry_run(
         |(sym, raw)| {
             let taker = taker.clone();
             async move {
-                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps).await;
+                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps, None).await;
                 (sym, result)
             }
         },

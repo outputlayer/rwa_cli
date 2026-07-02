@@ -175,10 +175,12 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
     Ok(())
 }
 
-/// Pure affordability check for a buy. Separated from `preflight_buy_raw` so it
-/// is unit-testable and so `--quote-only` can skip it. Amounts are raw on-chain
-/// units; `requested` is raw USDC.
-fn check_buy_funds(usdc_balance_raw: &str, sol_lamports: u64, requested: u128) -> Result<()> {
+/// Pure USDC affordability check for a buy. Separated from `preflight_buy_raw`
+/// so it is unit-testable and so `--quote-only` can skip it. Amounts are raw
+/// on-chain units; `requested` is raw USDC. SOL is deliberately NOT checked
+/// here — whether SOL is needed at all depends on the quoted route (see
+/// `check_sol_for_route`).
+fn check_buy_funds(usdc_balance_raw: &str, requested: u128) -> Result<()> {
     let balance: u128 = usdc_balance_raw
         .parse()
         .map_err(|_| eyre!("Invalid on-chain USDC amount: {usdc_balance_raw}"))?;
@@ -193,12 +195,23 @@ fn check_buy_funds(usdc_balance_raw: &str, sol_lamports: u64, requested: u128) -
         )
         .into());
     }
+    Ok(())
+}
+
+/// SOL-for-fees gate, applied AFTER quoting: on a gasless route Jupiter is the
+/// fee/rent payer, so a USDC-only wallet (zero SOL) can trade. A self-paid
+/// route (`gasless` false or unknown — e.g. the Metis fallback) still needs
+/// `MIN_SOL_FOR_FEES`.
+pub(crate) fn check_sol_for_route(gasless: Option<bool>, sol_lamports: u64) -> Result<()> {
+    if gasless == Some(true) {
+        return Ok(());
+    }
     let sol = sol_lamports as f64 / 1_000_000_000.0;
     if sol < MIN_SOL_FOR_FEES {
         return Err(GmTradeError::new(
             GmTradeErrorKind::InsufficientFunds,
             format!(
-                "Insufficient SOL for transaction fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL."
+                "The quoted route is not gasless and needs SOL for fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL. Fund the wallet with SOL, or retry — a gasless route needs none."
             ),
         )
         .into());
@@ -206,12 +219,16 @@ fn check_buy_funds(usdc_balance_raw: &str, sol_lamports: u64, requested: u128) -
     Ok(())
 }
 
+/// Buy preflight: minimum + USDC affordability. Returns the wallet's SOL
+/// balance in lamports so the caller can run the route-aware SOL gate after
+/// quoting (`check_sol_for_route`). Returns 0 without touching the RPC when
+/// `check_funds` is false (`--quote-only`).
 pub(crate) async fn preflight_buy_raw(
     pubkey: &str,
     raw_usdc_amount: &str,
     rpc_url: Option<&str>,
     check_funds: bool,
-) -> Result<()> {
+) -> Result<u64> {
     let requested: u128 = raw_usdc_amount
         .parse()
         .map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
@@ -224,7 +241,7 @@ pub(crate) async fn preflight_buy_raw(
         .into());
     }
     if !check_funds {
-        return Ok(());
+        return Ok(0);
     }
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),
@@ -235,8 +252,9 @@ pub(crate) async fn preflight_buy_raw(
     let sol_lamports: u64 = sol_raw
         .parse()
         .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
-    check_buy_funds(&balance_raw, sol_lamports, requested)
-        .wrap_err_with(|| format!("Fund wallet: {pubkey}"))
+    check_buy_funds(&balance_raw, requested)
+        .wrap_err_with(|| format!("Fund wallet: {pubkey}"))?;
+    Ok(sol_lamports)
 }
 
 /// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's
@@ -318,19 +336,28 @@ mod tests {
 
     #[test]
     fn check_buy_funds_ok_when_sufficient() {
-        assert!(super::check_buy_funds("100000000", 10_000_000, 50_000_000).is_ok());
+        assert!(super::check_buy_funds("100000000", 50_000_000).is_ok());
     }
 
     #[test]
     fn check_buy_funds_errors_on_insufficient_usdc() {
-        let err = super::check_buy_funds("50000000", 10_000_000, 100_000_000).unwrap_err();
+        let err = super::check_buy_funds("50000000", 100_000_000).unwrap_err();
         assert!(err.to_string().contains("Insufficient USDC"));
     }
 
     #[test]
-    fn check_buy_funds_errors_on_insufficient_sol() {
-        let err = super::check_buy_funds("100000000", 0, 50_000_000).unwrap_err();
-        assert!(err.to_string().contains("Insufficient SOL"));
+    fn sol_gate_is_route_aware() {
+        // Gasless route (Jupiter pays fees + rent): a USDC-only wallet with
+        // ZERO SOL must be allowed to trade.
+        assert!(check_sol_for_route(Some(true), 0).is_ok());
+        // Self-paid route (Metis: gasless=false) or unknown: SOL required.
+        let err = check_sol_for_route(Some(false), 0).unwrap_err();
+        let te = err.downcast_ref::<GmTradeError>().expect("typed");
+        assert_eq!(te.kind, GmTradeErrorKind::InsufficientFunds);
+        assert!(check_sol_for_route(None, 0).is_err(), "unknown gasless = conservative");
+        // Boundary: exactly MIN_SOL_FOR_FEES (2_000_000 lamports) passes.
+        assert!(check_sol_for_route(None, 2_000_000).is_ok());
+        assert!(check_sol_for_route(Some(false), 1_999_999).is_err());
     }
 
     #[test]
@@ -362,10 +389,5 @@ mod tests {
         assert!(resolve_sell_amount("abc%", "TSLA", "1500000000", 9).is_err());
     }
 
-    #[test]
-    fn check_buy_funds_sol_boundary_is_strict_less_than() {
-        // exactly MIN_SOL_FOR_FEES (2_000_000 lamports) passes; one below fails.
-        assert!(super::check_buy_funds("100000000", 2_000_000, 50_000_000).is_ok());
-        assert!(super::check_buy_funds("100000000", 1_999_999, 50_000_000).is_err());
-    }
+
 }

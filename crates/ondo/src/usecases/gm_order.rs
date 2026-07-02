@@ -6,7 +6,7 @@ use super::gm::{
     cost_exceeds_max_bps,
 };
 use super::gm_internal::{
-    MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, get_order_checked,
+    MIN_USDC_AMOUNT, check_sol_for_route, check_tradable, get_order_checked,
     min_usdc_raw, resolve_gm_mint, resolve_sell_amount,
 };
 use crate::types::Symbol;
@@ -119,15 +119,16 @@ fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
     Ok(())
 }
 
-/// Preflight for basket buy: each item meets the buy minimum, total USDC
-/// coverage, and SOL for fees. Per-token session gating happens in
-/// `check_tradable` when each order is fetched.
+/// Preflight for basket buy: each item meets the buy minimum and total USDC
+/// coverage. Returns the wallet's SOL balance in lamports for the per-item
+/// route-aware SOL gate (`check_sol_for_route`) applied after each quote.
+/// Per-token session gating happens in `check_tradable` per order.
 pub async fn preflight_basket_buy(
     pubkey: &str,
     items: &[(String, u128)],
     total_usdc_raw: u128,
     rpc_url: Option<&str>,
-) -> Result<()> {
+) -> Result<u64> {
     check_basket_buy_minimums(items)?;
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),
@@ -152,20 +153,12 @@ pub async fn preflight_basket_buy(
     let sol_lamports: u64 = sol_raw
         .parse()
         .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
-    let sol = sol_lamports as f64 / 1_000_000_000.0;
-    if sol < MIN_SOL_FOR_FEES {
-        return Err(GmTradeError::new(
-            GmTradeErrorKind::InsufficientFunds,
-            format!(
-                "Insufficient SOL for fees: have {sol:.6} SOL, need ~{MIN_SOL_FOR_FEES} SOL.\n  Fund wallet: {pubkey}"
-            ),
-        )
-        .into());
-    }
-    Ok(())
+    Ok(sol_lamports)
 }
 
-/// Phase 1 for basket buy: resolve mint, check tradable, fetch + validate buy order.
+/// Phase 1 for basket buy: resolve mint, check tradable, fetch + validate buy
+/// order. `sol_lamports` feeds the route-aware SOL gate (`None` skips it —
+/// dry-run previews don't execute).
 pub async fn fetch_buy_order(
     symbol: &str,
     usdc_raw: &str,
@@ -173,6 +166,7 @@ pub async fn fetch_buy_order(
     json: bool,
     slippage_bps: Option<u32>,
     max_bps: Option<u32>,
+    sol_lamports: Option<u64>,
 ) -> Result<BuyOrderReady> {
     let tokens = token_list::get_token_list();
     let sym = Symbol::from(symbol);
@@ -190,6 +184,9 @@ pub async fn fetch_buy_order(
     )
     .await?;
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
+    if let Some(sol) = sol_lamports {
+        check_sol_for_route(order.gasless, sol)?;
+    }
     Ok(BuyOrderReady {
         symbol: sym.to_string(),
         gm_mint,

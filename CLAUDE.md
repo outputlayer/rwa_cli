@@ -125,7 +125,7 @@ rwa update -y
 
 ## Jupiter behavior
 
-- Jupiter handles gas for swaps in many cases; users still need SOL for transfers
+- USDC-only wallets (zero SOL) can trade: the SOL-for-fees check runs AFTER quoting and passes when the route is gasless (Jupiter pays fees + ATA rent); only non-gasless routes (Metis fallback) require ~0.002 SOL, surfaced as `insufficient_funds`. `send` and `reclaim` always need SOL
 - Jupiter requests use `api.jup.ag` (deprecated `lite-api.jup.ag` retired); set `RWA_JUPITER_API_KEY` to raise limits. Transient `/execute` failures surface as `execute_unavailable` and auto-retry; ambiguous timeouts are not retried.
 - Public routing order is `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback
 - Default slippage is 100 bps
