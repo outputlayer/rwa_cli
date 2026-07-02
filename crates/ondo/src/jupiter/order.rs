@@ -571,6 +571,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mm_quote_rejection_is_not_retried_against_same_backend() {
+        // Behavior contract (not string constants): a 400 "Quote not available
+        // from market maker" must produce exactly ONE HTTP attempt — no backoff
+        // retries against the same backend — so the fallback chain can move on
+        // fast. Verified by the mock's hit counter.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let mock = server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(400)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({
+                    "requestId": "r-1",
+                    "error": "Quote not available from market maker"
+                }));
+        }).await;
+
+        let err = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(100),
+        ).await.unwrap_err();
+
+        mock.assert_hits_async(1).await;
+        assert!(err.to_string().contains("Quote not available"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn transient_server_error_is_retried_with_backoff() {
+        // Counterpart contract: a 5xx IS retried (ORDER_MAX_RETRIES + 1
+        // attempts) before giving up.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let mock = server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(500).body("upstream exploded");
+        }).await;
+
+        let err = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(100),
+        ).await.unwrap_err();
+
+        mock.assert_hits_async((ORDER_MAX_RETRIES + 1) as usize).await;
+        assert!(err.to_string().contains("server error"), "err: {err}");
+    }
+
+    #[tokio::test]
     async fn get_order_returns_err_when_response_has_error_field() {
         use httpmock::prelude::*;
         let server = MockServer::start_async().await;
