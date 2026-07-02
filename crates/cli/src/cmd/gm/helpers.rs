@@ -14,7 +14,42 @@ use std::io::{self, Write};
 use std::time::Duration;
 use tokio::task::JoinSet;
 
-use super::types::CloseFailJson;
+use super::types::{CloseFailJson, GasRefuelJson};
+
+/// SOL auto-refuel gate for money commands: when SOL is below the low-water
+/// mark and USDC covers the operation plus 5 USDC, buy SOL first so a
+/// USDC-only wallet never strands itself. Consent is an interactive prompt;
+/// `-y`/`--json` auto-approve (agents opted into execution); `RWA_NO_AUTO_GAS`
+/// disables entirely. Best-effort: never fails the caller's operation.
+pub(super) async fn auto_gas(
+    w: &wallet::Wallet,
+    rpc_url: Option<&str>,
+    yes: bool,
+    json: bool,
+    reserved_usdc_raw: u128,
+) -> Result<Option<GasRefuelJson>> {
+    let disabled = std::env::var("RWA_NO_AUTO_GAS")
+        .is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0");
+    if disabled {
+        return Ok(None);
+    }
+    let refuel = usecases::gm::ensure_gas(w, rpc_url, json, reserved_usdc_raw, |sol| {
+        yes || json
+            || confirm(&format!(
+                "SOL is low ({sol:.6}) — buy 5 USDC of SOL for fees first?"
+            ))
+    })
+    .await?;
+    Ok(refuel.map(|r| {
+        let tx = solscan_tx_url(&r.signature);
+        eprintln!("Gas refuel: {} USDC -> {} SOL  tx: {tx}", r.usdc_spent, r.sol_received);
+        GasRefuelJson {
+            usdc: r.usdc_spent,
+            sol: r.sol_received,
+            tx,
+        }
+    }))
+}
 
 /// Orchestrate multi-item swaps for close-all and both baskets — the single
 /// place that owns sequential-vs-parallel semantics, so they can't drift

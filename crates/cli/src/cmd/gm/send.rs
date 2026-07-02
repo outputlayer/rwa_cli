@@ -15,10 +15,27 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool,
 
     let token_upper = token.to_uppercase();
 
+    // Auto-refuel SOL from USDC before a real transfer (transfers always pay
+    // their own fees). Deliberately NOT for `send SOL`: buying more SOL right
+    // before the user drains SOL would fight their intent.
+    let gas_refuel = if dry_run || token_upper == "SOL" {
+        None
+    } else {
+        let reserved = if token_upper == "USDC" {
+            amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
+                .ok()
+                .and_then(|r| r.parse::<u128>().ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        auto_gas(&w, rpc_url, yes, json, reserved).await?
+    };
+
     match token_upper.as_str() {
         "SOL"  => send_sol(&w, amount, to, yes, dry_run, json, rpc_url).await,
-        "USDC" => send_usdc(&w, amount, to, yes, dry_run, json, rpc_url).await,
-        _      => send_gm_token(&w, &token_upper, amount, to, yes, dry_run, json, rpc_url).await,
+        "USDC" => send_usdc(&w, amount, to, yes, dry_run, json, rpc_url, gas_refuel).await,
+        _      => send_gm_token(&w, &token_upper, amount, to, yes, dry_run, json, rpc_url, gas_refuel).await,
     }
 }
 
@@ -37,6 +54,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
     if dry_run {
         if json {
             return json_out(&SendJson {
+                gas_refuel: None,
                 status: "dry_run",
                 token: "SOL".into(),
                 amount: display_amount.clone(),
@@ -57,6 +75,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
 
     if json {
         return json_out(&SendJson {
+            gas_refuel: None,
             status: if result.confirmed { "success" } else { "sent" },
             token: "SOL".into(),
             amount: display_amount.clone(),
@@ -72,7 +91,8 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
     Ok(())
 }
 
-async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
     let pubkey = w.pubkey();
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
@@ -110,6 +130,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
     if dry_run {
         if json {
             return json_out(&SendJson {
+                gas_refuel: None,
                 status: "dry_run",
                 token: "USDC".into(),
                 amount: display_amount.clone(),
@@ -130,6 +151,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
 
     if json {
         return json_out(&SendJson {
+            gas_refuel,
             status: if result.confirmed { "success" } else { "sent" },
             token: "USDC".into(),
             amount: display_amount.clone(),
@@ -146,7 +168,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
     let pubkey = w.pubkey();
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -182,6 +204,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     if dry_run {
         if json {
             return json_out(&SendJson {
+                gas_refuel: None,
                 status: "dry_run",
                 token: sym.to_string(),
                 amount: token_display.clone(),
@@ -202,6 +225,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
 
     if json {
         return json_out(&SendJson {
+            gas_refuel,
             status: if result.confirmed { "success" } else { "sent" },
             token: sym.to_string(),
             amount: token_display.clone(),

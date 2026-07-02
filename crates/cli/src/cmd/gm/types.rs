@@ -43,6 +43,8 @@ pub struct TradeJson {
     pub counter_amount: String,
     pub counter_token: &'static str,
     pub tx: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_refuel: Option<GasRefuelJson>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "ser_opt_f64_4"
@@ -178,6 +180,16 @@ pub struct SendJson {
     pub amount: String,
     pub recipient: String,
     pub tx: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_refuel: Option<GasRefuelJson>,
+}
+
+/// Automatic SOL gas refuel executed before the main operation.
+#[derive(Serialize)]
+pub struct GasRefuelJson {
+    pub usdc: String,
+    pub sol: String,
+    pub tx: String,
 }
 
 #[derive(Serialize)]
@@ -228,6 +240,8 @@ pub struct ReclaimJson {
 #[derive(Serialize)]
 pub struct BuyBasketResultJson {
     pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_refuel: Option<GasRefuelJson>,
     pub bought: Vec<BuyBasketItemJson>,
     pub failed: Vec<CloseFailJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

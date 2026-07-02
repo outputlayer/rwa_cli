@@ -40,6 +40,7 @@ fn rwa(home: &Path) -> Command {
         "RWA_ONDO_API_URL",
         "RWA_ONDO_SESSION_URL",
         "RWA_JUPITER_URL",
+        "RWA_NO_AUTO_GAS",
     ] {
         c.env_remove(var);
     }

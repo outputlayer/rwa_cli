@@ -178,6 +178,13 @@ pub async fn buy_basket(
         items.push((sym.clone(), raw_u));
         raw_amounts.push(raw);
     }
+    // Auto-refuel SOL from USDC before a real basket buy; the reserve keeps
+    // the refuel from eating the basket's own USDC.
+    let gas_refuel = if dry_run {
+        None
+    } else {
+        auto_gas(&w, rpc_url, yes, json, total_raw).await?
+    };
     let sol_lamports = usecases::gm::preflight_basket_buy(&taker, &items, total_raw, rpc_url).await?;
 
     if !json {
@@ -225,6 +232,7 @@ pub async fn buy_basket(
     let total_str = format!("{total_usdc_spent:.2}");
     if json {
         return json_out(&BuyBasketResultJson {
+            gas_refuel,
             status: "success",
             bought,
             failed,
@@ -283,6 +291,7 @@ async fn buy_basket_dry_run(
             })
             .collect();
         return json_out(&BuyBasketResultJson {
+            gas_refuel: None,
             status: "dry_run",
             bought: preview,
             failed,
@@ -497,6 +506,7 @@ mod tests {
     #[test]
     fn buy_basket_result_json_failed_entry_has_token_and_error() {
         let result = BuyBasketResultJson {
+            gas_refuel: None,
             status: "success",
             bought: vec![BuyBasketItemJson {
                 token: "JNJon".to_string(),
@@ -529,6 +539,7 @@ mod tests {
     #[test]
     fn buy_basket_dry_run_has_zero_total_and_empty_tx() {
         let result = BuyBasketResultJson {
+            gas_refuel: None,
             status: "dry_run",
             bought: vec![BuyBasketItemJson {
                 token: "ABTon".to_string(),

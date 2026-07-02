@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::{types::Symbol, usecases};
+use rwa_ondo::{amounts, jupiter, types::Symbol, usecases};
 
 use super::*;
 
@@ -21,6 +21,16 @@ pub async fn buy(
     // Implemented for buy only — sell amounts derive from on-chain holdings.
     let dry_run = dry_run || quote_only;
     let w = load_wallet(selected)?;
+    // Auto-refuel SOL from USDC before a real buy (no-op when SOL is fine).
+    let gas_refuel = if dry_run {
+        None
+    } else {
+        let reserved = amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
+            .ok()
+            .and_then(|r| r.parse::<u128>().ok())
+            .unwrap_or(0);
+        auto_gas(&w, rpc_url, yes, json, reserved).await?
+    };
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps).await?;
 
@@ -35,6 +45,7 @@ pub async fn buy(
     if dry_run {
         if json {
             return json_out(&TradeJson {
+                gas_refuel: None,
                 status: "dry_run",
                 amount: plan.amount,
                 token: plan.symbol.to_string(),
@@ -79,6 +90,7 @@ pub async fn buy(
 
     if json {
         return json_out(&TradeJson {
+            gas_refuel,
             status: "success",
             amount: result.output_amount,
             token: plan.symbol.to_string(),
@@ -131,6 +143,7 @@ pub async fn sell(
     if dry_run {
         if json {
             return json_out(&TradeJson {
+                gas_refuel: None,
                 status: "dry_run",
                 amount: plan.amount,
                 token: plan.symbol.to_string(),
@@ -174,6 +187,7 @@ pub async fn sell(
 
     if json {
         return json_out(&TradeJson {
+            gas_refuel: None,
             status: "success",
             amount: plan.amount,
             token: plan.symbol.to_string(),

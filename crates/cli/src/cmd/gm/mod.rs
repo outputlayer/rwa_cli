@@ -20,7 +20,7 @@ fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
 }
 pub(super) use types::{
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
-    CloseSkipJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
+    CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
     PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,
     SellBasketItemJson, SellBasketResultJson, SendJson, TradeJson, TradableItemJson,
     TradableResultJson,
@@ -435,6 +435,7 @@ mod tests {
     #[test]
     fn trade_json_serializes_optional_fields_and_rounding() {
         let json = serde_json::to_value(TradeJson {
+            gas_refuel: None,
             status: "success",
             amount: "0.2584".into(),
             token: "TSLAon".into(),
@@ -462,6 +463,7 @@ mod tests {
     #[test]
     fn send_json_keeps_stable_shape() {
         let json = serde_json::to_value(SendJson {
+            gas_refuel: None,
             status: "dry_run",
             token: "SOL".into(),
             amount: "0.999995".into(),
