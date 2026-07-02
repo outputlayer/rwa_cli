@@ -473,17 +473,7 @@ async fn remove(name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Emit a one-time stderr warning when RWA_PASSPHRASE is read from the environment.
-fn warn_passphrase_env_once() {
-    use std::sync::OnceLock;
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        eprintln!(
-            "WARNING: RWA_PASSPHRASE in environment leaks via shell history / ps. \
-            Prefer interactive passphrase prompt."
-        );
-    });
-}
+use crate::wallets::warn_passphrase_env_once;
 
 fn read_passphrase(prompt: &str) -> Result<String> {
     rpassword::prompt_password(prompt)

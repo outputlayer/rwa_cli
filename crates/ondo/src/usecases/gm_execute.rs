@@ -47,6 +47,27 @@ struct SwapAuditCtx {
     backend: String,
 }
 
+/// Shape an execute response into a `SwapExecution`, formatting the credited
+/// amount with the output mint's decimals. Single sink for every execute path.
+pub(crate) fn finalize_execution(
+    order: &jupiter::OrderResponse,
+    result: &jupiter::ExecuteResponse,
+    output_decimals: u8,
+) -> SwapExecution {
+    let actual_slippage_pct = calc_actual_slippage(order, result);
+    let output_amount = result
+        .output_amount_result
+        .as_deref()
+        .map(|r| amounts::format_amount(r, output_decimals))
+        .unwrap_or_else(|| amounts::format_amount(&order.out_amount, output_decimals));
+    let signature = result.signature.clone().unwrap_or_else(|| "unknown".to_string());
+    SwapExecution {
+        output_amount,
+        signature,
+        actual_slippage_pct,
+    }
+}
+
 /// Phase 2 for parallel close-all: execute a pre-fetched sell order.
 pub async fn execute_sell_from_order(
     wallet: &wallet::Wallet,
@@ -75,20 +96,7 @@ pub async fn execute_sell_from_order(
     };
     let outcome = execute_with_retry(wallet, &ready.order, json, &params)
         .await
-        .map(|result| {
-            let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
-            let output_amount = result
-                .output_amount_result
-                .as_deref()
-                .map(|r| amounts::format_amount(r, jupiter::USDC_DECIMALS))
-                .unwrap_or_else(|| amounts::format_amount(&ready.order.out_amount, jupiter::USDC_DECIMALS));
-            let signature = result.signature.unwrap_or_else(|| "unknown".to_string());
-            SwapExecution {
-                output_amount,
-                signature,
-                actual_slippage_pct,
-            }
-        });
+        .map(|result| finalize_execution(&ready.order, &result, jupiter::USDC_DECIMALS));
     record_swap_outcome(ctx, &outcome);
     outcome
 }
@@ -119,22 +127,7 @@ pub async fn execute_buy_from_order(
     };
     let outcome = execute_with_retry(wallet, &ready.order, json, &params)
         .await
-        .map(|result| {
-            let actual_slippage_pct = calc_actual_slippage(&ready.order, &result);
-            let output_amount = result
-                .output_amount_result
-                .as_deref()
-                .map(|r| amounts::format_amount(r, jupiter::GM_SOL_DECIMALS))
-                .unwrap_or_else(|| {
-                    amounts::format_amount(&ready.order.out_amount, jupiter::GM_SOL_DECIMALS)
-                });
-            let signature = result.signature.unwrap_or_else(|| "unknown".to_string());
-            SwapExecution {
-                output_amount,
-                signature,
-                actual_slippage_pct,
-            }
-        });
+        .map(|result| finalize_execution(&ready.order, &result, jupiter::GM_SOL_DECIMALS));
     record_swap_outcome(ctx, &outcome);
     outcome
 }

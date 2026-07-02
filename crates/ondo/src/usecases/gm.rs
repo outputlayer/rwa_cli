@@ -6,12 +6,13 @@ use crate::types::{Mint, Symbol};
 // Re-export from sibling modules so callers can continue using `usecases::gm::*`.
 pub use super::gm_execute::{execute_sell_from_order, execute_buy_from_order};
 pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy};
+use super::gm_order::check_cost_gate;
 
 use super::gm_internal::{
     resolve_gm_mint, check_tradable, preflight_buy_raw, preflight_sell,
     get_order_checked, resolve_sell_amount,
 };
-use super::gm_execute::{calc_actual_slippage, execute_with_retry, SwapParams};
+use super::gm_execute::{execute_with_retry, finalize_execution, SwapParams};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmTradeErrorKind {
@@ -45,9 +46,11 @@ impl std::fmt::Display for GmTradeError {
     }
 }
 
-impl std::fmt::Display for GmTradeErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
+impl GmTradeErrorKind {
+    /// Stable label used in JSON `error_kind` fields and error Display.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
             Self::MarketClosed => "market_closed",
             Self::NotTradable => "not_tradable",
             Self::SlippageTooHigh => "slippage_too_high",
@@ -55,8 +58,13 @@ impl std::fmt::Display for GmTradeErrorKind {
             Self::AmountBelowMinimum => "amount_below_minimum",
             Self::InsufficientFunds => "insufficient_funds",
             Self::NoPosition => "no_position",
-        };
-        f.write_str(label)
+        }
+    }
+}
+
+impl std::fmt::Display for GmTradeErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
 }
 
@@ -73,15 +81,7 @@ impl std::error::Error for GmTradeError {}
 pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
     for cause in err.chain() {
         if let Some(g) = cause.downcast_ref::<GmTradeError>() {
-            return Some(match g.kind {
-                GmTradeErrorKind::MarketClosed => "market_closed",
-                GmTradeErrorKind::NotTradable => "not_tradable",
-                GmTradeErrorKind::SlippageTooHigh => "slippage_too_high",
-                GmTradeErrorKind::CostTooHigh => "cost_too_high",
-                GmTradeErrorKind::AmountBelowMinimum => "amount_below_minimum",
-                GmTradeErrorKind::InsufficientFunds => "insufficient_funds",
-                GmTradeErrorKind::NoPosition => "no_position",
-            });
+            return Some(g.kind.label());
         }
         if let Some(f) = cause.downcast_ref::<jupiter::ExecuteFailure>() {
             return Some(f.kind.label());
@@ -217,13 +217,7 @@ pub async fn prepare_buy(
     )
     .await?;
 
-    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
-        return Err(GmTradeError::new(
-            GmTradeErrorKind::CostTooHigh,
-            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
-        )
-        .into());
-    }
+    check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
 
     Ok(SwapPlan {
         symbol,
@@ -285,13 +279,7 @@ pub async fn prepare_sell(
     )
     .await?;
 
-    if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, order.fee_bps, max_bps) {
-        return Err(GmTradeError::new(
-            GmTradeErrorKind::CostTooHigh,
-            format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
-        )
-        .into());
-    }
+    check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
 
     Ok(SwapPlan {
         symbol,
@@ -320,8 +308,8 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
     };
     let result = execute_with_retry(wallet, &plan.order, json, &params).await
         .wrap_err("swap execution failed")?;
-    let actual_slippage_pct = calc_actual_slippage(&plan.order, &result);
-    if let Some(actual) = actual_slippage_pct
+    let exec = finalize_execution(&plan.order, &result, plan.output_decimals);
+    if let Some(actual) = exec.actual_slippage_pct
         && let Some(quoted) = plan.slippage_pct
     {
         let drift = actual - quoted;
@@ -331,15 +319,7 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
             );
         }
     }
-    Ok(SwapExecution {
-        output_amount: result
-            .output_amount_result
-            .as_deref()
-            .map(|r| amounts::format_amount(r, plan.output_decimals))
-            .unwrap_or_else(|| amounts::format_amount(&plan.order.out_amount, plan.output_decimals)),
-        signature: result.signature.unwrap_or_else(|| "unknown".to_string()),
-        actual_slippage_pct,
-    })
+    Ok(exec)
 }
 
 pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {

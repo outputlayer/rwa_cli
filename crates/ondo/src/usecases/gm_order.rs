@@ -14,7 +14,7 @@ use crate::types::Symbol;
 /// Reject the quote when its all-in cost (spread + fee) exceeds `max_bps`.
 /// Single chokepoint for close-all and both baskets, mirroring the gate in
 /// `prepare_buy`/`prepare_sell`.
-fn check_cost_gate(
+pub(crate) fn check_cost_gate(
     slippage_pct: Option<f64>,
     fee_bps: Option<u32>,
     max_bps: Option<u32>,

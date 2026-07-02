@@ -287,7 +287,9 @@ fn prompt_passphrase() -> Result<String> {
         .map_err(|e| eyre!("Failed to read passphrase: {e}"))
 }
 
-fn warn_passphrase_env_once() {
+/// Emit a one-time stderr warning when RWA_PASSPHRASE is read from the
+/// environment. Shared by wallet loading and the `keys` handlers.
+pub(crate) fn warn_passphrase_env_once() {
     use std::sync::OnceLock;
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
