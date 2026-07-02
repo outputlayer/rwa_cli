@@ -214,11 +214,15 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
 
 async fn fetch_list_context() -> Result<ListContext> {
     let tokens = token_list::get_token_list();
-    let assets = api::fetch_assets().await.unwrap_or_default();
-
     let session = api::current_session();
-    let tradable_set: std::collections::HashSet<String> = api::fetch_session_limits(None)
-        .await
+    // Two independent Ondo API calls (both disk-cached) — fetch concurrently.
+    let (assets_res, limits_res) = tokio::join!(
+        api::fetch_assets(),
+        api::fetch_session_limits(None),
+    );
+    let assets = assets_res.unwrap_or_default();
+
+    let tradable_set: std::collections::HashSet<String> = limits_res
         .unwrap_or_default()
         .iter()
         .filter(|l| l.is_tradable(session))
