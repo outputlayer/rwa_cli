@@ -102,31 +102,27 @@ pub(crate) async fn get_order_checked(
     Ok((order, slippage_pct))
 }
 
-pub(crate) fn check_trading_hours() -> Result<()> {
-    let session = api::current_session();
-    if session == api::Session::Closed {
-        use chrono_tz::US::Eastern;
-        let now = chrono::Utc::now().with_timezone(&Eastern);
-        return Err(GmTradeError::new(
-            GmTradeErrorKind::MarketClosed,
-            format!(
-                "trading resumes Sunday 8:00 PM ET (current time: {} ET). Run `rwa gm hours` for session details",
-                now.format("%A %I:%M %p")
-            ),
-        )
-        .into());
-    }
-    Ok(())
-}
-
+/// Per-token session gate. Weekends/holidays map to Ondo's `offhours` session
+/// (24/7 trading for select flagship tokens), so there is no blanket
+/// market-closed block anymore — a token that can't trade off-hours gets a
+/// typed `market_closed`, everything else follows the per-session limits.
 pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
     let session = api::current_session();
-    if session == api::Session::Closed {
-        return Ok(());
-    }
+    let off_hours = session == api::Session::Closed;
     let limits = match api::fetch_session_limits(api_url).await {
         Ok(l) => l,
         Err(e) => {
+            if off_hours {
+                // Off-hours with no limits data: fail closed. Only a handful
+                // of tokens trade 24/7 and we can't tell which without the API.
+                return Err(GmTradeError::new(
+                    GmTradeErrorKind::MarketClosed,
+                    format!(
+                        "off-hours session and the limits endpoint is unreachable ({e}) — cannot verify {symbol} trades 24/7. Regular trading resumes Sunday 8:00 PM ET."
+                    ),
+                )
+                .into());
+            }
             // Fail open: an unreachable limits endpoint must not block trading,
             // but say so on stderr — a silently skipped check would mask real
             // outages (stderr never corrupts the JSON stdout contract).
@@ -141,6 +137,18 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
 
     let is_tradable = limit.map(|l| l.is_tradable(session)).unwrap_or(false);
     if !is_tradable {
+        if off_hours {
+            use chrono_tz::US::Eastern;
+            let now = chrono::Utc::now().with_timezone(&Eastern);
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::MarketClosed,
+                format!(
+                    "{symbol} does not trade off-hours (weekend/holiday); only select flagship tokens trade 24/7. Regular trading resumes Sunday 8:00 PM ET (current time: {} ET). Run `rwa gm hours --tradable` to see what's available now.",
+                    now.format("%A %I:%M %p")
+                ),
+            )
+            .into());
+        }
         return Err(GmTradeError::new(
             GmTradeErrorKind::NotTradable,
             format!(
@@ -204,7 +212,6 @@ pub(crate) async fn preflight_buy_raw(
     rpc_url: Option<&str>,
     check_funds: bool,
 ) -> Result<()> {
-    check_trading_hours()?;
     let requested: u128 = raw_usdc_amount
         .parse()
         .map_err(|_| eyre!("Invalid USDC amount: {raw_usdc_amount}"))?;
@@ -230,10 +237,6 @@ pub(crate) async fn preflight_buy_raw(
         .map_err(|_| eyre!("Invalid on-chain SOL amount: {sol_raw}"))?;
     check_buy_funds(&balance_raw, sol_lamports, requested)
         .wrap_err_with(|| format!("Fund wallet: {pubkey}"))
-}
-
-pub(crate) fn preflight_sell() -> Result<()> {
-    check_trading_hours()
 }
 
 /// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's

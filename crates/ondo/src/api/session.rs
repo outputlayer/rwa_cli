@@ -34,7 +34,7 @@ impl Session {
             Session::Regular => "9:30 AM – 3:59 PM ET",
             Session::PostMarket => "4:00 PM – 7:59 PM ET",
             Session::Overnight => "8:00 PM – 3:59 AM ET",
-            Session::Closed => "Weekend / NYSE holiday",
+            Session::Closed => "Weekend / NYSE holiday (off-hours: select tokens trade 24/7)",
         }
     }
 }
@@ -256,6 +256,10 @@ pub struct SessionLimits {
     pub postmarket: Option<SessionInfo>,
     #[serde(default)]
     pub overnight: Option<SessionInfo>,
+    /// Weekend/holiday session (Ondo 24/7): only select flagship tokens carry
+    /// `tradable: true` here.
+    #[serde(default)]
+    pub offhours: Option<SessionInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -270,26 +274,25 @@ impl SessionLimits {
     /// Check if this token is tradable in the given session.
     #[must_use]
     pub fn is_tradable(&self, session: Session) -> bool {
-        let info = match session {
+        self.session_info(session).map(|i| i.tradable).unwrap_or(false)
+    }
+
+    /// Per-session limits entry. `Closed` (weekend/holiday) maps to Ondo's
+    /// `offhours` session — a handful of flagship tokens trade there 24/7.
+    fn session_info(&self, session: Session) -> Option<&SessionInfo> {
+        match session {
             Session::PreMarket => self.premarket.as_ref(),
             Session::Regular => self.regular.as_ref(),
             Session::PostMarket => self.postmarket.as_ref(),
             Session::Overnight => self.overnight.as_ref(),
-            Session::Closed => return false,
-        };
-        info.map(|i| i.tradable).unwrap_or(false)
+            Session::Closed => self.offhours.as_ref(),
+        }
     }
 
     /// Max notional value for the given session.
     pub fn max_notional(&self, session: Session) -> Option<f64> {
-        let info = match session {
-            Session::PreMarket => self.premarket.as_ref(),
-            Session::Regular => self.regular.as_ref(),
-            Session::PostMarket => self.postmarket.as_ref(),
-            Session::Overnight => self.overnight.as_ref(),
-            Session::Closed => return None,
-        };
-        info.and_then(|i| i.max_active_notional_value.as_deref())
+        self.session_info(session)
+            .and_then(|i| i.max_active_notional_value.as_deref())
             .and_then(|v| v.parse().ok())
     }
 }
@@ -385,11 +388,36 @@ mod tests {
                 max_active_notional_value: None,
             }),
             overnight: None,
+            offhours: None,
         };
         assert!(limits.is_tradable(Session::PreMarket));
         assert!(limits.is_tradable(Session::Regular));
         assert!(!limits.is_tradable(Session::PostMarket));
         assert!(!limits.is_tradable(Session::Overnight));
+        // No offhours entry ⇒ still blocked on weekends/holidays.
+        assert!(!limits.is_tradable(Session::Closed));
+    }
+
+    #[test]
+    fn offhours_session_enables_weekend_trading() {
+        // Verbatim shape from status.ondo.finance after the 24/7 rollout:
+        // flagship tokens carry an `offhours` entry with tradable: true.
+        let json = r#"{
+            "symbol": "TSLAon",
+            "regular": { "tradable": true, "maxAttestationCount": "500", "maxActiveNotionalValue": "200000" },
+            "offhours": { "tradable": true, "maxAttestationCount": "1500", "maxActiveNotionalValue": "1000000" }
+        }"#;
+        let limits: SessionLimits = serde_json::from_str(json).expect("live API shape parses");
+        assert!(limits.is_tradable(Session::Closed), "offhours token must trade on weekends");
+        assert_eq!(limits.max_notional(Session::Closed), Some(1_000_000.0));
+
+        // Non-flagship token: offhours present but tradable: false.
+        let json = r#"{
+            "symbol": "AALon",
+            "regular": { "tradable": true },
+            "offhours": { "tradable": false, "maxAttestationCount": "0", "maxActiveNotionalValue": "0" }
+        }"#;
+        let limits: SessionLimits = serde_json::from_str(json).expect("live API shape parses");
         assert!(!limits.is_tradable(Session::Closed));
     }
 
@@ -405,6 +433,7 @@ mod tests {
             }),
             postmarket: None,
             overnight: None,
+        offhours: None,
         };
         assert_eq!(limits.max_notional(Session::Regular), Some(50000.0));
         assert_eq!(limits.max_notional(Session::PreMarket), None);

@@ -6,7 +6,7 @@ use super::gm::{
     cost_exceeds_max_bps,
 };
 use super::gm_internal::{
-    MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, check_trading_hours, get_order_checked,
+    MIN_SOL_FOR_FEES, MIN_USDC_AMOUNT, check_tradable, get_order_checked,
     min_usdc_raw, resolve_gm_mint, resolve_sell_amount,
 };
 use crate::types::Symbol;
@@ -119,15 +119,15 @@ fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
     Ok(())
 }
 
-/// Preflight for basket buy: verify trading is open, each item meets the buy
-/// minimum, total USDC coverage, and SOL for fees.
+/// Preflight for basket buy: each item meets the buy minimum, total USDC
+/// coverage, and SOL for fees. Per-token session gating happens in
+/// `check_tradable` when each order is fetched.
 pub async fn preflight_basket_buy(
     pubkey: &str,
     items: &[(String, u128)],
     total_usdc_raw: u128,
     rpc_url: Option<&str>,
 ) -> Result<()> {
-    check_trading_hours()?;
     check_basket_buy_minimums(items)?;
     let (usdc_res, sol_raw_res) = tokio::join!(
         solana::get_usdc_balance_raw(pubkey, rpc_url),

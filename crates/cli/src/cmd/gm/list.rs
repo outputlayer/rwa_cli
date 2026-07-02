@@ -24,24 +24,22 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
         format!("next session in {}h {}m", mins_left / 60, mins_left % 60)
     };
 
-    let (tradable_count, tradable_list) = if !closed {
-        match api::fetch_session_limits(None).await {
-            Ok(limits) => {
-                let tradable: Vec<String> = limits.iter()
-                    .filter(|l| l.is_tradable(session))
-                    .map(|l| l.symbol.clone())
-                    .collect();
-                let count = tradable.len();
-                if show_tradable {
-                    (Some(count), Some(tradable))
-                } else {
-                    (Some(count), None)
-                }
+    // Fetched in every session: weekends/holidays map to Ondo's offhours
+    // session, where select flagship tokens still trade 24/7.
+    let (tradable_count, tradable_list) = match api::fetch_session_limits(None).await {
+        Ok(limits) => {
+            let tradable: Vec<String> = limits.iter()
+                .filter(|l| l.is_tradable(session))
+                .map(|l| l.symbol.clone())
+                .collect();
+            let count = tradable.len();
+            if show_tradable {
+                (Some(count), Some(tradable))
+            } else {
+                (Some(count), None)
             }
-            Err(_) => (None, None),
         }
-    } else {
-        (None, None)
+        Err(_) => (None, None),
     };
 
     let status = if closed { "closed" } else { "open" };

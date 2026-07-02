@@ -114,7 +114,7 @@ Inputs with too many decimal places are rejected instead of being silently round
 - Regular: 9:30 AM – 3:59 PM
 - Post-Market: 4:00 PM – 7:59 PM
 - Overnight: 8:00 PM – 3:59 AM
-- Closed: Weekend / NYSE holidays
+- Closed: Weekend / NYSE holidays — Ondo off-hours; select flagship tokens (TSLAon, NVDAon, SPYon, QQQon, GOOGLon, ...) still trade 24/7
 
 Not all tokens are tradable in every session. Use `gm tradable <SYM...>` for symbol checks, `gm tradable` for the full set, or filtered `gm search --tradable-only ...` for bulk scans.
 
@@ -170,7 +170,7 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 - `insufficient_funds` → wallet lacks USDC or SOL for the trade; fund the wallet, do not retry
 - `no_position` → selling a token the wallet does not hold; check `portfolio` first
 - Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock contention); exit 1 = permanent
-- `market_closed` → tell user when trading reopens
+- `market_closed` → token does not trade off-hours; tell user when regular trading reopens (Sunday 8 PM ET) or suggest an off-hours flagship token
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token
 - `confirmation_timeout` → tx may still land; check Solscan before retrying

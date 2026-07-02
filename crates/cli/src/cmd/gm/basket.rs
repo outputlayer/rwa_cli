@@ -160,7 +160,6 @@ pub async fn buy_basket(
     selected: Option<&str>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
-    usecases::gm::ensure_trading_open()?;
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
@@ -196,7 +195,6 @@ pub async fn buy_basket(
             println!("Cancelled.");
             return Ok(());
         }
-        usecases::gm::ensure_trading_open()?;
     }
 
     let symbol_raw: Vec<(String, String)> = pairs
@@ -322,7 +320,6 @@ pub async fn sell_basket(
     selected: Option<&str>,
 ) -> Result<()> {
     let pairs = parse_basket_pairs(tokens)?;
-    usecases::gm::ensure_trading_open()?;
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
@@ -342,7 +339,6 @@ pub async fn sell_basket(
             println!("Cancelled.");
             return Ok(());
         }
-        usecases::gm::ensure_trading_open()?;
     }
 
     if dry_run {

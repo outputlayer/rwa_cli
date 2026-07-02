@@ -150,7 +150,6 @@ pub async fn close_all(
     max_bps: Option<u32>,
     selected: Option<&str>,
 ) -> Result<()> {
-    usecases::gm::ensure_trading_open()?;
     let sell_pct = usecases::gm::parse_sell_pct(amount)?;
 
     let tokens = token_list::get_token_list();
@@ -210,7 +209,6 @@ pub async fn close_all(
             println!("Cancelled.");
             return Ok(());
         }
-        usecases::gm::ensure_trading_open()?;
     }
 
     let (candidates, skipped) =

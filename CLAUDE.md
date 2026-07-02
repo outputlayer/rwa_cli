@@ -116,6 +116,7 @@ rwa update -y
 ## Trading / market behavior
 
 - Trading sessions are ET-based: Pre-Market, Regular, Post-Market, Overnight, Closed
+- Ondo trades 24/7: weekends/holidays ("Closed") map to the API's `offhours` session, where only select flagship tokens (TSLAon, NVDAon, SPYon, QQQon, GOOGLon, …) are tradable. There is no blanket weekend block — per-token gating decides; a non-offhours token gets `market_closed`
 - Ondo assets and session-limits responses are disk-cached read-through for 60s (`~/.config/rwa/.cache/`); stale fallback on network failure (assets 1h, limits 10m). Explicit URL overrides bypass the cache
 - `buy` and `sell` check tradability before calling Jupiter
 - `close-all` skips tiny positions and non-tradable tokens

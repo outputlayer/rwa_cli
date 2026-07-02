@@ -13,7 +13,7 @@ pub use super::gm_positions::{
 use super::gm_order::check_cost_gate;
 
 use super::gm_internal::{
-    resolve_gm_mint, check_tradable, preflight_buy_raw, preflight_sell,
+    resolve_gm_mint, check_tradable, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
 };
 use super::gm_execute::{execute_with_retry, finalize_execution, SwapParams};
@@ -255,7 +255,6 @@ pub async fn prepare_sell(
     let taker = wallet.pubkey();
     let gm_dec = jupiter::GM_SOL_DECIMALS;
 
-    preflight_sell()?;
     let (tradable_res, bal_res) = tokio::join!(
         check_tradable(&symbol, None),
         solana::get_balance(&taker, &gm_mint, rpc_url),
@@ -383,10 +382,9 @@ pub async fn fetch_portfolio_balances(
 }
 
 pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::HashSet<String> {
+    // Weekends/holidays map to Ondo's offhours session — select tokens trade
+    // 24/7, so the set is never statically empty.
     let session = api::current_session();
-    if session == api::Session::Closed {
-        return std::collections::HashSet::new();
-    }
     api::fetch_session_limits(api_url)
         .await
         .unwrap_or_default()
@@ -394,10 +392,6 @@ pub async fn fetch_tradable_set(api_url: Option<&str>) -> std::collections::Hash
         .filter(|l| l.is_tradable(session))
         .map(|l| l.symbol.to_uppercase())
         .collect()
-}
-
-pub fn ensure_trading_open() -> Result<()> {
-    super::gm_internal::check_trading_hours()
 }
 
 /// All-in quoted cost in bps (`fee_bps − slippage_pct·100`), or `None` when no
@@ -706,6 +700,7 @@ mod tests {
                 max_attestation_count: None,
                 max_active_notional_value: Some("0".to_string()),
             }),
+            offhours: None,
         };
         // is_tradable returns true (Ondo says yes)...
         assert!(limits.is_tradable(Session::Overnight));
@@ -727,6 +722,7 @@ mod tests {
                 max_attestation_count: None,
                 max_active_notional_value: Some("100000".to_string()),
             }),
+            offhours: None,
         };
         let max = limits.max_notional(Session::Overnight);
         assert!(max.unwrap_or(0.0) > 0.0);
