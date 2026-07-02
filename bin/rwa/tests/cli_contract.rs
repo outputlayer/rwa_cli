@@ -1025,3 +1025,71 @@ fn keys_export_reveals_stored_mnemonic_for_encrypted_wallet() {
     let mnemonic = v["mnemonic"].as_str().expect("encrypted wallet stores the phrase");
     assert!(mnemonic.split_whitespace().count() >= 12);
 }
+
+// ── pnl ──────────────────────────────────────────────────────────────────────
+
+/// `gm pnl --json` computes average cost, realized and unrealized P&L from a
+/// pre-seeded trade ledger — all expected numbers hand-derived.
+#[test]
+fn pnl_json_computes_from_the_ledger() {
+    let home = test_home("pnl-shape");
+    let server = MockServer::start();
+    // AALon market price: 12.00 (for the unrealized leg).
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon", "assetName": "American Airlines",
+                "primaryMarket": { "price": "12", "priceChangePct24h": "0" }
+            }]
+        }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let pubkey = lv["wallets"][0]["pubkey"].as_str().unwrap().to_string();
+    // Locate the binary's real config dir portably (macOS uses
+    // Library/Application Support, not XDG): the key file lives in it.
+    let key_path = PathBuf::from(lv["wallets"][0]["path"].as_str().unwrap());
+    let rwa_config_dir = key_path.parent().unwrap().to_path_buf();
+
+    // Seed the ledger: buy 1.0 @ 10, buy 1.0 @ 14 → avg 12;
+    // then sell 1.0 for 15 → realized 15 − 12 = +3; left: 1.0 invested 12.
+    // Market 12.00 → unrealized 12 − 12 = 0.
+    let ledger_dir = rwa_config_dir.join("ledger");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+    std::fs::write(
+        ledger_dir.join(format!("{pubkey}.jsonl")),
+        concat!(
+            "{\"ts\":\"2026-07-01T00:00:00Z\",\"sig\":\"s1\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"10000000\"}\n",
+            "{\"ts\":\"2026-07-01T01:00:00Z\",\"sig\":\"s2\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"14000000\"}\n",
+            "{\"ts\":\"2026-07-01T02:00:00Z\",\"sig\":\"s3\",\"kind\":\"sell\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"15000000\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["wallet"].as_str().unwrap(), pubkey);
+    assert_eq!(v["trades_recorded"], 3);
+    let t = &v["tokens"][0];
+    assert_eq!(t["token"], "AALon");
+    assert_eq!(t["qty"], "1");
+    assert_eq!(t["avg_cost"], 12.0);
+    assert_eq!(t["market_price"], 12.0);
+    assert_eq!(t["invested_usdc"], 12.0);
+    assert_eq!(t["unrealized_usdc"], 0.0);
+    assert_eq!(t["realized_usdc"], 3.0);
+    assert!(t.get("oversold_qty").is_none());
+    assert_eq!(v["totals"]["invested_usdc"], 12.0);
+    assert_eq!(v["totals"]["realized_usdc"], 3.0);
+    assert_eq!(v["totals"]["total_pnl_usdc"], 3.0);
+}

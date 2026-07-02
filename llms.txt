@@ -49,6 +49,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm sell <SYM> <AMT> --dry-run` — preview sell
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
 - `rwa --json gm close-all --dry-run` — preview liquidation
+- `rwa --json gm pnl` — avg entry price, realized/unrealized P&L (from CLI trades only; deposits ignored)
 - `rwa --json gm close-all -y` — sell all positions (parallel by default)
 - `rwa --json keys export --reveal` — private key + recovery phrase JSON (SECRET; --reveal is mandatory)
 - `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)

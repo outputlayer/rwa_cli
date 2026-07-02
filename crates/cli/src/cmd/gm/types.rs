@@ -193,6 +193,52 @@ pub struct GasRefuelJson {
 }
 
 #[derive(Serialize)]
+pub struct PnlTokenJson {
+    pub token: String,
+    /// Open position per the CLI trade ledger.
+    pub qty: String,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub avg_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub market_price: Option<f64>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub invested_usdc: f64,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub market_value_usdc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub unrealized_usdc: Option<f64>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub realized_usdc: f64,
+    /// Sold beyond what the ledger saw bought (acquired outside the CLI);
+    /// excluded from realized P&L.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oversold_qty: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PnlTotalsJson {
+    #[serde(serialize_with = "ser_f64_2")]
+    pub invested_usdc: f64,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub market_value_usdc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub unrealized_usdc: Option<f64>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub realized_usdc: f64,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub total_pnl_usdc: Option<f64>,
+}
+
+/// P&L built exclusively from the CLI's own buy/sell ledger.
+#[derive(Serialize)]
+pub struct PnlJson {
+    pub wallet: String,
+    pub trades_recorded: usize,
+    pub tokens: Vec<PnlTokenJson>,
+    pub totals: PnlTotalsJson,
+}
+
+#[derive(Serialize)]
 pub struct CloseAllResultJson {
     pub status: &'static str,
     pub sold: Vec<CloseItemJson>,

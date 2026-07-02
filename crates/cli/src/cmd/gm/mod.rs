@@ -2,6 +2,7 @@ mod basket;
 mod close_all;
 mod helpers;
 mod list;
+mod pnl;
 mod portfolio;
 mod reclaim;
 mod send;
@@ -21,6 +22,7 @@ fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
 pub(super) use types::{
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
+    PnlJson, PnlTokenJson, PnlTotalsJson,
     PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,
     SellBasketItemJson, SellBasketResultJson, SendJson, TradeJson, TradableItemJson,
     TradableResultJson,
@@ -164,6 +166,9 @@ pub enum GmAction {
         max_bps: Option<u32>,
     },
 
+    /// Cost basis and P&L from your CLI trades (average entry, realized/unrealized)
+    Pnl,
+
     /// Close empty token accounts and reclaim SOL rent
     Reclaim {
         /// Only reclaim for a specific token (symbol or mint address)
@@ -289,6 +294,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             // --sequential opts into one-at-a-time with 3s spacing.
             close_all::close_all(amount.as_deref(), yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
+        GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
         GmAction::BuyBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
             let max_bps = max_bps.or_else(|| parse_max_bps_env(std::env::var("RWA_MAX_BPS").ok()));

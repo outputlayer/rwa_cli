@@ -55,6 +55,7 @@ cargo install --path bin/rwa
 - `--slippage <BPS>` is accepted by buy/sell and all multi-trade commands (baskets, close-all)
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
+- Every CLI money operation is appended to a per-wallet trade ledger (`~/.config/rwa/ledger/<pubkey>.jsonl`, raw units). `gm pnl` builds average entry price, realized and unrealized P&L **from buys/sells only** (deposits/withdrawals are ignored by design); sells beyond CLI-recorded buys are flagged `oversold` and excluded rather than mispriced
 - Legacy flat `portfolio` fields should be treated as obsolete
 
 ## Commands
@@ -86,6 +87,7 @@ rwa gm sell-basket SPY 5 TSLA 3 -y
 rwa gm sell-basket SPY 5 TSLA 3 --sequential -y
 
 rwa gm portfolio [WALLET]
+rwa gm pnl                          # cost basis + realized/unrealized P&L from CLI trades
 rwa gm history <SYM> [-r RANGE]
 
 rwa gm send <TOKEN> <AMT> <TO> --dry-run
