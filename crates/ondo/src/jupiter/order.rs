@@ -63,6 +63,12 @@ async fn get_order_impl(
     let base_url = base_url.or(env_url.as_deref());
     if let Some(base_url) = base_url {
         let backend = infer_backend_from_base_url(base_url);
+        // Metis speaks /quote + /swap, not the managed /order endpoint —
+        // dispatch a pinned Metis URL through the right flow.
+        if backend == OrderBackend::MetisV1Lite {
+            return get_metis_order(base_url, input_mint, output_mint, amount, taker, slippage_bps)
+                .await;
+        }
         return get_order_with_retries(
             base_url,
             backend,
@@ -110,7 +116,7 @@ async fn get_order_impl(
         }
     }
 
-    match get_metis_order(input_mint, output_mint, amount, taker, slippage_bps).await {
+    match get_metis_order(METIS_LITE_API_BASE, input_mint, output_mint, amount, taker, slippage_bps).await {
         Ok(order) => Ok(order),
         Err(err) => {
             failures.push(format!("{}: {}", OrderBackend::MetisV1Lite.label(), err));
@@ -326,13 +332,14 @@ fn infer_backend_from_base_url(base_url: &str) -> OrderBackend {
 }
 
 async fn get_metis_order(
+    base_url: &str,
     input_mint: &str,
     output_mint: &str,
     amount: &str,
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
-    let quote_url = format!("{METIS_LITE_API_BASE}/quote");
+    let quote_url = format!("{base_url}/quote");
     let mut request = HTTP.get(&quote_url).query(&[
         ("inputMint", input_mint),
         ("outputMint", output_mint),
@@ -377,7 +384,7 @@ async fn get_metis_order(
         .and_then(|value| u32::try_from(value).ok())
         .or(slippage_bps);
 
-    let swap_url = format!("{METIS_LITE_API_BASE}/swap");
+    let swap_url = format!("{base_url}/swap");
     let swap_body = serde_json::json!({
         "userPublicKey": taker,
         "quoteResponse": quote_json,
@@ -534,6 +541,86 @@ mod tests {
             infer_backend_from_base_url("https://lite-api.jup.ag/swap/v1"),
             OrderBackend::MetisV1Lite
         );
+    }
+
+    #[tokio::test]
+    async fn metis_flow_builds_order_from_quote_and_swap() {
+        // A base URL containing /swap/v1 must go through the Metis flow:
+        // GET {base}/quote then POST {base}/swap, assembled into an
+        // OrderResponse with backend MetisV1Lite and the built transaction.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/swap/v1/quote");
+            then.status(200).json_body(serde_json::json!({
+                "inAmount": "5000000",
+                "outAmount": "11786465",
+                "priceImpactPct": "-0.11",
+                "slippageBps": 50
+            }));
+        }).await;
+        let swap = server.mock_async(|when, then| {
+            when.method(POST)
+                .path("/swap/v1/swap")
+                // The swap build must echo the full quote back to Jupiter.
+                .body_contains("\"quoteResponse\"")
+                .body_contains("\"outAmount\":\"11786465\"");
+            then.status(200).json_body(serde_json::json!({
+                "swapTransaction": "AQAAAA==",
+                "lastValidBlockHeight": 12345,
+                "prioritizationFeeLamports": 777
+            }));
+        }).await;
+
+        let base = format!("{}/swap/v1", server.base_url());
+        let order = get_order(
+            Some(&base),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "5000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(50),
+        ).await.unwrap();
+
+        swap.assert_hits_async(1).await;
+        assert_eq!(order.backend, OrderBackend::MetisV1Lite);
+        assert_eq!(order.in_amount, "5000000");
+        assert_eq!(order.out_amount, "11786465");
+        assert_eq!(order.transaction, Some("AQAAAA==".to_string()));
+        assert_eq!(order.slippage_bps, Some(50));
+        assert_eq!(order.router, Some("metis-v1-lite".to_string()));
+        assert_eq!(order.last_valid_block_height, Some("12345".to_string()));
+        assert_eq!(order.gasless, Some(false), "Metis path is never gasless");
+    }
+
+    #[tokio::test]
+    async fn metis_flow_surfaces_no_routes_error() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        let swap = server.mock_async(|when, then| {
+            when.method(POST).path("/swap/v1/swap");
+            then.status(200).json_body(serde_json::json!({ "swapTransaction": "AQAAAA==" }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/swap/v1/quote");
+            then.status(400).json_body(serde_json::json!({
+                "error": "No routes found", "errorCode": "NO_ROUTES_FOUND"
+            }));
+        }).await;
+
+        let base = format!("{}/swap/v1", server.base_url());
+        let err = get_order(
+            Some(&base),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            None,
+        ).await.unwrap_err();
+
+        assert!(err.to_string().contains("Metis quote error"), "err: {err}");
+        assert!(err.to_string().contains("NO_ROUTES_FOUND"), "err: {err}");
+        swap.assert_hits_async(0).await;
     }
 
     #[tokio::test]
