@@ -475,6 +475,8 @@ mod tests {
             gasless: Some(false),
             router: Some("jupiterz".into()),
             limit_price: None,
+            share_price: None,
+            shares_per_token: None,
         })
         .unwrap();
 

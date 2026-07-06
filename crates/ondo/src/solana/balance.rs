@@ -295,6 +295,41 @@ pub async fn get_balance(
     })
 }
 
+/// Pure: pull the Scaled-UI multiplier out of a `getAccountInfo` (jsonParsed)
+/// mint account value. `None` when the mint carries no scaledUiAmountConfig.
+fn extract_mint_multiplier(account_value: &serde_json::Value) -> Option<f64> {
+    account_value
+        .get("data")?
+        .get("parsed")?
+        .get("info")?
+        .get("extensions")?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("extension").and_then(|v| v.as_str()) == Some("scaledUiAmountConfig"))?
+        .get("state")?
+        .get("multiplier")
+        .and_then(|m| m.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| m.as_f64()))
+}
+
+/// Scaled-UI multiplier for a mint (underlying shares per raw token).
+/// `Ok(None)` = mint has no scaledUiAmountConfig extension (semantically 1).
+/// `Err` = RPC failure — callers that REQUIRE the multiplier (share-frame
+/// limits) must fail closed on this.
+pub async fn get_mint_multiplier(mint: &str, rpc_url: Option<&str>) -> Result<Option<f64>> {
+    #[derive(Deserialize)]
+    struct AccountInfoResult {
+        value: Option<serde_json::Value>,
+    }
+    let result: AccountInfoResult = rpc_call_simple(
+        "getAccountInfo",
+        serde_json::json!([mint, { "encoding": "jsonParsed", "commitment": "confirmed" }]),
+        rpc_url,
+        RpcMode::Race,
+    )
+    .await?;
+    Ok(result.value.as_ref().and_then(extract_mint_multiplier))
+}
+
 /// Raised when the wallet has no associated token account for a mint — for
 /// agents this means "no position", not an RPC failure. Typed so
 /// `classify_error` can label it instead of leaving `error_kind: null`.
@@ -429,6 +464,30 @@ async fn portfolio_balances_against(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mint_multiplier_from_account_info() {
+        // Shape captured live from SPYon's mint (2026-07-06).
+        let value = serde_json::json!({
+            "data": { "parsed": { "info": {
+                "decimals": 9,
+                "extensions": [
+                    { "extension": "somethingElse", "state": {} },
+                    { "extension": "scaledUiAmountConfig", "state": {
+                        "authority": "9foMHsSDq7nMg4WPusSz9eY7tyxyukqborA8GyU5cUxD",
+                        "multiplier": "1.0077209101501272",
+                        "newMultiplier": "1.0077209101501272",
+                        "newMultiplierEffectiveTimestamp": 1781741045u64
+                    }}
+                ]
+            }}}
+        });
+        let m = extract_mint_multiplier(&value).unwrap();
+        assert!((m - 1.0077209101501272).abs() < 1e-12);
+        // No extension → None (multiplier 1 semantics decided by callers).
+        let plain = serde_json::json!({ "data": { "parsed": { "info": { "decimals": 9 } } } });
+        assert_eq!(extract_mint_multiplier(&plain), None);
+    }
 
     #[test]
     fn balance_is_raw_derived_and_ui_balance_carries_scaled_value() {

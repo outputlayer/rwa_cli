@@ -73,6 +73,12 @@ pub struct TradeJson {
     /// Echo of `--limit-price` as entered; absent when the flag was not used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit_price: Option<String>,
+    /// Reference price per underlying SHARE (= quote price / shares_per_token).
+    /// Informational; absent when the multiplier is unknown or 1.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub share_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub shares_per_token: Option<f64>,
 }
 
 #[derive(Serialize)]

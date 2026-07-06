@@ -134,6 +134,9 @@ pub struct SwapPlan {
     pub counter_amount: String,
     pub order: jupiter::OrderResponse,
     pub slippage_pct: Option<f64>,
+    /// Scaled-UI multiplier (shares per raw token). Informational; `None`
+    /// when unknown. Required (fail-closed) only for share-frame limits.
+    pub multiplier: Option<f64>,
     pub(crate) swap: SwapParamsOwned,
     output_decimals: u8,
 }
@@ -221,12 +224,15 @@ pub async fn prepare_buy(
     .await?;
     let usdc_amount = amounts::format_amount(&raw_usdc, jupiter::USDC_DECIMALS);
 
-    let (preflight_res, tradable_res) = tokio::join!(
+    let (preflight_res, tradable_res, multiplier_res) = tokio::join!(
         preflight_buy_raw(&taker, &raw_usdc, rpc_url, !quote_only, balances),
         check_tradable(&symbol, None),
+        solana::get_mint_multiplier(&gm_mint, rpc_url),
     );
     let sol_lamports = preflight_res?;
     tradable_res?;
+    // Best-effort here; Task 5 makes it mandatory for share-frame limits.
+    let multiplier = multiplier_res.ok().flatten();
 
     let (order, slippage_pct) = get_order_checked(
         jupiter::USDC_MINT,
@@ -253,6 +259,7 @@ pub async fn prepare_buy(
         counter_amount: usdc_amount,
         order,
         slippage_pct,
+        multiplier,
         swap: SwapParamsOwned {
             input_mint: Mint::from(jupiter::USDC_MINT),
             output_mint: gm_mint,
@@ -294,6 +301,12 @@ pub async fn prepare_sell(
         .into());
     }
 
+    let multiplier = bal
+        .ui_balance
+        .filter(|_| bal.balance > 0.0)
+        .map(|ui| ui / bal.balance)
+        .filter(|m| m.is_finite() && *m > 0.0);
+
     let (sell_amount, raw_gm) = resolve_sell_amount(amount, &symbol, &bal.raw_amount, gm_dec)?;
 
     let (order, slippage_pct) = get_order_checked(
@@ -316,6 +329,7 @@ pub async fn prepare_sell(
         counter_amount: amounts::format_amount(&order.out_amount, jupiter::USDC_DECIMALS),
         order,
         slippage_pct,
+        multiplier,
         swap: SwapParamsOwned {
             input_mint: gm_mint,
             output_mint: Mint::from(jupiter::USDC_MINT),

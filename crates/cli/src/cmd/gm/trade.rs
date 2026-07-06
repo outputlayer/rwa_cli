@@ -16,6 +16,21 @@ fn parse_limit_price(raw: Option<&str>) -> Result<Option<u128>> {
     Ok(Some(v))
 }
 
+/// (share_price, shares_per_token) for display — only when the multiplier is
+/// known and materially differs from 1.
+fn share_view(plan: &usecases::gm::SwapPlan, token_amount: &str, usdc_amount: &str) -> (Option<f64>, Option<f64>) {
+    let Some(m) = plan.multiplier.filter(|m| (m - 1.0).abs() > 1e-9) else {
+        return (None, None);
+    };
+    let (Ok(tokens), Ok(usdc)) = (token_amount.parse::<f64>(), usdc_amount.parse::<f64>()) else {
+        return (None, Some(m));
+    };
+    if tokens <= 0.0 {
+        return (None, Some(m));
+    }
+    (Some(usdc / tokens / m), Some(m))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn buy(
     symbol: &str,
@@ -48,6 +63,7 @@ pub async fn buy(
     };
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, limit_price_raw6).await?;
+    let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
 
     if !json {
         println!(
@@ -74,6 +90,8 @@ pub async fn buy(
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
                 limit_price: limit_price.map(str::to_string),
+                share_price,
+                shares_per_token,
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
@@ -94,6 +112,9 @@ pub async fn buy(
         if let Some(lp) = limit_price {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
             println!("  Limit price:  <= {lp} USDC/token (condition met)");
+        }
+        if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
+            println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
         }
         return Ok(());
     }
@@ -124,6 +145,8 @@ pub async fn buy(
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
             limit_price: limit_price.map(str::to_string),
+            share_price,
+            shares_per_token,
         });
     }
 
@@ -154,6 +177,7 @@ pub async fn sell(
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, limit_price_raw6).await?;
+    let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
 
     if !json {
         println!(
@@ -180,6 +204,8 @@ pub async fn sell(
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
                 limit_price: limit_price.map(str::to_string),
+                share_price,
+                shares_per_token,
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
@@ -199,6 +225,9 @@ pub async fn sell(
         if let Some(lp) = limit_price {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
             println!("  Limit price:   >= {lp} USDC/token (condition met)");
+        }
+        if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
+            println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
         }
         return Ok(());
     }
@@ -229,6 +258,8 @@ pub async fn sell(
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
             limit_price: limit_price.map(str::to_string),
+            share_price,
+            shares_per_token,
         });
     }
 

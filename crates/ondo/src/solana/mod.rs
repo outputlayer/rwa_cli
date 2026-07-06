@@ -14,7 +14,7 @@ pub use balance::{
     NoTokenAccount,
     get_sol_balance, get_sol_balance_raw,
     get_usdc_balance, get_usdc_balance_raw,
-    get_all_balances, get_balance,
+    get_all_balances, get_balance, get_mint_multiplier,
     SolanaTokenBalance, PortfolioBalances, get_portfolio_balances,
     BalanceSource,
 };
