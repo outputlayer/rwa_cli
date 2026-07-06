@@ -1,4 +1,5 @@
 mod balance;
+mod mint;
 mod rpc;
 mod fee;
 mod transaction;
@@ -14,10 +15,11 @@ pub use balance::{
     NoTokenAccount,
     get_sol_balance, get_sol_balance_raw,
     get_usdc_balance, get_usdc_balance_raw,
-    get_all_balances, get_balance, get_mint_multiplier,
+    get_all_balances, get_balance,
     SolanaTokenBalance, PortfolioBalances, get_portfolio_balances,
     BalanceSource,
 };
+pub use mint::get_mint_multiplier;
 #[cfg(any(test, feature = "test-util"))]
 pub use balance::get_portfolio_balances_with_urls;
 pub(crate) use balance::is_rpc_unavailable;

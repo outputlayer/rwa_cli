@@ -1,11 +1,11 @@
 pub mod api;
 pub mod amounts;
 pub mod audit;
-pub mod gm;
 pub mod jupiter;
 pub mod ledger;
 pub mod solana;
 pub mod spl;
+pub mod symbol_resolve;
 pub mod token_list;
 pub mod types;
 pub mod usecases;

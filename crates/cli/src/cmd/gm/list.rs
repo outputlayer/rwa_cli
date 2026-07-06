@@ -1,5 +1,5 @@
 use eyre::Result;
-use rwa_ondo::{api, gm, token_list};
+use rwa_ondo::{api, symbol_resolve, token_list};
 
 use super::*;
 
@@ -154,7 +154,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
         let tokens = token_list::get_token_list();
         symbols
             .iter()
-            .map(|input| match gm::resolve_token(input, tokens) {
+            .map(|input| match symbol_resolve::resolve_token(input, tokens) {
                 Ok(entry) => match item_map.get(&entry.symbol.to_uppercase()) {
                     Some(item) => TradableItemJson {
                         input: input.clone(),

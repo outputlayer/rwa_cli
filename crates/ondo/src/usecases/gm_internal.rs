@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 
-use crate::{amounts, api, gm, jupiter, solana, token_list};
+use crate::{amounts, api, jupiter, solana, symbol_resolve, token_list};
 use crate::types::{Mint, Symbol};
 use super::gm::{GmTradeError, GmTradeErrorKind};
 
@@ -27,7 +27,7 @@ pub(crate) fn min_usdc_raw() -> u128 {
 }
 
 pub fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {
-    let entry = gm::resolve_token(symbol, tokens)?;
+    let entry = symbol_resolve::resolve_token(symbol, tokens)?;
     let mint = entry
         .solana_address
         .ok_or_else(|| eyre!("No Solana address for {}", entry.symbol))?;
