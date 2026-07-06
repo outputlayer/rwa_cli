@@ -52,6 +52,7 @@ cargo install --path bin/rwa
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape
 - `--max-bps <N>` (buy/sell/baskets/close-all) rejects trades whose quoted all-in cost (spread + fee) exceeds N bps; `RWA_MAX_BPS` is the env default; surfaced as `cost_too_high` (per-item `failed[]` entries in multi-trade commands)
+- `--limit-price <P>` (buy/sell only) makes the trade conditional: the quote's implied price (USDC per token) must be ≤ P for buy / ≥ P for sell (equality passes), else the command fails with `condition_not_met` (exit 1, not transient) — in `--dry-run` too. The gated quote is the one executed; worst-case fill = limit ± slippage tolerance. Conflicts with `--quote-only`. Canonical synthetic limit order: run it from cron/a script every N minutes until it fills (exit 0), e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`; DCA is plain scheduled `buy -y`; stop-loss is an external reference-price check + market `sell -y` (price guarantee is not wanted there)
 - `--slippage <BPS>` is accepted by buy/sell and all multi-trade commands (baskets, close-all)
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
@@ -73,6 +74,8 @@ rwa gm buy <SYM> <AMT> --dry-run
 rwa gm buy <SYM> <AMT> -y
 rwa gm buy <SYM> <AMT> -y --slippage 50
 rwa gm buy <SYM> <AMT> --quote-only
+rwa gm buy <SYM> <AMT> --limit-price <P> -y     # execute only if quoted price <= P (USDC/token)
+rwa gm sell <SYM> <AMT> --limit-price <P> -y    # execute only if quoted price >= P
 rwa gm sell <SYM> <AMT> --dry-run
 rwa gm sell <SYM> <AMT> -y
 rwa gm close-all --dry-run
@@ -137,7 +140,7 @@ rwa update -y
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
-- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), `amount_below_minimum`, `insufficient_funds`, and `no_position`
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), `amount_below_minimum`, `condition_not_met` (`--limit-price` unmet), `insufficient_funds`, and `no_position`
 - If a quoted route would fail on-chain (RFQ MM can't fill) or under-delivers vs its own quote, the CLI excludes that router and refetches a quote (auto-routing to metis/dflow/…); `route_unfillable` surfaces only if all retries are exhausted. A rerouted quote materially worse than the previewed one (beyond slippage tolerance) aborts with `slippage_too_high` instead of executing silently
 - `RWA_EXCLUDE_ROUTERS` (comma-separated, e.g. `jupiterz,dflow`) manually pins routers to avoid when quoting buy/sell; merged with the auto-excluded set
 - `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.

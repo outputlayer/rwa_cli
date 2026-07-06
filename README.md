@@ -50,6 +50,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 ## Things to know
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
+- **Conditional orders.** `--limit-price <P>` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
