@@ -213,7 +213,7 @@ pub async fn buy_basket(
         .collect();
 
     if dry_run {
-        return buy_basket_dry_run(&taker, &symbol_raw, json, slippage, max_bps).await;
+        return buy_basket_dry_run(&taker, &symbol_raw, parallel, json, slippage, max_bps).await;
     }
 
     let wallet_arc = Arc::new(w);
@@ -252,32 +252,32 @@ pub async fn buy_basket(
 async fn buy_basket_dry_run(
     taker: &str,
     symbol_raw: &[(String, String)],
+    parallel: bool,
     json: bool,
     slippage: Option<u32>,
     max_bps: Option<u32>,
 ) -> Result<()> {
     let taker = taker.to_string();
-    let (ready_orders, failed) = fetch_orders_parallel(
-        symbol_raw.to_vec(),
-        json,
-        "buy orders",
-        |order: &usecases::gm::BuyOrderReady| {
-            format!(
-                "~{} {} (spread {:.2}%)",
-                amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
-                order.symbol,
-                order.slippage_pct.unwrap_or(0.0)
-            )
-        },
-        |(sym, raw)| {
-            let taker = taker.clone();
-            async move {
-                let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps, None).await;
-                (sym, result)
-            }
-        },
-    )
-    .await;
+    let describe_ok = |order: &usecases::gm::BuyOrderReady| {
+        format!(
+            "~{} {} (spread {:.2}%)",
+            amounts::format_amount(&order.order.out_amount, jupiter::GM_SOL_DECIMALS),
+            order.symbol,
+            order.slippage_pct.unwrap_or(0.0)
+        )
+    };
+    let fetch = |(sym, raw): (String, String)| {
+        let taker = taker.clone();
+        async move {
+            let result = usecases::gm::fetch_buy_order(&sym, &raw, &taker, json, slippage, max_bps, None).await;
+            (sym, result)
+        }
+    };
+    let (ready_orders, failed) = if parallel {
+        fetch_orders_parallel(symbol_raw.to_vec(), json, "buy orders", describe_ok, fetch).await
+    } else {
+        fetch_orders_sequential(symbol_raw.to_vec(), json, describe_ok, fetch).await
+    };
 
     if json {
         let preview: Vec<BuyBasketItemJson> = ready_orders
@@ -353,7 +353,7 @@ pub async fn sell_basket(
     }
 
     if dry_run {
-        return sell_basket_dry_run(&taker, &pairs, json, rpc_url, slippage, max_bps).await;
+        return sell_basket_dry_run(&taker, &pairs, parallel, json, rpc_url, slippage, max_bps).await;
     }
 
     let wallet_arc = Arc::new(w);
@@ -390,6 +390,7 @@ pub async fn sell_basket(
 async fn sell_basket_dry_run(
     taker: &str,
     pairs: &[(String, String)],
+    parallel: bool,
     json: bool,
     rpc_url: Option<&str>,
     slippage: Option<u32>,
@@ -397,28 +398,27 @@ async fn sell_basket_dry_run(
 ) -> Result<()> {
     let taker = taker.to_string();
     let rpc = rpc_url.map(str::to_string);
-    let (ready_orders, failed) = fetch_orders_parallel(
-        pairs.to_vec(),
-        json,
-        "sell orders",
-        |order: &usecases::gm::SellOrderReady| {
-            format!(
-                "~{} USDC (spread {:.2}%)",
-                amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
-                order.slippage_pct.unwrap_or(0.0)
-            )
-        },
-        |(sym, amt)| {
-            let taker = taker.clone();
-            let rpc = rpc.clone();
-            async move {
-                let result =
-                    usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref(), slippage, max_bps).await;
-                (sym, result)
-            }
-        },
-    )
-    .await;
+    let describe_ok = |order: &usecases::gm::SellOrderReady| {
+        format!(
+            "~{} USDC (spread {:.2}%)",
+            amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
+            order.slippage_pct.unwrap_or(0.0)
+        )
+    };
+    let fetch = |(sym, amt): (String, String)| {
+        let taker = taker.clone();
+        let rpc = rpc.clone();
+        async move {
+            let result =
+                usecases::gm::fetch_sell_order_by_symbol(&sym, &amt, &taker, json, rpc.as_deref(), slippage, max_bps).await;
+            (sym, result)
+        }
+    };
+    let (ready_orders, failed) = if parallel {
+        fetch_orders_parallel(pairs.to_vec(), json, "sell orders", describe_ok, fetch).await
+    } else {
+        fetch_orders_sequential(pairs.to_vec(), json, describe_ok, fetch).await
+    };
 
     if json {
         let preview: Vec<SellBasketItemJson> = ready_orders

@@ -17,6 +17,12 @@ use tokio::task::JoinSet;
 
 use super::types::{CloseFailJson, GasRefuelJson};
 
+/// Inter-item pacing for `--sequential` mode (Jupiter rate-limit
+/// conservatism). Shared by the real execution path (`run_swap_items`) and
+/// the dry-run quote-fetch path (`fetch_orders_sequential`) so `--sequential`
+/// paces identically whether or not a trade actually executes.
+pub(super) const SEQUENTIAL_SPACING: Duration = Duration::from_secs(3);
+
 /// Whether the auto-gas refuel may proceed without an interactive prompt.
 /// JSON mode is non-interactive: it auto-approves ONLY under explicit `-y`
 /// (the same rule as trade execution since v0.6.0). Returns `None` when an
@@ -121,7 +127,7 @@ where
     } else {
         for (i, item) in items.into_iter().enumerate() {
             if i > 0 {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(SEQUENTIAL_SPACING).await;
             }
             if !json {
                 println!("{}", announce(&item));
@@ -184,6 +190,48 @@ where
                 if !json {
                     eprintln!("  ✗ join error: {}", e);
                 }
+            }
+        }
+    }
+
+    (ready, failed)
+}
+
+/// Fetch quotes for many items one at a time (the `--sequential` counterpart
+/// to `fetch_orders_parallel`), pacing each item `SEQUENTIAL_SPACING` apart —
+/// the same rate-limit-conservatism gap the real execution path uses in
+/// `run_swap_items`. Same ready/failed split and `✓`/`✗` line format as the
+/// parallel version, so dry-run output shape doesn't depend on `--sequential`.
+pub(super) async fn fetch_orders_sequential<I, T, F, Fut>(
+    items: Vec<I>,
+    json: bool,
+    describe_ok: impl Fn(&T) -> String,
+    fetch: F,
+) -> (Vec<T>, Vec<CloseFailJson>)
+where
+    F: Fn(I) -> Fut,
+    Fut: Future<Output = (String, Result<T>)>,
+{
+    let mut ready: Vec<T> = Vec::new();
+    let mut failed: Vec<CloseFailJson> = Vec::new();
+
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(SEQUENTIAL_SPACING).await;
+        }
+        let (sym, result) = fetch(item).await;
+        match result {
+            Ok(order) => {
+                if !json {
+                    println!("  ✓ {} — {}", sym, describe_ok(&order));
+                }
+                ready.push(order);
+            }
+            Err(e) => {
+                if !json {
+                    eprintln!("  ✗ {} — {}", sym, e);
+                }
+                failed.push(fail_json(sym, &e));
             }
         }
     }
@@ -402,5 +450,56 @@ mod tests {
             "elapsed only {:?}",
             start.elapsed()
         );
+    }
+
+    // fetch_orders_sequential is the dry-run counterpart of the sequential
+    // branch tested above: two instant no-op fetches must still incur one
+    // inter-item gap (3s), proving `--sequential` paces dry-run quote
+    // fetching the same way it paces real execution. A mutant that fetches
+    // these through the parallel JoinSet instead would finish near-instantly
+    // and fail this bound.
+    #[tokio::test(start_paused = true)]
+    async fn fetch_orders_sequential_paces_items_3s_apart() {
+        let t0 = tokio::time::Instant::now();
+        let items = vec![1i32, 2i32];
+        let (ready, failed) = fetch_orders_sequential(
+            items,
+            true, // json (suppress prints)
+            |_: &i32| String::new(),
+            |item: i32| async move { (item.to_string(), Ok::<i32, eyre::Report>(item)) },
+        )
+        .await;
+        assert_eq!(ready, vec![1, 2]);
+        assert!(failed.is_empty());
+        assert!(
+            t0.elapsed() >= Duration::from_secs(3),
+            "elapsed only {:?}",
+            t0.elapsed()
+        );
+    }
+
+    // Same helper, failure path: errors are collected into `failed` with the
+    // same fail_json shape the parallel path produces, and pacing still
+    // applies between items regardless of success/failure.
+    #[tokio::test(start_paused = true)]
+    async fn fetch_orders_sequential_collects_failures() {
+        let items = vec![1i32, -2i32];
+        let (ready, failed) = fetch_orders_sequential(
+            items,
+            true,
+            |_: &i32| String::new(),
+            |item: i32| async move {
+                if item < 0 {
+                    (item.to_string(), Err(eyre::eyre!("boom")))
+                } else {
+                    (item.to_string(), Ok(item))
+                }
+            },
+        )
+        .await;
+        assert_eq!(ready, vec![1]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].token, "-2");
+        assert!(failed[0].error.contains("boom"));
     }
 }
