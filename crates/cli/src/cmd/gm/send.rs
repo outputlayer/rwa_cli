@@ -1,5 +1,6 @@
 use eyre::Result;
 use rwa_ondo::{amounts, jupiter, solana, token_list, wallet};
+use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
 
 use super::*;
 
@@ -209,14 +210,18 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         .parse()
         .map_err(|_| eyre::eyre!("Invalid on-chain amount: {}", balance.raw_amount))?;
     if raw > raw_balance {
-        return Err(eyre::eyre!(insufficient_balance_message(
-            &sym,
-            &balance.raw_amount,
-            jupiter::GM_SOL_DECIMALS,
-            balance.ui_balance,
-            &raw_str,
-            "send",
-        )));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            insufficient_balance_message(
+                &sym,
+                &balance.raw_amount,
+                jupiter::GM_SOL_DECIMALS,
+                balance.ui_balance,
+                &raw_str,
+                "send",
+            ),
+        )
+        .into());
     }
 
     let token_display = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);

@@ -43,7 +43,7 @@ pub struct GmTradeError {
 }
 
 impl GmTradeError {
-    pub(crate) fn new(kind: GmTradeErrorKind, detail: impl Into<String>) -> Self {
+    pub fn new(kind: GmTradeErrorKind, detail: impl Into<String>) -> Self {
         Self {
             kind,
             detail: detail.into(),

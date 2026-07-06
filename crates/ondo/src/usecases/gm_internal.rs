@@ -513,6 +513,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn send_gm_token_overshoot_error_is_typed_insufficient_funds() {
+        // The send command overshoot check (CLI side) now wraps insufficient
+        // balance in a typed GmTradeError so --json emits error_kind parity
+        // with sell. Verify classify_error labels it correctly.
+        use super::super::gm::classify_error;
+        let msg = insufficient_balance_message("SPYon", "1000000000", 9, Some(1.0077), "2000000000", "send");
+        let err: eyre::Report = GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            msg,
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("insufficient_funds"));
+    }
+
     /// User task, end to end: "Sell my entire SPYon dividend position."
     /// `compute_portfolio` (pub API — see also `crates/ondo/tests/scenarios.rs`)
     /// prices the raw balance the wallet actually holds; `all` must resolve to
