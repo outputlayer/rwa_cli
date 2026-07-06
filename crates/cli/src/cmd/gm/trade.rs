@@ -48,9 +48,9 @@ fn unit_word(s: &str) -> Option<LimitFrame> {
     }
 }
 
-/// Digits and at most one decimal point, and at least one digit — just
+/// Digits and optional decimal points, and at least one digit — just
 /// enough to distinguish "this looks like the number operand" from "this
-/// looks like an attempted (possibly misspelled) unit".
+/// looks like an attempted (possibly misspelled) unit" (real validation happens in token_to_raw).
 fn looks_numeric(s: &str) -> bool {
     !s.is_empty()
         && s.chars().any(|c| c.is_ascii_digit())
@@ -75,7 +75,7 @@ fn split_two_value_limit_price(a: &str, b: &str) -> Result<(String, LimitFrame)>
                 "invalid --limit-price: unknown unit \"{a}\" — use share or token (e.g. --limit-price 748 share)"
             )),
             (false, false) => Err(eyre!(
-                "invalid --limit-price: expected a number and a unit (share/token), got \"{a}\" and \"{b}\""
+                "invalid --limit-price: expected a number and a unit (share/token), got \"{a}\" and \"{b}\" (e.g. --limit-price 748 share)"
             )),
         },
     }
@@ -449,6 +449,9 @@ mod tests {
         assert!(parse_limit_price(Some(&v(&["share", "token"]))).is_err());
         // Two numbers, no unit.
         assert!(parse_limit_price(Some(&v(&["748", "100"]))).is_err());
+        // Two garbage values (neither numeric nor unit) -> teaching example.
+        let err = parse_limit_price(Some(&v(&["abc", "xyz"]))).unwrap_err();
+        assert!(err.to_string().contains("e.g. --limit-price 748 share"), "{err}");
     }
 
     #[test]

@@ -654,4 +654,15 @@ mod tests {
             Some(&Value::from("below $1.50 minimum"))
         );
     }
+
+    /// Clap multi-value flag adjacency: `--limit-price 748 share` (two values)
+    /// must correctly terminate, then `--slippage 20` must parse without
+    /// confusion over where the previous flag's values end.
+    #[test]
+    fn limit_price_with_two_values_followed_by_other_flags() {
+        let ok = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--limit-price", "748", "share", "--slippage", "20", "-y",
+        ]);
+        assert!(ok.is_ok(), "two-value --limit-price followed by --slippage should parse: {:?}", ok.err());
+    }
 }
