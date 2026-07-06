@@ -147,13 +147,12 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
     assets.iter().find(|a| a.symbol.to_uppercase() == lookup)
 }
 
-/// Whether Ondo currently pauses trading for `symbol` (case-insensitive).
+/// Whether Ondo currently pauses trading for `symbol` (case-insensitive,
+/// accepts "TSLA" or "TSLAon" via `find_asset`'s `on`-suffix normalization).
 /// Unknown symbols are not paused.
 #[must_use]
 pub fn is_trading_paused(symbol: &str, assets: &[OndoAsset]) -> bool {
-    assets
-        .iter()
-        .any(|a| a.symbol.eq_ignore_ascii_case(symbol) && a.is_trading_paused)
+    find_asset(symbol, assets).is_some_and(|a| a.is_trading_paused)
 }
 
 /// Parse a price string from Ondo market data.
@@ -362,6 +361,11 @@ mod tests {
         })).unwrap();
         assert!(asset.is_trading_paused);
         assert!(is_trading_paused("spyON", &[asset]));
+        // Suffixless symbol also matches ("TSLA" and "TSLAon" are the same asset).
+        let tsla: OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "TSLAon", "assetName": "Tesla", "isTradingPaused": true
+        })).unwrap();
+        assert!(is_trading_paused("TSLA", &[tsla]));
         // Absent field defaults to false; unknown symbol is not paused.
         let quiet: OndoAsset = serde_json::from_value(serde_json::json!({
             "symbol": "TSLAon", "assetName": "Tesla"

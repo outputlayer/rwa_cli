@@ -312,9 +312,10 @@ fn extract_mint_multiplier(account_value: &serde_json::Value) -> Option<f64> {
 }
 
 /// Scaled-UI multiplier for a mint (underlying shares per raw token).
-/// `Ok(None)` = mint has no scaledUiAmountConfig extension (semantically 1).
-/// `Err` = RPC failure — callers that REQUIRE the multiplier (share-frame
-/// limits) must fail closed on this.
+/// `Ok(None)` = mint account exists but carries no scaledUiAmountConfig
+/// extension (semantically 1). `Err` = RPC failure, or the mint account
+/// itself was not found — callers that REQUIRE the multiplier (share-frame
+/// limits) must fail closed on this rather than silently assume 1.
 pub async fn get_mint_multiplier(mint: &str, rpc_url: Option<&str>) -> Result<Option<f64>> {
     #[derive(Deserialize)]
     struct AccountInfoResult {
@@ -327,7 +328,10 @@ pub async fn get_mint_multiplier(mint: &str, rpc_url: Option<&str>) -> Result<Op
         RpcMode::Race,
     )
     .await?;
-    Ok(result.value.as_ref().and_then(extract_mint_multiplier))
+    let Some(account_value) = result.value else {
+        return Err(eyre!("mint account {mint} not found — cannot read scaled-UI multiplier"));
+    };
+    Ok(extract_mint_multiplier(&account_value))
 }
 
 /// Raised when the wallet has no associated token account for a mint — for
@@ -487,6 +491,25 @@ mod tests {
         // No extension → None (multiplier 1 semantics decided by callers).
         let plain = serde_json::json!({ "data": { "parsed": { "info": { "decimals": 9 } } } });
         assert_eq!(extract_mint_multiplier(&plain), None);
+    }
+
+    #[tokio::test]
+    async fn get_mint_multiplier_fails_closed_when_mint_account_not_found() {
+        use httpmock::prelude::*;
+
+        let server = MockServer::start_async().await;
+        let _m = server.mock_async(|when, then| {
+            when.method(POST);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "value": null } }));
+        }).await;
+
+        let url = server.base_url();
+        let err = get_mint_multiplier("NonexistentMint1111111111111111111111111111", Some(&url))
+            .await
+            .expect_err("missing mint account must fail closed, not resolve to multiplier 1");
+        assert!(err.to_string().contains("not found"), "unexpected error: {err}");
     }
 
     #[test]

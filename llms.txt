@@ -179,7 +179,7 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 - `no_position` → selling a token the wallet does not hold; check `portfolio` first
 - Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock contention); exit 1 = permanent
 - `market_closed` → token does not trade off-hours; tell user when regular trading reopens (Sunday 8 PM ET) or suggest an off-hours flagship token
-- `trading_paused` → Ondo paused this asset around a dividend event (ex-dividend window; longer for ETFs); on buy/sell it's a hard error, in close-all/baskets the item lands in `skipped[]` with this reason, and `list`/`search`/`tradable` may carry `"trading_paused":true`; wait and retry later, don't treat as `not_tradable`
+- `trading_paused` → Ondo paused this asset around a dividend event (ex-dividend window; longer for ETFs); on buy/sell it's a hard error, in close-all the item lands in `skipped[]` with this reason, in buy-basket/sell-basket it lands in `failed[]` with `error_kind: "trading_paused"`, and `list`/`search`/`tradable` may carry `"trading_paused":true`; wait and retry later, don't treat as `not_tradable`
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token
 - `confirmation_timeout` → tx may still land; check Solscan before retrying

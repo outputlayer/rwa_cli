@@ -31,8 +31,9 @@ pub(crate) struct HoldingAccount {
     decimals: u8,
 }
 
-/// Sum the ui-amount of a set of token accounts using each account's decimals.
-fn sum_ui(accts: &[HoldingAccount]) -> f64 {
+/// Sum raw/10^decimals across a set of token accounts (canonical raw frame,
+/// not the mint's Scaled-UI ui-amount).
+fn sum_raw_derived(accts: &[HoldingAccount]) -> f64 {
     accts
         .iter()
         .filter_map(|a| {
@@ -50,7 +51,7 @@ pub(crate) fn holdings_to_balances(
     tokens: &[GmTokenEntry],
 ) -> PortfolioBalances {
     let sol = resp.amount.parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
-    let usdc = resp.tokens.get(USDC_MINT).map(|a| sum_ui(a)).unwrap_or(0.0);
+    let usdc = resp.tokens.get(USDC_MINT).map(|a| sum_raw_derived(a)).unwrap_or(0.0);
 
     let mut gm_tokens = Vec::new();
     for t in tokens {
@@ -65,7 +66,7 @@ pub(crate) fn holdings_to_balances(
             mint: Mint::from(mint),
             // Ultra returns raw on-chain amounts — already the canonical raw
             // frame. No Scaled-UI value available from this source.
-            balance: sum_ui(accts),
+            balance: sum_raw_derived(accts),
             ui_balance: None,
             raw_amount: raw.to_string(),
         });

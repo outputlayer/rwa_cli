@@ -290,6 +290,15 @@ fn raw_amount_to_f64_lossy(raw: &str, decimals: u8) -> f64 {
     amounts::format_amount(raw, decimals).parse().unwrap_or(0.0)
 }
 
+/// Format a Scaled-UI wallet-displayed balance for the insufficient-balance
+/// note: fixed to 6 decimals (float noise like `20.526341000000002` is not
+/// user-facing), then trailing zeros and a bare trailing dot are trimmed.
+fn format_ui_trimmed(ui: f64) -> String {
+    let s = format!("{ui:.6}");
+    let s = s.trim_end_matches('0');
+    s.trim_end_matches('.').to_string()
+}
+
 /// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's
 /// GM-token balance, returning `(display_amount, raw_amount)`. The single
 /// chokepoint for `sell` and `sell-basket`; selling more than the balance is a
@@ -333,7 +342,7 @@ pub(crate) fn resolve_sell_amount(
         // Phantom shows" can exceed the raw balance — name both numbers.
         let wallet_note = ui_balance
             .filter(|ui| (ui - raw_amount_to_f64_lossy(balance_raw, decimals)).abs() > 1e-9)
-            .map(|ui| format!(" (wallet displays ≈{ui})"))
+            .map(|ui| format!(" (wallet displays ≈{})", format_ui_trimmed(ui)))
             .unwrap_or_default();
         return Err(GmTradeError::new(
             GmTradeErrorKind::InsufficientFunds,

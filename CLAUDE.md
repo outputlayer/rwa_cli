@@ -130,7 +130,7 @@ rwa update -y
 - `close-all` and basket trading default to **parallel** (bounded by internal order/execute semaphores); `--sequential` opts into one-at-a-time with 3s spacing (rate-limit fallback); `--parallel` is accepted as a no-op for compatibility
 - Swap confirmation happens server-side in Jupiter `/execute` (no local wait); `send` and Metis-fallback swaps confirm locally at `confirmed` commitment; `reclaim` batches confirm at `processed` (fast path — low-stakes rent, err field already authoritative)
 - GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via the mint's multiplier — wallet-displayed balances = raw × multiplier, and token price = share price × multiplier. The CLI's canonical frame is RAW everywhere (amounts, prices, ledger, pnl); `portfolio` values positions as raw × price and exposes `shares_per_token` when the multiplier ≠ 1; trade previews add informational `share_price`/`shares_per_token`
-- Ondo pauses individual assets around dividend events (ex-dividend windows; ETFs longer): surfaced as `trading_paused` (exit 1, not transient) on buy/sell, `skipped[]` reason in close-all/baskets, and an optional `trading_paused: true` flag in `list`/`search`/`tradable` JSON
+- Ondo pauses individual assets around dividend events (ex-dividend windows; ETFs longer): surfaced as `trading_paused` (exit 1, not transient) on buy/sell, `skipped[]` reason in close-all, per-item `failed[]` entry with `error_kind: "trading_paused"` in buy-basket/sell-basket, and an optional `trading_paused: true` flag in `list`/`search`/`tradable` JSON. The pause check fails open (with a stderr warning) if the Ondo assets API is unreachable
 
 ## Jupiter behavior
 
