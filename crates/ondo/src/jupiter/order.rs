@@ -56,6 +56,11 @@ async fn get_order_impl(
     slippage_bps: Option<u32>,
     excluded_routers: &[String],
 ) -> Result<OrderResponse> {
+    // Retry budget clock for the whole quote fetch (all backends, all
+    // retries): started once here so the ~20s cap applies per command, not
+    // per backend.
+    let started = std::time::Instant::now();
+
     // `RWA_JUPITER_URL` pins all quoting to one base URL (test seam — not user-facing).
     let env_url = std::env::var("RWA_JUPITER_URL")
         .ok()
@@ -78,6 +83,7 @@ async fn get_order_impl(
             taker,
             slippage_bps,
             excluded_routers,
+            started,
         )
         .await;
     }
@@ -99,6 +105,7 @@ async fn get_order_impl(
             taker,
             slippage_bps,
             excluded_routers,
+            started,
         )
         .await
         {
@@ -146,9 +153,11 @@ async fn get_order_with_retries(
     taker: &str,
     slippage_bps: Option<u32>,
     excluded_routers: &[String],
+    started: std::time::Instant,
 ) -> Result<OrderResponse> {
     let order_url = format!("{base_url}/order");
     let mut last_err = eyre!("Jupiter /order failed");
+    let backend_label = backend.label();
 
     for attempt in 0..=ORDER_MAX_RETRIES {
         // Acquire semaphore only for the actual HTTP call, release before any sleep.
@@ -172,8 +181,16 @@ async fn get_order_with_retries(
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 let msg = format!("{e}");
-                if attempt < ORDER_MAX_RETRIES && is_retryable_order_error(&msg) {
+                if attempt < ORDER_MAX_RETRIES
+                    && is_retryable_order_error(&msg)
+                    && within_retry_budget(started, attempt + 1)
+                {
                     let backoff = order_backoff(attempt);
+                    eprintln!(
+                        "still fetching quote ({backend_label}, retry {}/{ORDER_MAX_RETRIES}, waiting {:.1}s)…",
+                        attempt + 1,
+                        backoff.as_secs_f32()
+                    );
                     tokio::time::sleep(backoff).await;
                     last_err = e;
                     continue;
@@ -279,10 +296,17 @@ async fn get_order_inner(
     Ok(resp)
 }
 
-/// Exponential backoff before the `attempt`-th `/order` retry: 800ms · 2^attempt
-/// (0.8s, 1.6s, 3.2s, 6.4s …).
+/// Exponential backoff before the `attempt`-th `/order` retry:
+/// 800ms · 2^attempt, capped at 3.2s (worst-case ladder stays bounded).
 fn order_backoff(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(800 * 2u64.pow(attempt))
+    std::time::Duration::from_millis((800u64 * 2u64.pow(attempt)).min(3200))
+}
+
+/// Total quote-fetch retry budget (~20s per command): the FIRST attempt of
+/// any backend is always allowed; retries stop once the budget is spent.
+const ORDER_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+fn within_retry_budget(started: std::time::Instant, attempt: u32) -> bool {
+    attempt == 0 || started.elapsed() < ORDER_RETRY_BUDGET
 }
 
 /// Errors from Jupiter /order that should be retried with backoff.
@@ -470,10 +494,29 @@ mod tests {
         assert_eq!(order_backoff(0), Duration::from_millis(800));
         assert_eq!(order_backoff(1), Duration::from_millis(1_600));
         assert_eq!(order_backoff(2), Duration::from_millis(3_200));
-        assert_eq!(order_backoff(3), Duration::from_millis(6_400));
+        assert_eq!(order_backoff(3), Duration::from_millis(3_200)); // capped, was 6_400
         // Sum of the 4 waits before giving up after ORDER_MAX_RETRIES.
         let total: u128 = (0..ORDER_MAX_RETRIES).map(|a| order_backoff(a).as_millis()).sum();
-        assert_eq!(total, 12_000);
+        assert_eq!(total, 8_800);
+    }
+
+    #[test]
+    fn order_backoff_caps_at_3200ms() {
+        assert_eq!(order_backoff(0).as_millis(), 800);
+        assert_eq!(order_backoff(1).as_millis(), 1600);
+        assert_eq!(order_backoff(2).as_millis(), 3200);
+        assert_eq!(order_backoff(3).as_millis(), 3200); // was 6400 — capped
+        assert_eq!(order_backoff(8).as_millis(), 3200);
+    }
+
+    #[test]
+    fn retry_budget_allows_first_attempt_and_cuts_late_ones() {
+        let start = std::time::Instant::now();
+        assert!(within_retry_budget(start, 0)); // first attempt always allowed
+        // a start 25s in the past exhausts the ~20s budget for RETRIES
+        let old = start - std::time::Duration::from_secs(25);
+        assert!(within_retry_budget(old, 0)); // attempt 0 still allowed
+        assert!(!within_retry_budget(old, 1)); // retries are cut
     }
 
     #[test]
