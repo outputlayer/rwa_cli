@@ -205,7 +205,7 @@ pub async fn close_all(
         } else {
             "Sell all positions?".to_string()
         };
-        if !yes && !json && !confirm(&prompt) {
+        if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
         }

@@ -7,6 +7,7 @@
 //! list/search flows.
 
 use eyre::Result;
+use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
 use rwa_ondo::{usecases, wallet};
 use serde::Serialize;
 use std::future::Future;
@@ -203,6 +204,25 @@ pub(super) fn confirm(msg: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Execution consent gate — single chokepoint for every money-moving command.
+/// `-y` always proceeds. JSON mode is non-interactive: without `-y` it fails
+/// closed (typed `confirmation_required`) instead of silently executing.
+/// Interactive mode falls back to the y/N prompt (untestable headlessly —
+/// covered by existing manual behavior).
+pub(crate) fn require_execution_consent(yes: bool, json: bool, prompt: &str) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if json {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::ConfirmationRequired,
+            "--json is non-interactive: add -y to execute, or use --dry-run to preview",
+        )
+        .into());
+    }
+    Ok(confirm(prompt))
+}
+
 /// Load the wallet selected for this invocation (`--wallet`/`RWA_WALLET` >
 /// active > legacy default). Single chokepoint for every signing command.
 pub(super) fn load_wallet(selected: Option<&str>) -> Result<wallet::Wallet> {
@@ -256,6 +276,21 @@ mod tests {
             "etf"
         );
     }
+
+    #[test]
+    fn consent_gate_json_without_yes_is_confirmation_required() {
+        // -y always proceeds, json or not.
+        assert!(require_execution_consent(true, true, "Proceed?").unwrap());
+        assert!(require_execution_consent(true, false, "Proceed?").unwrap());
+        // json without -y fails closed with the typed kind, before any execution.
+        let err = require_execution_consent(false, true, "Proceed?").unwrap_err();
+        assert_eq!(rwa_ondo::usecases::gm::classify_error(&err), Some("confirmation_required"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("-y"), "teaches the fix: {msg}");
+        assert!(msg.contains("--dry-run"), "offers the preview path: {msg}");
+    }
+    // The interactive `Ok(confirm(prompt))` arm (yes=false, json=false) reads
+    // stdin and is untestable headlessly — covered by existing manual behavior.
 
     #[test]
     fn detect_stock() {

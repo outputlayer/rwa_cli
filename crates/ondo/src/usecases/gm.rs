@@ -34,6 +34,9 @@ pub enum GmTradeErrorKind {
     ConditionNotMet,
     /// Ondo has paused trading for this asset (typically an ex-dividend window).
     TradingPaused,
+    /// `--json` without `-y`: non-interactive mode fails closed instead of
+    /// silently executing a real trade/transfer.
+    ConfirmationRequired,
 }
 
 #[derive(Debug)]
@@ -71,6 +74,7 @@ impl GmTradeErrorKind {
             Self::NoPosition => "no_position",
             Self::ConditionNotMet => "condition_not_met",
             Self::TradingPaused => "trading_paused",
+            Self::ConfirmationRequired => "confirmation_required",
         }
     }
 }
@@ -717,7 +721,7 @@ mod tests {
         for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout"] {
             assert!(is_transient_kind(k), "{k} must be transient");
         }
-        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused"] {
+        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused", "confirmation_required"] {
             assert!(!is_transient_kind(k), "{k} must be permanent");
         }
     }
@@ -1078,5 +1082,17 @@ mod tests {
         .into();
         assert_eq!(classify_error(&err), Some("condition_not_met"));
         assert!(!is_transient_kind("condition_not_met"));
+    }
+
+    #[test]
+    fn confirmation_required_classifies() {
+        assert_eq!(GmTradeErrorKind::ConfirmationRequired.to_string(), "confirmation_required");
+        let err: eyre::Error = GmTradeError::new(
+            GmTradeErrorKind::ConfirmationRequired,
+            "--json is non-interactive: add -y to execute, or use --dry-run to preview",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("confirmation_required"));
+        assert!(!is_transient_kind("confirmation_required"));
     }
 }

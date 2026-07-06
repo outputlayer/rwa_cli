@@ -428,6 +428,123 @@ fn buy_quote_only_json_emits_dry_run_shape() {
     }
 }
 
+/// `gm buy --json` without `-y` (and not `--dry-run`/`--quote-only`) must fail
+/// closed with `confirmation_required` before ever reaching `/execute` — the
+/// v0.6.0 breaking change: `--json` alone no longer silently executes real
+/// trades (see CLAUDE.md "Agent usage rules").
+#[test]
+fn buy_json_without_yes_is_confirmation_required_and_never_executes() {
+    let home = test_home("buy-confirmation-required");
+    let server = MockServer::start();
+
+    // auto_gas + preflight: healthy SOL/USDC balances, no refuel needed.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!(
+                { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+            ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 }, "value": [{
+                    "pubkey": "SomePubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "owner": WALLET,
+                                    "tokenAmount": {
+                                        "amount": "1000000000",
+                                        "decimals": 6,
+                                        "uiAmount": 1000.0,
+                                        "uiAmountString": "1000"
+                                    }
+                                },
+                                "type": "account"
+                            },
+                            "program": "spl-token",
+                            "space": 165
+                        },
+                        "executable": false,
+                        "lamports": 2039280,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "rentEpoch": 0
+                    }
+                }] }
+            }));
+    });
+    // get_mint_multiplier: best-effort, ignored without --limit-price — "not
+    // found" is a fine answer.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getAccountInfo");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "value": null } }));
+    });
+    // All-sessions-tradable fixture keeps this wall-clock independent
+    // (including weekend offhours).
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
+    });
+    let order = server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-1",
+                "inAmount": "5000000",
+                "outAmount": "10000000",
+                "inUsdValue": 5.0,
+                "outUsdValue": 4.99,
+                "feeBps": 5,
+                "gasless": true,
+                "router": "iris",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+    let execute = server.mock(|when, then| {
+        when.method(POST).path("/execute");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "status": "Success", "signature": "sig" }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success(), "keys generate failed: {}", String::from_utf8_lossy(&keygen.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "5"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "json without -y must not execute");
+    // confirmation_required is not a transient kind — exit 1, not 75.
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["error_kind"], "confirmation_required");
+    let msg = v["error"].as_str().unwrap();
+    assert!(msg.contains("-y"), "teaches the fix: {msg}");
+    assert!(msg.contains("--dry-run"), "offers the preview path: {msg}");
+
+    // The order was quoted (preview is harmless) but /execute must never be hit.
+    order.assert_hits(1);
+    execute.assert_hits(0);
+}
+
 // ── Named wallets ────────────────────────────────────────────────────────────
 
 /// Extract the `Key file: <path>` line printed by `keys generate`.

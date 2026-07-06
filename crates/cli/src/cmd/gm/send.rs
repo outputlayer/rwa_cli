@@ -67,7 +67,7 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
         return Ok(());
     }
 
-    if !yes && !json && !confirm("Proceed?") {
+    if !require_execution_consent(yes, json, "Proceed?")? {
         return Err(eyre::eyre!("Cancelled"));
     }
 
@@ -147,7 +147,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
         return Ok(());
     }
 
-    if !yes && !json && !confirm("Proceed?") {
+    if !require_execution_consent(yes, json, "Proceed?")? {
         return Err(eyre::eyre!("Cancelled"));
     }
 
@@ -245,7 +245,7 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Ok(());
     }
 
-    if !yes && !json && !confirm("Proceed?") {
+    if !require_execution_consent(yes, json, "Proceed?")? {
         return Err(eyre::eyre!("Cancelled"));
     }
 

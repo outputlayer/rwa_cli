@@ -200,7 +200,7 @@ pub async fn buy_basket(
     if !dry_run {
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
         let prompt = format!("Buy {} tokens for {} USDC total?", pairs.len(), total_display);
-        if !yes && !json && !confirm(&prompt) {
+        if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
         }
@@ -346,7 +346,7 @@ pub async fn sell_basket(
 
     if !dry_run {
         let prompt = format!("Sell {} tokens?", pairs.len());
-        if !yes && !json && !confirm(&prompt) {
+        if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
         }

@@ -238,7 +238,7 @@ pub async fn buy(
         return Ok(());
     }
 
-    if !yes && !json && !confirm("Proceed?") {
+    if !require_execution_consent(yes, json, "Proceed?")? {
         println!("Cancelled.");
         return Ok(());
     }
@@ -352,7 +352,7 @@ pub async fn sell(
         return Ok(());
     }
 
-    if !yes && !json && !confirm("Proceed?") {
+    if !require_execution_consent(yes, json, "Proceed?")? {
         println!("Cancelled.");
         return Ok(());
     }
