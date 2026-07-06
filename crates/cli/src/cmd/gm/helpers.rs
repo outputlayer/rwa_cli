@@ -212,6 +212,10 @@ pub(super) fn load_wallet(selected: Option<&str>) -> Result<wallet::Wallet> {
 // One canonical symbol->mint resolution path for the whole workspace.
 pub(super) use usecases::gm::resolve_gm_mint;
 
+// Shared "insufficient balance" message (wallet-displayed note included) —
+// one wording for both `sell` and `send` overshoot errors.
+pub(super) use usecases::gm::insufficient_balance_message;
+
 pub(super) fn clean_name(name: &str) -> String {
     name.replace(" (Ondo Tokenized)", "")
 }

@@ -188,22 +188,38 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
     }
 
+    // Fetched eagerly (not just for `all`/`NN%`) so an exact amount can be
+    // checked against the balance locally — parity with `sell`'s
+    // `resolve_sell_amount`, which names the wallet-displayed (Scaled-UI)
+    // balance too when it would explain an overshoot, rather than letting
+    // the transfer fail on-chain with an opaque error.
+    let balance = solana::get_balance(&pubkey, &gm_mint, rpc_url).await?;
     let raw_str = amounts::resolve_amount_to_raw(amount, jupiter::GM_SOL_DECIMALS, || {
-        let pk = pubkey.clone();
-        let mint = gm_mint.clone();
-        let rpc = rpc_url.map(String::from);
-        async move {
-            let b = solana::get_balance(&pk, &mint, rpc.as_deref()).await?;
-            Ok(b.raw_amount)
-        }
+        let raw_amount = balance.raw_amount.clone();
+        async move { Ok(raw_amount) }
     }).await?;
 
     if raw_str == "0" {
         return Err(eyre::eyre!("Balance is 0 — nothing to send"));
     }
 
-    let token_display = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid token amount"))?;
+    let raw_balance: u64 = balance
+        .raw_amount
+        .parse()
+        .map_err(|_| eyre::eyre!("Invalid on-chain amount: {}", balance.raw_amount))?;
+    if raw > raw_balance {
+        return Err(eyre::eyre!(insufficient_balance_message(
+            &sym,
+            &balance.raw_amount,
+            jupiter::GM_SOL_DECIMALS,
+            balance.ui_balance,
+            &raw_str,
+            "send",
+        )));
+    }
+
+    let token_display = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
 
     if !json {
         println!("Send {} {sym} → {to}", token_display);

@@ -299,6 +299,34 @@ fn format_ui_trimmed(ui: f64) -> String {
     s.trim_end_matches('.').to_string()
 }
 
+/// Build the "insufficient balance" message shared by `sell` and `send`:
+/// names the raw balance, an optional wallet-displayed (Scaled-UI) note when
+/// it differs enough from the raw balance to explain an overshoot, and the
+/// requested raw amount. `verb` distinguishes "sell" from "send" in the
+/// trailing sentence. `pub` (not `pub(crate)`) so the `send` command in the
+/// `cli` crate can reuse it without duplicating the wallet-note formatting.
+#[must_use]
+pub fn insufficient_balance_message(
+    symbol: &str,
+    balance_raw: &str,
+    decimals: u8,
+    ui_balance: Option<f64>,
+    requested_raw: &str,
+    verb: &str,
+) -> String {
+    // Scaled-UI mints: wallets display raw × multiplier, so "sell/send what
+    // Phantom shows" can exceed the raw balance — name both numbers.
+    let wallet_note = ui_balance
+        .filter(|ui| (ui - raw_amount_to_f64_lossy(balance_raw, decimals)).abs() > 1e-9)
+        .map(|ui| format!(" (wallet displays ≈{})", format_ui_trimmed(ui)))
+        .unwrap_or_default();
+    format!(
+        "Insufficient {symbol} balance: have {}{wallet_note}, trying to {verb} {}. Amounts are in raw tokens — use `all` or `NN%` to avoid unit mismatch.",
+        amounts::format_amount(balance_raw, decimals),
+        amounts::format_amount(requested_raw, decimals),
+    )
+}
+
 /// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's
 /// GM-token balance, returning `(display_amount, raw_amount)`. The single
 /// chokepoint for `sell` and `sell-basket`; selling more than the balance is a
@@ -338,19 +366,9 @@ pub(crate) fn resolve_sell_amount(
         .parse()
         .map_err(|_| eyre!("Invalid on-chain amount: {balance_raw}"))?;
     if raw_sell > raw_balance {
-        // Scaled-UI mints: wallets display raw × multiplier, so "sell what
-        // Phantom shows" can exceed the raw balance — name both numbers.
-        let wallet_note = ui_balance
-            .filter(|ui| (ui - raw_amount_to_f64_lossy(balance_raw, decimals)).abs() > 1e-9)
-            .map(|ui| format!(" (wallet displays ≈{})", format_ui_trimmed(ui)))
-            .unwrap_or_default();
         return Err(GmTradeError::new(
             GmTradeErrorKind::InsufficientFunds,
-            format!(
-                "Insufficient {symbol} balance: have {}{wallet_note}, trying to sell {}. Amounts are in raw tokens — use `all` or `NN%` to avoid unit mismatch.",
-                amounts::format_amount(balance_raw, decimals),
-                amounts::format_amount(&raw, decimals)
-            ),
+            insufficient_balance_message(symbol, balance_raw, decimals, ui_balance, &raw, "sell"),
         )
         .into());
     }
@@ -452,6 +470,47 @@ mod tests {
         let err = resolve_sell_amount("2", "SPYon", "1000000000", 9, None).unwrap_err();
         let msg = format!("{err:#}");
         assert!(!msg.contains("wallet displays"), "msg: {msg}");
+    }
+
+    /// `send`'s overshoot error reuses the exact same message builder as
+    /// `sell` (parity — see `crates/cli/src/cmd/gm/send.rs`), just with a
+    /// different verb. Covers both the with-note and without-note cases.
+    #[test]
+    fn insufficient_balance_message_send_verb_names_wallet_displayed_balance() {
+        // Balance is 1.0 raw; wallet displays 1.0077 (Scaled-UI multiplier);
+        // requested_raw is itself raw units (1007700000 == 1.0077 at 9 decimals).
+        let msg = insufficient_balance_message("SPYon", "1000000000", 9, Some(1.0077), "1007700000", "send");
+        assert!(msg.contains("Insufficient SPYon balance"), "msg: {msg}");
+        assert!(msg.contains("have 1"), "msg: {msg}");
+        assert!(msg.contains("wallet displays ≈1.0077"), "msg: {msg}");
+        assert!(msg.contains("trying to send 1.0077"), "msg: {msg}");
+    }
+
+    #[test]
+    fn insufficient_balance_message_send_verb_omits_note_when_ui_matches_or_unknown() {
+        // ui_balance unknown (e.g. Jupiter-fallback holdings source).
+        let msg = insufficient_balance_message("TSLA", "1000000000", 9, None, "2000000000", "send");
+        assert!(!msg.contains("wallet displays"), "msg: {msg}");
+        assert!(msg.contains("trying to send 2"), "msg: {msg}");
+
+        // ui_balance present but equal to the raw balance (no multiplier) —
+        // still no note; this is the SOL/USDC/non-scaled-mint shape.
+        let msg = insufficient_balance_message("TSLA", "1000000000", 9, Some(1.0), "2000000000", "send");
+        assert!(!msg.contains("wallet displays"), "msg: {msg}");
+    }
+
+    #[test]
+    fn insufficient_balance_message_sell_and_send_share_wallet_note_wording() {
+        // Same balances, only the verb differs — proves the two call sites
+        // (sell, send) share one wording rather than each formatting the
+        // wallet-displayed note independently.
+        let sell_msg = insufficient_balance_message("SPYon", "1000000000", 9, Some(1.0077209), "1500000000", "sell");
+        let send_msg = insufficient_balance_message("SPYon", "1000000000", 9, Some(1.0077209), "1500000000", "send");
+        assert_eq!(
+            sell_msg.replace("sell", "send"),
+            send_msg,
+            "sell: {sell_msg}\nsend: {send_msg}"
+        );
     }
 
     /// User task, end to end: "Sell my entire SPYon dividend position."

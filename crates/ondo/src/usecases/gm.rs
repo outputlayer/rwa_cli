@@ -14,7 +14,7 @@ pub use super::gm_positions::{
 };
 use super::gm_order::{check_cost_gate, check_limit_gate};
 
-pub use super::gm_internal::resolve_gm_mint;
+pub use super::gm_internal::{resolve_gm_mint, insufficient_balance_message};
 use super::gm_internal::{
     check_tradable, check_sol_for_route, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
