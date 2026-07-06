@@ -17,10 +17,23 @@ use tokio::task::JoinSet;
 
 use super::types::{CloseFailJson, GasRefuelJson};
 
+/// Whether the auto-gas refuel may proceed without an interactive prompt.
+/// JSON mode is non-interactive: it auto-approves ONLY under explicit `-y`
+/// (the same rule as trade execution since v0.6.0). Returns `None` when an
+/// interactive prompt is required.
+fn gas_auto_consent(yes: bool, json: bool) -> Option<bool> {
+    match (yes, json) {
+        (true, _) => Some(true),      // -y covers the refuel too
+        (false, true) => Some(false), // json without -y: skip refuel, never prompt
+        (false, false) => None,       // interactive: ask
+    }
+}
+
 /// SOL auto-refuel gate for money commands: when SOL is below the low-water
 /// mark and USDC covers the operation plus 5 USDC, buy SOL first so a
 /// USDC-only wallet never strands itself. Consent is an interactive prompt;
-/// `-y`/`--json` auto-approve (agents opted into execution); `RWA_NO_AUTO_GAS`
+/// `-y` auto-approves; `--json` without `-y` silently skips the refuel
+/// (consent parity with `require_execution_consent`); `RWA_NO_AUTO_GAS`
 /// disables entirely. Best-effort: never fails the caller's operation.
 pub(super) async fn auto_gas(
     w: &wallet::Wallet,
@@ -35,10 +48,11 @@ pub(super) async fn auto_gas(
         return Ok((None, None));
     }
     let (refuel, snapshot) = usecases::gm::ensure_gas(w, rpc_url, json, reserved_usdc_raw, |sol| {
-        yes || json
-            || confirm(&format!(
+        gas_auto_consent(yes, json).unwrap_or_else(|| {
+            confirm(&format!(
                 "SOL is low ({sol:.6}) — buy 5 USDC of SOL for fees first?"
             ))
+        })
     })
     .await?;
     let refuel_json = refuel.map(|r| {
@@ -275,6 +289,26 @@ mod tests {
             token_type_from_name("Vanguard Total Stock Market Index Fund"),
             "etf"
         );
+    }
+
+    #[test]
+    fn gas_auto_consent_yes_always_approves() {
+        // -y covers the refuel regardless of json.
+        assert_eq!(gas_auto_consent(true, true), Some(true));
+        assert_eq!(gas_auto_consent(true, false), Some(true));
+    }
+
+    #[test]
+    fn gas_auto_consent_json_without_yes_skips_silently() {
+        // json without -y must never prompt and must never auto-approve —
+        // this is the fix: previously `yes || json` auto-approved here.
+        assert_eq!(gas_auto_consent(false, true), Some(false));
+    }
+
+    #[test]
+    fn gas_auto_consent_interactive_requires_prompt() {
+        // Neither -y nor json: caller must fall back to the interactive prompt.
+        assert_eq!(gas_auto_consent(false, false), None);
     }
 
     #[test]
