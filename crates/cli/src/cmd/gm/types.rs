@@ -270,6 +270,10 @@ pub struct PnlJson {
     pub trades_recorded: usize,
     pub tokens: Vec<PnlTokenJson>,
     pub totals: PnlTotalsJson,
+    /// Trade ledger tamper-evidence: "ok" | "legacy" | "broken@line N".
+    /// Always present — chain problems never fail `pnl`, they're surfaced
+    /// here (and warned to stderr in human output) so callers can decide.
+    pub ledger_integrity: String,
 }
 
 #[derive(Serialize)]

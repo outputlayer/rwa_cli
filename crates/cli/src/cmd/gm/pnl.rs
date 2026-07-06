@@ -14,6 +14,15 @@ fn usdc_f64(raw: u128) -> f64 {
     raw as f64 / 1_000_000.0
 }
 
+/// Render a `ledger::ChainStatus` as the stable `ledger_integrity` string.
+fn ledger_integrity_str(status: ledger::ChainStatus) -> String {
+    match status {
+        ledger::ChainStatus::Ok => "ok".to_string(),
+        ledger::ChainStatus::Legacy => "legacy".to_string(),
+        ledger::ChainStatus::BrokenAt(n) => format!("broken@line {n}"),
+    }
+}
+
 /// Shape one ledger position into its JSON view: raw-token quantity
 /// conversion (`qty_raw / 10^decimals`), market value (`price * qty`), and
 /// None-propagation when the token has no market price (an open position
@@ -64,6 +73,8 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
         .iter()
         .filter(|e| e.kind == "buy" || e.kind == "sell")
         .count();
+    let chain_status = ledger::verify_chain(&pubkey);
+    let ledger_integrity = ledger_integrity_str(chain_status);
     let summary = usecases::gm::compute_pnl(&events);
     let assets = api::fetch_assets().await.unwrap_or_default();
 
@@ -100,7 +111,12 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
             trades_recorded,
             tokens,
             totals,
+            ledger_integrity,
         });
+    }
+
+    if let ledger::ChainStatus::BrokenAt(n) = chain_status {
+        eprintln!("Warning: trade ledger integrity: broken@line {n} (history may be modified)");
     }
 
     println!("P&L for {pubkey} (from {trades_recorded} CLI trades)\n");
@@ -157,6 +173,19 @@ mod tests {
     use usecases::gm::TokenPnl;
 
     const GM_DEC: u8 = 9;
+
+    /// `PnlJson.ledger_integrity` is a stable string surface for the ledger
+    /// hash-chain status — this pins its exact shape for each variant so
+    /// scripts/agents can match on it without depending on the enum layout.
+    #[test]
+    fn ledger_integrity_str_renders_stable_shapes() {
+        assert_eq!(ledger_integrity_str(ledger::ChainStatus::Ok), "ok");
+        assert_eq!(ledger_integrity_str(ledger::ChainStatus::Legacy), "legacy");
+        assert_eq!(
+            ledger_integrity_str(ledger::ChainStatus::BrokenAt(3)),
+            "broken@line 3"
+        );
+    }
 
     fn token_pnl(qty_raw: u128, invested_usdc_raw: u128, realized_usdc_raw: i128, oversold_qty_raw: u128) -> TokenPnl {
         TokenPnl {

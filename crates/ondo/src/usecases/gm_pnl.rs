@@ -134,6 +134,7 @@ mod tests {
             token: token.into(),
             qty_raw: qty.into(),
             usdc_raw: usdc.map(str::to_string),
+            prev: None,
         }
     }
 
