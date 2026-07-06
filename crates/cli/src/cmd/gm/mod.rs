@@ -66,8 +66,10 @@ pub enum GmAction {
         /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
         #[arg(long)]
         max_bps: Option<u32>,
-        /// Execute only if the quoted price (USDC per token) is at or better
-        /// than this limit (buy: <=). Otherwise fails with condition_not_met.
+        /// Execute only if the quoted price is at or better than this limit
+        /// (buy: <=, sell: >=). Price is USDC per raw token by default; append
+        /// `share` (e.g. 748share) to compare per underlying share instead.
+        /// Otherwise fails with condition_not_met.
         #[arg(long, conflicts_with = "quote_only")]
         limit_price: Option<String>,
     },
@@ -90,8 +92,10 @@ pub enum GmAction {
         /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
         #[arg(long)]
         max_bps: Option<u32>,
-        /// Execute only if the quoted price (USDC per token) is at or better
-        /// than this limit (sell: >=). Otherwise fails with condition_not_met.
+        /// Execute only if the quoted price is at or better than this limit
+        /// (buy: <=, sell: >=). Price is USDC per raw token by default; append
+        /// `share` (e.g. 748share) to compare per underlying share instead.
+        /// Otherwise fails with condition_not_met.
         #[arg(long)]
         limit_price: Option<String>,
     },

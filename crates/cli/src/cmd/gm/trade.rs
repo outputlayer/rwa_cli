@@ -1,19 +1,33 @@
 use eyre::{Result, WrapErr, eyre};
 use rwa_ondo::{amounts, jupiter, types::Symbol, usecases};
+use rwa_ondo::usecases::gm::LimitFrame;
 
 use super::*;
 
-/// Parse `--limit-price` into raw 10^-6 USDC-per-token units. Reuses the
-/// strict amount parser: >6 decimal places are rejected, never rounded.
-fn parse_limit_price(raw: Option<&str>) -> Result<Option<u128>> {
+/// Parse `--limit-price` into (raw 10^-6 units, frame). Optional joined
+/// case-insensitive suffix picks the frame: `748share`, `753token`; bare
+/// number = token (backward compatible). Number rules unchanged: strict
+/// decimal parse, >6 decimal places rejected, must be > 0.
+fn parse_limit_price(raw: Option<&str>) -> Result<Option<(u128, LimitFrame)>> {
     let Some(raw) = raw else { return Ok(None) };
-    let raw6 = amounts::token_to_raw(raw, jupiter::USDC_DECIMALS)
+    let lower = raw.to_ascii_lowercase();
+    let (number, frame) = if let Some(n) = lower.strip_suffix("share") {
+        (n, LimitFrame::Share)
+    } else if let Some(n) = lower.strip_suffix("token") {
+        (n, LimitFrame::Token)
+    } else {
+        (lower.as_str(), LimitFrame::Token)
+    };
+    if number.is_empty() {
+        return Err(eyre!("invalid --limit-price: missing number before the unit suffix"));
+    }
+    let raw6 = amounts::token_to_raw(number, jupiter::USDC_DECIMALS)
         .wrap_err("invalid --limit-price")?;
     let v: u128 = raw6.parse().wrap_err("invalid --limit-price")?;
     if v == 0 {
         return Err(eyre!("--limit-price must be greater than 0"));
     }
-    Ok(Some(v))
+    Ok(Some((v, frame)))
 }
 
 /// (share_price, shares_per_token) for display — only when the multiplier is
@@ -45,7 +59,7 @@ pub async fn buy(
     limit_price: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
-    let limit_price_raw6 = parse_limit_price(limit_price)?;
+    let limit_price_parsed = parse_limit_price(limit_price)?;
     // `--quote-only` previews any size by skipping the funds pre-flight; it still
     // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
     // Implemented for buy only — sell amounts derive from on-chain holdings.
@@ -62,7 +76,7 @@ pub async fn buy(
         auto_gas(&w, rpc_url, yes, json, reserved).await?
     };
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, limit_price_raw6).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, limit_price_parsed).await?;
     let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
 
     if !json {
@@ -173,10 +187,10 @@ pub async fn sell(
     limit_price: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
-    let limit_price_raw6 = parse_limit_price(limit_price)?;
+    let limit_price_parsed = parse_limit_price(limit_price)?;
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, limit_price_raw6).await?;
+    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, limit_price_parsed).await?;
     let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
 
     if !json {
@@ -279,15 +293,21 @@ mod tests {
 
     #[test]
     fn limit_price_parsing() {
+        use rwa_ondo::usecases::gm::LimitFrame::{Share, Token};
         assert_eq!(parse_limit_price(None).unwrap(), None);
-        assert_eq!(parse_limit_price(Some("400")).unwrap(), Some(400_000_000));
-        assert_eq!(parse_limit_price(Some("400.50")).unwrap(), Some(400_500_000));
-        // Smallest representable price: 10^-6 USDC per token.
-        assert_eq!(parse_limit_price(Some("0.000001")).unwrap(), Some(1));
-        // Zero, negatives, 7+ decimals, and garbage are rejected — never rounded.
+        assert_eq!(parse_limit_price(Some("400")).unwrap(), Some((400_000_000, Token)));
+        assert_eq!(parse_limit_price(Some("400.50")).unwrap(), Some((400_500_000, Token)));
+        assert_eq!(parse_limit_price(Some("748share")).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some("748SHARE")).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some("753token")).unwrap(), Some((753_000_000, Token)));
+        assert_eq!(parse_limit_price(Some("0.000001")).unwrap(), Some((1, Token)));
+        // Rejections: zero, negative, 7+ decimals, garbage, suffix without number.
         assert!(parse_limit_price(Some("0")).is_err());
+        assert!(parse_limit_price(Some("0share")).is_err());
         assert!(parse_limit_price(Some("-5")).is_err());
         assert!(parse_limit_price(Some("400.1234567")).is_err());
         assert!(parse_limit_price(Some("abc")).is_err());
+        assert!(parse_limit_price(Some("share")).is_err());
+        assert!(parse_limit_price(Some("400shares")).is_err());
     }
 }

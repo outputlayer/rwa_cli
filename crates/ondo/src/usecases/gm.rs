@@ -202,7 +202,7 @@ pub async fn prepare_buy(
     quote_only: bool,
     max_bps: Option<u32>,
     balances: Option<BalanceSnapshot>,
-    limit_price_raw6: Option<u128>,
+    limit_price: Option<(u128, LimitFrame)>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -231,8 +231,15 @@ pub async fn prepare_buy(
     );
     let sol_lamports = preflight_res?;
     tradable_res?;
-    // Best-effort here; Task 5 makes it mandatory for share-frame limits.
-    let multiplier = multiplier_res.ok().flatten();
+    // Share-frame limits must not execute on an unknown multiplier: propagate
+    // the RPC error (transient → exit 75; cron retries next tick).
+    let multiplier = match (&limit_price, multiplier_res) {
+        (Some((_, LimitFrame::Share)), Err(e)) => return Err(e).wrap_err(
+            "share-frame --limit-price requires the mint's scaled-UI multiplier",
+        ),
+        (_, Ok(m)) => m,
+        (_, Err(_)) => None, // informational only — best-effort
+    };
 
     let (order, slippage_pct) = get_order_checked(
         jupiter::USDC_MINT,
@@ -246,7 +253,8 @@ pub async fn prepare_buy(
     .await?;
 
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
-    check_limit_gate(true, &order.in_amount, &order.out_amount, limit_price_raw6)?;
+    let limit_raw6 = effective_limit_raw6(limit_price, multiplier)?;
+    check_limit_gate(true, &order.in_amount, &order.out_amount, limit_raw6)?;
     // Route-aware SOL gate: gasless routes need no SOL (USDC-only wallets
     // trade); self-paid routes (Metis) need MIN_SOL_FOR_FEES.
     if !quote_only {
@@ -280,7 +288,7 @@ pub async fn prepare_sell(
     slippage_bps: Option<u32>,
     json: bool,
     max_bps: Option<u32>,
-    limit_price_raw6: Option<u128>,
+    limit_price: Option<(u128, LimitFrame)>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -306,6 +314,14 @@ pub async fn prepare_sell(
         .filter(|_| bal.balance > 0.0)
         .map(|ui| ui / bal.balance)
         .filter(|m| m.is_finite() && *m > 0.0);
+    let multiplier = match (multiplier, &limit_price) {
+        (None, Some((_, LimitFrame::Share))) => {
+            solana::get_mint_multiplier(&gm_mint, rpc_url).await.wrap_err(
+                "share-frame --limit-price requires the mint's scaled-UI multiplier",
+            )?
+        }
+        (m, _) => m,
+    };
 
     let (sell_amount, raw_gm) = resolve_sell_amount(amount, &symbol, &bal.raw_amount, gm_dec)?;
 
@@ -321,7 +337,8 @@ pub async fn prepare_sell(
     .await?;
 
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
-    check_limit_gate(false, &order.out_amount, &order.in_amount, limit_price_raw6)?;
+    let limit_raw6 = effective_limit_raw6(limit_price, multiplier)?;
+    check_limit_gate(false, &order.out_amount, &order.in_amount, limit_raw6)?;
 
     Ok(SwapPlan {
         symbol,
@@ -467,6 +484,41 @@ pub(crate) fn cost_exceeds_max_bps(
     let max = max_bps?;
     let cost = all_in_cost_bps(slippage_pct, fee_bps)?;
     (cost > max as f64).then_some((cost, max))
+}
+
+/// Price frame of a `--limit-price` value. `Token` = per raw GM token (the
+/// CLI's canonical price frame, matches Ondo API and Jupiter quotes).
+/// `Share` = per underlying share; converted via the Scaled-UI multiplier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitFrame {
+    Token,
+    Share,
+}
+
+/// Convert a framed limit into the raw-token frame the gate compares in.
+/// Share frame: limit × multiplier (a share limit deliberately floats with
+/// dividend accrual — the user's intent is the SHARE price). `multiplier`
+/// `None` means "mint has no scaled-UI extension" (= 1); RPC FAILURES must be
+/// handled by the caller BEFORE calling this (fail closed, transient).
+pub(crate) fn effective_limit_raw6(
+    limit: Option<(u128, LimitFrame)>,
+    multiplier: Option<f64>,
+) -> Result<Option<u128>> {
+    match limit {
+        None => Ok(None),
+        Some((v, LimitFrame::Token)) => Ok(Some(v)),
+        Some((v, LimitFrame::Share)) => {
+            let m = multiplier.unwrap_or(1.0);
+            if !m.is_finite() || m <= 0.0 {
+                return Err(eyre!("invalid scaled-UI multiplier {m} for share-frame --limit-price"));
+            }
+            let eff = (v as f64 * m).round();
+            if !eff.is_finite() || eff < 1.0 {
+                return Err(eyre!("share-frame --limit-price too small after multiplier conversion"));
+            }
+            Ok(Some(eff as u128))
+        }
+    }
 }
 
 /// The `--limit-price` gate decision: `usdc_raw`/`token_raw` are the quote's
@@ -943,6 +995,22 @@ mod tests {
         assert!(limit_price_exceeded(true, usdc, "0", Some(400_000_000)).is_some());
         // Unparseable raw amounts fail closed.
         assert!(limit_price_exceeded(true, "garbage", token, Some(400_000_000)).is_some());
+    }
+
+    #[test]
+    fn effective_limit_converts_share_frame_via_multiplier() {
+        use LimitFrame::*;
+        // No limit / token frame: passthrough, multiplier irrelevant.
+        assert_eq!(effective_limit_raw6(None, None).unwrap(), None);
+        assert_eq!(effective_limit_raw6(Some((753_000_000, Token)), None).unwrap(), Some(753_000_000));
+        // Share frame: limit × multiplier (748 share × 1.0077209 ≈ 753.775233 token).
+        let eff = effective_limit_raw6(Some((748_000_000, Share)), Some(1.0077209)).unwrap().unwrap();
+        assert!((eff as i128 - 753_775_233).abs() <= 1, "eff {eff}");
+        // Share frame, mint has no extension (None) → multiplier 1.
+        assert_eq!(effective_limit_raw6(Some((748_000_000, Share)), None).unwrap(), Some(748_000_000));
+        // Degenerate multiplier fails closed.
+        assert!(effective_limit_raw6(Some((748_000_000, Share)), Some(0.0)).is_err());
+        assert!(effective_limit_raw6(Some((748_000_000, Share)), Some(f64::NAN)).is_err());
     }
 
     #[test]
