@@ -12,6 +12,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -97,7 +98,26 @@ pub fn read_all(taker: &str) -> Vec<LedgerEvent> {
         .unwrap_or_default()
 }
 
+/// Guards the read-last-line + append critical section below.
+///
+/// Cross-process concurrency for the *same* wallet is already impossible —
+/// the CLI takes an exclusive OS lock for the whole invocation (see
+/// `crates/cli/src/lib.rs`), so two `rwa` processes never race here. What
+/// *is* possible is in-process concurrency: parallel basket/close-all items
+/// call `ledger::record` for the same wallet concurrently from a single
+/// tokio `JoinSet`. Without serialization, two such writers can read the
+/// same last line, compute the same `prev` hash, and both append — chaining
+/// two lines to the same predecessor, which the verifier then reports as a
+/// false `BrokenAt`. There is no `.await` in the critical section, so a
+/// plain `std::sync::Mutex` (not an async one) is the right tool.
+static RECORD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 pub(crate) fn record_at(dir: &Path, taker: &str, event: &LedgerEvent) -> std::io::Result<()> {
+    // Best-effort path: a poisoned lock (some other writer panicked while
+    // holding it) must not take down this append too — recover the guard
+    // instead of propagating the panic.
+    let _guard = RECORD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{taker}.jsonl"));
 
@@ -325,6 +345,53 @@ mod tests {
         // so all three events remain readable.
         let events = read_all_at(&dir, taker);
         assert_eq!(events.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_record_at_does_not_break_chain() {
+        // Regression for parallel basket/close-all legs: N threads call
+        // `record_at` for the SAME wallet concurrently (mirroring a tokio
+        // JoinSet fanning out `ledger::record` calls within one process).
+        // Before the RECORD_LOCK fix, two threads could read the same last
+        // line, chain to the same `prev`, and both append — a false
+        // `BrokenAt` from `verify_chain_at` on a perfectly untampered file.
+        let dir = std::env::temp_dir().join(format!("rwa-ledger-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let taker = "RaceWallet";
+
+        const N: usize = 8;
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let event = LedgerEvent::now(
+                        Some(format!("sig{i}")),
+                        "buy",
+                        "TSLAon",
+                        "1",
+                        None,
+                    );
+                    record_at(&dir, taker, &event).unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let text = std::fs::read_to_string(dir.join(format!("{taker}.jsonl"))).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), N, "expected exactly {N} appended lines, no lost writes");
+        for line in &lines {
+            let parsed: Result<LedgerEvent, _> = serde_json::from_str(line);
+            assert!(parsed.is_ok(), "every line must be independently parseable: {line}");
+        }
+
+        assert!(
+            matches!(verify_chain_at(&dir, taker), ChainStatus::Ok),
+            "concurrent in-process appends must still form an unbroken chain"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
