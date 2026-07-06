@@ -366,6 +366,29 @@ async fn get_metis_order(
     taker: &str,
     slippage_bps: Option<u32>,
 ) -> Result<OrderResponse> {
+    let quote = fetch_metis_quote(base_url, input_mint, output_mint, amount, slippage_bps).await?;
+    let swap_json = build_metis_swap_tx(base_url, taker, &quote.quote_json).await?;
+    map_metis_order_response(input_mint, output_mint, amount, quote, swap_json)
+}
+
+/// Fields pulled out of a Metis `/quote` response that the swap-build and
+/// response-mapping steps need.
+struct MetisQuote {
+    quote_json: serde_json::Value,
+    in_amount: String,
+    out_amount: String,
+    price_impact: Option<f64>,
+    slippage_bps: Option<u32>,
+}
+
+/// Request-building + response-parsing for Metis `/quote`.
+async fn fetch_metis_quote(
+    base_url: &str,
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    slippage_bps: Option<u32>,
+) -> Result<MetisQuote> {
     let quote_url = format!("{base_url}/quote");
     let mut request = HTTP.get(&quote_url).query(&[
         ("inputMint", input_mint),
@@ -411,6 +434,21 @@ async fn get_metis_order(
         .and_then(|value| u32::try_from(value).ok())
         .or(slippage_bps);
 
+    Ok(MetisQuote {
+        quote_json,
+        in_amount,
+        out_amount,
+        price_impact,
+        slippage_bps,
+    })
+}
+
+/// Request-building + response-parsing for Metis `/swap`.
+async fn build_metis_swap_tx(
+    base_url: &str,
+    taker: &str,
+    quote_json: &serde_json::Value,
+) -> Result<serde_json::Value> {
     let swap_url = format!("{base_url}/swap");
     let swap_body = serde_json::json!({
         "userPublicKey": taker,
@@ -439,6 +477,18 @@ async fn get_metis_order(
 
     let swap_json: serde_json::Value = serde_json::from_str(&swap_body)
         .map_err(|e| eyre!("Failed to parse Metis swap response: {e}\nBody: {swap_body}"))?;
+    Ok(swap_json)
+}
+
+/// Response-mapping: assemble the `OrderResponse` the rest of the CLI expects
+/// from the Metis quote + swap payloads.
+fn map_metis_order_response(
+    input_mint: &str,
+    output_mint: &str,
+    amount: &str,
+    quote: MetisQuote,
+    swap_json: serde_json::Value,
+) -> Result<OrderResponse> {
     let transaction = swap_json["swapTransaction"]
         .as_str()
         .ok_or_else(|| eyre!("Metis swap response missing swapTransaction"))?
@@ -449,13 +499,13 @@ async fn get_metis_order(
 
     Ok(OrderResponse {
         request_id: format!("metis:{}:{}:{}", input_mint, output_mint, amount),
-        in_amount,
-        out_amount,
+        in_amount: quote.in_amount,
+        out_amount: quote.out_amount,
         in_usd_value: None,
         out_usd_value: None,
-        price_impact,
-        price_impact_pct: quote_json["priceImpactPct"].as_str().map(str::to_string),
-        slippage_bps,
+        price_impact: quote.price_impact,
+        price_impact_pct: quote.quote_json["priceImpactPct"].as_str().map(str::to_string),
+        slippage_bps: quote.slippage_bps,
         fee_bps: None,
         transaction: Some(transaction),
         error: None,

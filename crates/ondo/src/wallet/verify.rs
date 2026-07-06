@@ -115,14 +115,31 @@ pub fn decode_and_verify(tx_base64: &str, expected: &ExpectedSwap) -> Result<()>
 // ── Verifier ──────────────────────────────────────────────────────────────
 
 fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
-    // Owner must appear among the signers (account-keys range
-    // `[0..num_required_sigs)`), but is NOT required to be the fee payer at
-    // index 0. Jupiter Z (RFQ) puts the market maker at index 0 as fee payer,
-    // and Ultra gasless adds Jupiter as a secondary fee payer — in both cases
-    // the user is a signer at index 1+. We still require that the user signs
-    // the transaction (anything weaker would let an attacker forge a tx the
-    // user didn't authorize), and the input-transfer authority check below
-    // independently confirms the owner authorized the actual debit.
+    check_owner_is_signer(msg, expected)?;
+
+    // Pre-derive the input/output ATAs for both classic Token and Token-2022.
+    let input_atas = mint_atas(&expected.owner_pubkey, &expected.input_mint)?;
+    let output_atas = mint_atas(&expected.owner_pubkey, &expected.output_mint)?;
+
+    if !check_input_debit(msg, expected, &input_atas)? {
+        // No top-level transfer debits our input ATA and nothing contradicts the
+        // intent — a CPI/RFQ route. `check_input_debit` already deferred; mirror
+        // that here by returning early instead of checking the output leg.
+        return Ok(());
+    }
+
+    check_output_credit(msg, expected, &output_atas)
+}
+
+// Owner must appear among the signers (account-keys range
+// `[0..num_required_sigs)`), but is NOT required to be the fee payer at
+// index 0. Jupiter Z (RFQ) puts the market maker at index 0 as fee payer,
+// and Ultra gasless adds Jupiter as a secondary fee payer — in both cases
+// the user is a signer at index 1+. We still require that the user signs
+// the transaction (anything weaker would let an attacker forge a tx the
+// user didn't authorize), and the input-transfer authority check below
+// independently confirms the owner authorized the actual debit.
+fn check_owner_is_signer(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
     let n_signers = (msg.num_required_sigs as usize).min(msg.keys.len());
     if n_signers == 0 {
         return Err(VerifyError::MalformedTransaction("no signers".into()).into());
@@ -133,11 +150,22 @@ fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
     if !owner_is_signer {
         return Err(VerifyError::OwnerMismatch.into());
     }
+    Ok(())
+}
 
-    // Pre-derive the input/output ATAs for both classic Token and Token-2022.
-    let input_atas = mint_atas(&expected.owner_pubkey, &expected.input_mint)?;
-    let output_atas = mint_atas(&expected.owner_pubkey, &expected.output_mint)?;
-
+/// Scans instructions for the SPL token transfer that debits one of our
+/// input-mint ATAs.
+///
+/// Returns `Ok(true)` when a correctly-authorized debit for the exact
+/// expected amount was found — the caller should go on to check the output
+/// leg. Returns `Ok(false)` when no top-level transfer touches our input ATA
+/// and nothing contradicts the expected input (CPI/RFQ route) — the caller
+/// should treat the transaction as verified and defer to on-chain simulation.
+fn check_input_debit(
+    msg: &ParsedMessage,
+    expected: &ExpectedSwap,
+    input_atas: &[[u8; 32]; 2],
+) -> Result<bool> {
     // Walk instructions: find the SPL token transfer that debits one of our
     // input-mint ATAs. Whichever token-program ix references our input ATA as
     // source decides the input leg.
@@ -196,11 +224,19 @@ fn verify_parsed(msg: &ParsedMessage, expected: &ExpectedSwap) -> Result<()> {
         // static byte-parser. The execute path verifies the real economic effect
         // via on-chain simulation (`solana::verify_swap_simulation`) before
         // signing, so the static layer defers rather than false-rejecting.
-        return Ok(());
+        return Ok(false);
     }
 
-    // A visible top-level transfer debits our input ATA (classic route): enforce
-    // that an output ATA we own for the expected mint is present/credited.
+    Ok(true)
+}
+
+/// A visible top-level transfer debits our input ATA (classic route): enforce
+/// that an output ATA we own for the expected mint is present/credited.
+fn check_output_credit(
+    msg: &ParsedMessage,
+    expected: &ExpectedSwap,
+    output_atas: &[[u8; 32]; 2],
+) -> Result<()> {
     // Output ATA must appear as a writable static account. (If ALTs are in
     // play, we additionally accept "any output ATA referenced anywhere" since
     // Jupiter sometimes places the output ATA in a lookup table for hot pools.)
