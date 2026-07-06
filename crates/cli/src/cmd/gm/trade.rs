@@ -92,6 +92,7 @@ pub async fn buy(
             println!("  Est. all-in:  ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
         }
         if let Some(lp) = limit_price {
+            // Reaching this print means check_limit_gate already passed inside prepare_*.
             println!("  Limit price:  <= {lp} USDC/token (condition met)");
         }
         return Ok(());
@@ -196,6 +197,7 @@ pub async fn sell(
             println!("  Est. all-in:   ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
         }
         if let Some(lp) = limit_price {
+            // Reaching this print means check_limit_gate already passed inside prepare_*.
             println!("  Limit price:   >= {lp} USDC/token (condition met)");
         }
         return Ok(());
