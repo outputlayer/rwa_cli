@@ -283,6 +283,13 @@ pub(crate) async fn preflight_buy_raw(
     Ok(sol_lamports)
 }
 
+/// Convert a raw token amount to a display float. Used for comparing ui_balance
+/// to raw balance in the insufficient-balance message. Panics never occur:
+/// `format_amount` handles all valid input.
+fn raw_amount_to_f64_lossy(raw: &str, decimals: u8) -> f64 {
+    amounts::format_amount(raw, decimals).parse().unwrap_or(0.0)
+}
+
 /// Resolve a sell amount expression (`all`, `50%`, exact) against the wallet's
 /// GM-token balance, returning `(display_amount, raw_amount)`. The single
 /// chokepoint for `sell` and `sell-basket`; selling more than the balance is a
@@ -292,6 +299,7 @@ pub(crate) fn resolve_sell_amount(
     symbol: &str,
     balance_raw: &str,
     decimals: u8,
+    ui_balance: Option<f64>,
 ) -> Result<(String, String)> {
     let s = amount_str.trim();
     if s.eq_ignore_ascii_case("all") {
@@ -321,10 +329,16 @@ pub(crate) fn resolve_sell_amount(
         .parse()
         .map_err(|_| eyre!("Invalid on-chain amount: {balance_raw}"))?;
     if raw_sell > raw_balance {
+        // Scaled-UI mints: wallets display raw × multiplier, so "sell what
+        // Phantom shows" can exceed the raw balance — name both numbers.
+        let wallet_note = ui_balance
+            .filter(|ui| (ui - raw_amount_to_f64_lossy(balance_raw, decimals)).abs() > 1e-9)
+            .map(|ui| format!(" (wallet displays ≈{ui})"))
+            .unwrap_or_default();
         return Err(GmTradeError::new(
             GmTradeErrorKind::InsufficientFunds,
             format!(
-                "Insufficient {symbol} balance: have {}, trying to sell {}",
+                "Insufficient {symbol} balance: have {}{wallet_note}, trying to sell {}. Amounts are in raw tokens — use `all` or `NN%` to avoid unit mismatch.",
                 amounts::format_amount(balance_raw, decimals),
                 amounts::format_amount(&raw, decimals)
             ),
@@ -388,21 +402,21 @@ mod tests {
 
     #[test]
     fn resolve_sell_amount_all_pct_exact() {
-        let (d, r) = resolve_sell_amount("all", "TSLA", "1500000000", 9).unwrap();
+        let (d, r) = resolve_sell_amount("all", "TSLA", "1500000000", 9, None).unwrap();
         assert_eq!(r, "1500000000");
         assert_eq!(d, "1.5");
 
-        let (_, r) = resolve_sell_amount("50%", "TSLA", "1500000000", 9).unwrap();
+        let (_, r) = resolve_sell_amount("50%", "TSLA", "1500000000", 9, None).unwrap();
         assert_eq!(r, "750000000");
 
-        let (d, r) = resolve_sell_amount("1", "TSLA", "1500000000", 9).unwrap();
+        let (d, r) = resolve_sell_amount("1", "TSLA", "1500000000", 9, None).unwrap();
         assert_eq!(r, "1000000000");
         assert_eq!(d, "1");
     }
 
     #[test]
     fn resolve_sell_amount_over_balance_is_typed_insufficient_funds() {
-        let err = resolve_sell_amount("2", "TSLA", "1500000000", 9).unwrap_err();
+        let err = resolve_sell_amount("2", "TSLA", "1500000000", 9, None).unwrap_err();
         let te = err.downcast_ref::<GmTradeError>().expect("typed error");
         assert_eq!(te.kind, GmTradeErrorKind::InsufficientFunds);
         assert!(te.detail.contains("TSLA"), "detail: {}", te.detail);
@@ -410,9 +424,25 @@ mod tests {
 
     #[test]
     fn resolve_sell_amount_rejects_bad_percentage() {
-        assert!(resolve_sell_amount("150%", "TSLA", "1500000000", 9).is_err());
-        assert!(resolve_sell_amount("-5%", "TSLA", "1500000000", 9).is_err());
-        assert!(resolve_sell_amount("abc%", "TSLA", "1500000000", 9).is_err());
+        assert!(resolve_sell_amount("150%", "TSLA", "1500000000", 9, None).is_err());
+        assert!(resolve_sell_amount("-5%", "TSLA", "1500000000", 9, None).is_err());
+        assert!(resolve_sell_amount("abc%", "TSLA", "1500000000", 9, None).is_err());
+    }
+
+    #[test]
+    fn sell_overflow_error_names_wallet_displayed_balance() {
+        // User holds 1.0 raw but the wallet displays 1.0077 — selling the
+        // displayed number must explain the difference.
+        let err = resolve_sell_amount("1.0077", "SPYon", "1000000000", 9, Some(1.0077))
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("have 1"), "msg: {msg}");
+        assert!(msg.contains("wallet displays"), "msg: {msg}");
+        assert!(msg.contains("1.0077"), "msg: {msg}");
+        // No ui info → no wallet note.
+        let err = resolve_sell_amount("2", "SPYon", "1000000000", 9, None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(!msg.contains("wallet displays"), "msg: {msg}");
     }
 
 

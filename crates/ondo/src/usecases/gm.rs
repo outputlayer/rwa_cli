@@ -323,7 +323,7 @@ pub async fn prepare_sell(
         (m, _) => m,
     };
 
-    let (sell_amount, raw_gm) = resolve_sell_amount(amount, &symbol, &bal.raw_amount, gm_dec)?;
+    let (sell_amount, raw_gm) = resolve_sell_amount(amount, &symbol, &bal.raw_amount, gm_dec, bal.ui_balance)?;
 
     let (order, slippage_pct) = get_order_checked(
         &gm_mint,

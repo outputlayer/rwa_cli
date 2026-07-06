@@ -45,6 +45,18 @@ fn share_view(plan: &usecases::gm::SwapPlan, token_amount: &str, usdc_amount: &s
     (Some(usdc / tokens / m), Some(m))
 }
 
+/// Split a --limit-price input into (number, unit label) for display.
+fn limit_display(raw: &str) -> (String, &'static str) {
+    let lower = raw.to_ascii_lowercase();
+    if let Some(n) = lower.strip_suffix("share") {
+        (n.to_string(), "USDC/share")
+    } else if let Some(n) = lower.strip_suffix("token") {
+        (n.to_string(), "USDC/token")
+    } else {
+        (lower, "USDC/token")
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn buy(
     symbol: &str,
@@ -125,7 +137,8 @@ pub async fn buy(
         }
         if let Some(lp) = limit_price {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
-            println!("  Limit price:  <= {lp} USDC/token (condition met)");
+            let (num, unit) = limit_display(lp);
+            println!("  Limit price:  <= {num} {unit} (condition met)");
         }
         if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
             println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
@@ -238,7 +251,8 @@ pub async fn sell(
         }
         if let Some(lp) = limit_price {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
-            println!("  Limit price:   >= {lp} USDC/token (condition met)");
+            let (num, unit) = limit_display(lp);
+            println!("  Limit price:   >= {num} {unit} (condition met)");
         }
         if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
             println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
@@ -289,7 +303,7 @@ pub async fn sell(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_limit_price;
+    use super::{parse_limit_price, limit_display};
 
     #[test]
     fn limit_price_parsing() {
@@ -309,5 +323,14 @@ mod tests {
         assert!(parse_limit_price(Some("abc")).is_err());
         assert!(parse_limit_price(Some("share")).is_err());
         assert!(parse_limit_price(Some("400shares")).is_err());
+    }
+
+    #[test]
+    fn limit_display_helper() {
+        assert_eq!(limit_display("748share"), ("748".into(), "USDC/share"));
+        assert_eq!(limit_display("748SHARE"), ("748".into(), "USDC/share"));
+        assert_eq!(limit_display("753"), ("753".into(), "USDC/token"));
+        assert_eq!(limit_display("753token"), ("753".into(), "USDC/token"));
+        assert_eq!(limit_display("753TOKEN"), ("753".into(), "USDC/token"));
     }
 }

@@ -111,7 +111,7 @@ pub async fn fetch_sell_order_by_symbol(
     }
 
     let (display_amount, raw_amount) =
-        resolve_sell_amount(amount_str, &sym, &bal.raw_amount, gm_dec)?;
+        resolve_sell_amount(amount_str, &sym, &bal.raw_amount, gm_dec, bal.ui_balance)?;
 
     let mint_str = gm_mint.to_string();
     fetch_sell_order(&sym, &mint_str, &raw_amount, taker, json, slippage_bps, max_bps)
