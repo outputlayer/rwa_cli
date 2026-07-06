@@ -784,10 +784,42 @@ fn hours_json_emits_shape_and_tradable_set() {
             .header("content-type", "application/json")
             .json_body(always_tradable_limits());
     });
+    // Fixture with 3+ assets: AALon (normal), TSLAon (isTradingPaused), SPYon (isOffhoursTradable)
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "assets": [
+                    {
+                        "symbol": "AALon",
+                        "assetName": "American Airlines",
+                        "isTradingPaused": false,
+                        "isOffhoursTradable": false,
+                        "primaryMarket": { "price": "10.5" }
+                    },
+                    {
+                        "symbol": "TSLAon",
+                        "assetName": "Tesla",
+                        "isTradingPaused": true,
+                        "isOffhoursTradable": false,
+                        "primaryMarket": { "price": "250.0" }
+                    },
+                    {
+                        "symbol": "SPYon",
+                        "assetName": "SPY ETF",
+                        "isTradingPaused": false,
+                        "isOffhoursTradable": true,
+                        "primaryMarket": { "price": "450.0" }
+                    }
+                ]
+            }));
+    });
 
     let out = rwa(&home)
         .args(["--json", "gm", "hours", "--tradable"])
         .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
         .output()
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
@@ -801,6 +833,12 @@ fn hours_json_emits_shape_and_tradable_set() {
     let tradable: Vec<&str> = v["tradable"].as_array().unwrap()
         .iter().map(|s| s.as_str().unwrap()).collect();
     assert_eq!(tradable, vec!["AALon", "TSLAon"]);
+    // Assets contract: paused and offhours_tradable counts and array with --tradable.
+    assert_eq!(v["paused_count"], 1, "exactly one asset has isTradingPaused=true");
+    assert_eq!(v["offhours_tradable_count"], 1, "exactly one asset has isOffhoursTradable=true");
+    let offhours: Vec<&str> = v["offhours_tradable"].as_array().unwrap()
+        .iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(offhours, vec!["SPYon"], "offhours_tradable array includes flagged symbols");
 }
 
 /// `gm history --json` emits the HistoryJson shape with hand-derived
