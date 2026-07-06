@@ -2826,6 +2826,7 @@ dependencies = [
  "tar",
  "tokio",
  "toml 0.8.23",
+ "zeroize",
  "zip",
 ]
 

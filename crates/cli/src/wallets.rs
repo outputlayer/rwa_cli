@@ -9,6 +9,7 @@ use eyre::{Result, eyre};
 use rwa_ondo::wallet::{self, Wallet};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// One registered wallet: a unique name and an absolute path to its key file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -233,7 +234,7 @@ pub fn ensure_legacy_registered(config_dir: &Path) -> Result<WalletRegistry> {
 /// `passphrase` is a closure so callers (and tests) control how it's obtained.
 pub fn load_target(
     target: &WalletTarget,
-    passphrase: impl FnOnce() -> Result<String>,
+    passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
 ) -> Result<Wallet> {
     match target {
         WalletTarget::Path(path) => {
@@ -284,7 +285,7 @@ pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
 /// encrypted payload carries one (plaintext wallets never store it).
 pub fn load_target_full(
     target: &WalletTarget,
-    passphrase: impl FnOnce() -> Result<String>,
+    passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
 ) -> Result<(Wallet, Option<String>)> {
     match target {
         WalletTarget::Path(path) => {
@@ -313,12 +314,13 @@ pub fn load_target_full(
 }
 
 /// Read the wallet passphrase from `RWA_PASSPHRASE` (one-time warning) or prompt.
-pub(crate) fn prompt_passphrase() -> Result<String> {
+pub(crate) fn prompt_passphrase() -> Result<Zeroizing<String>> {
     if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
         warn_passphrase_env_once();
-        return Ok(p);
+        return Ok(Zeroizing::new(p));
     }
     rpassword::prompt_password("Wallet passphrase: ")
+        .map(Zeroizing::new)
         .map_err(|e| eyre!("Failed to read passphrase: {e}"))
 }
 
@@ -629,7 +631,7 @@ mod tests {
         w.save_encrypted(&p, "TestPass2026!secure").unwrap();
         let loaded = load_target(
             &WalletTarget::Path(p.clone()),
-            || Ok("TestPass2026!secure".to_string()),
+            || Ok(Zeroizing::new("TestPass2026!secure".to_string())),
         )
         .unwrap();
         assert_eq!(loaded.pubkey(), w.pubkey());
@@ -640,7 +642,7 @@ mod tests {
     fn load_target_missing_path_errors() {
         let res = load_target(
             &WalletTarget::Path(PathBuf::from("/no/such/key.json")),
-            || Ok("x".to_string()),
+            || Ok(Zeroizing::new("x".to_string())),
         );
         // Wallet: !Debug, so use .err().unwrap() instead of .unwrap_err()
         let err = res.err().expect("missing-path load must error");
@@ -674,5 +676,24 @@ mod tests {
         assert_eq!(v.pointer("/pubkey"), Some(&serde_json::Value::Null));
         assert_eq!(v.pointer("/active"), Some(&serde_json::Value::from(false)));
         assert_eq!(v.pointer("/encrypted"), Some(&serde_json::Value::from(true)));
+    }
+
+    #[test]
+    fn prompt_passphrase_returns_zeroizing() {
+        // Set RWA_PASSPHRASE env var for headless testing
+        unsafe {
+            std::env::set_var("RWA_PASSPHRASE", "TestPass2026!secure");
+        }
+        let result = prompt_passphrase().expect("prompt_passphrase must succeed");
+
+        // Type check: assert the return type is Zeroizing<String>
+        let _: Zeroizing<String> = result.clone();
+
+        // Content check: verify the passphrase is correct
+        assert_eq!(&*result, "TestPass2026!secure");
+
+        unsafe {
+            std::env::remove_var("RWA_PASSPHRASE");
+        }
     }
 }

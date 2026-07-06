@@ -1,6 +1,7 @@
 use clap::Subcommand;
 use eyre::Result;
 use rwa_ondo::wallet::{self, Wallet};
+use zeroize::Zeroizing;
 
 #[derive(Subcommand, Debug)]
 pub enum KeysAction {
@@ -571,8 +572,9 @@ async fn remove(name: &str, json: bool) -> Result<()> {
 
 use crate::wallets::warn_passphrase_env_once;
 
-fn read_passphrase(prompt: &str) -> Result<String> {
+fn read_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
     rpassword::prompt_password(prompt)
+        .map(Zeroizing::new)
         .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))
 }
 
@@ -588,12 +590,12 @@ pub fn validate_passphrase(p: &str) -> Result<()> {
 }
 
 /// Prompt for a new passphrase and ask for confirmation.
-fn prompt_new_passphrase() -> Result<String> {
+fn prompt_new_passphrase() -> Result<Zeroizing<String>> {
     // Allow env var to supply passphrase non-interactively (e.g. in tests).
     if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
         warn_passphrase_env_once();
         validate_passphrase(&p)?;
-        return Ok(p);
+        return Ok(Zeroizing::new(p));
     }
     let p1 = read_passphrase("New passphrase: ")?;
     validate_passphrase(&p1)?;
