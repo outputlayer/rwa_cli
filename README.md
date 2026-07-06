@@ -30,6 +30,7 @@ rwa gm portfolio                 # 5. See your holdings
 |---------|-------------|
 | `rwa gm buy <SYM> <AMT> [-y]` | Buy with USDC (min 5 USDC) |
 | `rwa gm sell <SYM> <AMT> [-y]` | Sell for USDC (exact, `50%`, or `all`) |
+| `rwa gm buy/sell ... --limit-price <P>` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell) |
 | `rwa gm close-all [<PCT>] [-y]` | Sell every position (or a % of each) |
 | `rwa gm buy-basket <SYM AMT ...> [-y]` | Buy multiple tokens at once |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
