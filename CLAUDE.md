@@ -19,6 +19,7 @@ cargo install --path bin/rwa
 
 - `install.sh` is binary-first: it downloads a pre-built release asset when available
 - `install.sh` falls back to `cargo install --git ...` when a release asset is unavailable
+- `install.sh` fails closed (exit 1) on any unverifiable download: missing `SHA256SUMS.txt` manifest, no checksum entry for the archive, or no `sha256sum`/`shasum` tool available. `RWA_INSTALL_INSECURE=1` is an explicit opt-in bypass that installs without verification (prints a warning)
 - Release assets are produced by `.github/workflows/release.yml`
 - Supported release targets: Linux, macOS, Windows
 
@@ -56,7 +57,7 @@ cargo install --path bin/rwa
 - `--slippage <BPS>` is accepted by buy/sell and all multi-trade commands (baskets, close-all)
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
-- Every CLI money operation is appended to a per-wallet trade ledger (`~/.config/rwa/ledger/<pubkey>.jsonl`, raw units). `gm pnl` builds average entry price, realized and unrealized P&L **from buys/sells only** (deposits/withdrawals are ignored by design); sells beyond CLI-recorded buys are flagged `oversold` and excluded rather than mispriced
+- Every CLI money operation is appended to a per-wallet trade ledger (`~/.config/rwa/ledger/<pubkey>.jsonl`, raw units). Each entry carries a `prev` hash chain link (hex of the first 16 bytes of SHA-256 over the raw previous line; genesis sentinel is the hash of empty bytes) — tamper-evident, not tamper-proof. `gm pnl` builds average entry price, realized and unrealized P&L **from buys/sells only** (deposits/withdrawals are ignored by design); sells beyond CLI-recorded buys are flagged `oversold` and excluded rather than mispriced. `PnlJson.ledger_integrity` is ALWAYS present: `"ok"` (chain intact), `"legacy"` (pre-chain entries present, unbroken), or `"broken@line N"` (first line whose `prev` doesn't match); a broken chain warns on stderr but never fails `pnl`
 - Legacy flat `portfolio` fields should be treated as obsolete
 
 ## Commands
@@ -134,7 +135,7 @@ rwa update -y
 
 ## Jupiter behavior
 
-- Auto gas refuel: before a real `buy`/`buy-basket`/`send` (never `send SOL`, never dry-run), if SOL < 0.003 and USDC covers the operation + 5 USDC, the CLI buys SOL first. The size is **dynamic**: target = 2x (50 txs at the live fee estimate + 5 ATA rents), converted to USDC at the quote's implied SOL price, clamped to [5, 25] USDC (bootstrap from zero SOL requires a gasless route); interactive runs prompt, `-y`/`--json` auto-approve, `RWA_NO_AUTO_GAS=1` disables; surfaced as optional `gas_refuel: {usdc, sol, tx}` in `TradeJson`/`BuyBasketResultJson`/`SendJson`. Best-effort: an impossible refuel never fails the main operation
+- Auto gas refuel: before a real `buy`/`buy-basket`/`send` (never `send SOL`, never dry-run), if SOL < 0.003 and USDC covers the operation + 5 USDC, the CLI buys SOL first. The size is **dynamic**: target = 2x (50 txs at the live fee estimate + 5 ATA rents), converted to USDC at the quote's implied SOL price, clamped to [5, 25] USDC (bootstrap from zero SOL requires a gasless route); interactive runs prompt, `-y` auto-approves, `--json` alone (no `-y`) skips the refuel silently rather than prompting or auto-approving (same consent gate as execution itself, since v0.6.0), `RWA_NO_AUTO_GAS=1` disables; surfaced as optional `gas_refuel: {usdc, sol, tx}` in `TradeJson`/`BuyBasketResultJson`/`SendJson`. Best-effort: an impossible refuel never fails the main operation
 - USDC-only wallets (zero SOL) can trade: the SOL-for-fees check runs AFTER quoting and passes when the route is gasless (Jupiter pays fees + ATA rent); only non-gasless routes (Metis fallback) require ~0.002 SOL, surfaced as `insufficient_funds`. `send` and `reclaim` always need SOL
 - Jupiter requests use `api.jup.ag` (deprecated `lite-api.jup.ag` retired); set `RWA_JUPITER_API_KEY` to raise limits. Transient `/execute` failures surface as `execute_unavailable` and auto-retry; ambiguous timeouts are not retried.
 - Public routing order is `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback
@@ -142,7 +143,8 @@ rwa update -y
 - Quotes with >1% slippage are refreshed up to 5 times (cycles through different MMs)
 - Swaps with >3% slippage are blocked after all retries exhausted
 - CLI auto-retries transient swap failures; agents should not retry manually
-- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), `amount_below_minimum`, `condition_not_met` (`--limit-price` unmet), `trading_paused` (Ondo dividend-window pause), `insufficient_funds`, and `no_position`
+- Surfaced trade/runtime error kinds include `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `route_unfillable`, `rpc_unavailable` (Solana RPC unreachable after retries), `amount_below_minimum`, `condition_not_met` (`--limit-price` unmet), `trading_paused` (Ondo dividend-window pause), `insufficient_funds`, `no_position`, and `confirmation_required` (`--json` without `-y` on a money-moving command; exit 1, not transient)
+- The `/order` quote-fetch retry loop backs off up to 3.2s between attempts (800ms · 2^attempt, capped), within a ~20s retry budget per quote-fetch pass (fresh budget per outer retry, e.g. slippage refresh or route-unfillable requote); a stderr heartbeat (`still fetching quote (...)`) reports each retry so a slow quote is visible, not silent
 - If a quoted route would fail on-chain (RFQ MM can't fill) or under-delivers vs its own quote, the CLI excludes that router and refetches a quote (auto-routing to metis/dflow/…); `route_unfillable` surfaces only if all retries are exhausted. A rerouted quote materially worse than the previewed one (beyond slippage tolerance) aborts with `slippage_too_high` instead of executing silently
 - `RWA_EXCLUDE_ROUTERS` (comma-separated, e.g. `jupiterz,dflow`) manually pins routers to avoid when quoting buy/sell; merged with the auto-excluded set
 - `gm portfolio` reads from Solana RPC, falling back to the Jupiter **Ultra** holdings API on RPC `unavailable` (JSON marks `source: "jupiter"`). Swaps use Swap V2; holdings use Ultra v1.
@@ -155,7 +157,7 @@ rwa update -y
 - Plaintext wallet: `~/.config/rwa/key.json`
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`
-- `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets
+- `RWA_PASSPHRASE` can be used for scripted access to encrypted wallets; passphrases are held in `Zeroizing<String>` end-to-end (zeroed on drop) rather than plain `String`
 - Multiple named wallets: registry at `~/.config/rwa/wallets.toml` maps a name to an absolute key-file path plus an `active` pointer (file is `0o600`; holds paths, not keys)
 - Wallet selection priority: `--wallet <name>` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age` default. An absent/empty registry behaves exactly as the old single-wallet setup
 - Key files stay wherever the user registered them; key type (plaintext vs age) is detected by file content, not extension
@@ -168,6 +170,7 @@ rwa update -y
 
 - Always prefer `rwa --json`
 - Use `-y` only for real execution
+- **`--json` without `-y` never executes** (breaking since v0.6.0): a money-moving command run with `--json` alone fails closed with `confirmation_required` (exit 1) instead of running non-interactively. This also gates auto-gas refuel: json auto-approves the refuel only when `-y` is also passed. Add `-y` to execute, or `--dry-run` to preview
 - Use `--dry-run` for large or uncertain actions
 - Never run wallet-changing commands in parallel
 - Treat JSON output as a stable contract for scripts and agents

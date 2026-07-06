@@ -11,7 +11,7 @@ Preferred:
 curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh | sh
 ```
 
-The installer downloads a pre-built binary from GitHub Releases when available and falls back to building from source.
+The installer downloads a pre-built binary from GitHub Releases when available and falls back to building from source. It verifies the download's SHA-256 checksum and fails closed (exit 1) if verification is impossible (missing manifest, no matching checksum entry, no sha256sum/shasum tool) — `RWA_INSTALL_INSECURE=1` is an explicit unrecommended bypass.
 
 From source:
 
@@ -27,6 +27,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
 - Use `-y` only for real execution, not for `--dry-run`
+- `--json` without `-y` NEVER executes a money-moving command: it fails closed with `error_kind: confirmation_required` (exit 1, not transient) instead of running non-interactively. This also gates auto-gas refuel — with `--json` alone (no `-y`), refuel is skipped silently rather than auto-approved. Add `-y` to execute, or `--dry-run` to preview.
 - There is no `quote` command; use `buy/sell --dry-run`
 - `send` transfers assets to another wallet; `sell` swaps for USDC
 - CLI auto-retries swap failures; do NOT manually retry them
@@ -52,7 +53,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm close-all --dry-run` — preview liquidation
 - Trade JSON `router`/`gasless` are optional: absent = Jupiter's quote didn't report them (AMM routes), NOT false. RWA_EXCLUDE_ROUTERS=jupiterz,iris,dflow forces AMM routes (~1.3s vs ~5s RFQ) at the cost of gasless + tighter RFQ pricing; AMM liquidity is not guaranteed off Regular hours
 - `rwa --json gm search --tag <label>` — filter by any Ondo tag (asset class, region, factor: asia, dividend, "fixed income"); items carry optional asset_class/region
-- `rwa --json gm pnl` — avg entry price, realized/unrealized P&L (from CLI trades only; deposits ignored)
+- `rwa --json gm pnl` — avg entry price, realized/unrealized P&L (from CLI trades only; deposits ignored); JSON always carries `ledger_integrity`: `"ok"` | `"legacy"` (pre-chain entries, unbroken) | `"broken@line N"` (tamper/corruption detected) — a broken chain warns on stderr but never fails the command
 - `rwa --json gm close-all -y` — sell all positions (parallel by default)
 - `rwa --json keys export --reveal` — private key + recovery phrase JSON (SECRET; --reveal is mandatory)
 - `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)
@@ -137,6 +138,7 @@ rwa --json gm search --tradable-only --sector Healthcare --type stock
 Jupiter API note:
 - The CLI tries public Jupiter routes in this order: `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback.
 - Route availability can differ by session, holiday calendar, and MM liquidity.
+- Quote-fetch retries back off up to 3.2s per attempt within a ~20s budget per quote-fetch pass; a `still fetching quote (...)` heartbeat prints to stderr on each retry, so a slow quote is visible rather than a silent hang. Do not treat the heartbeat as an error.
 
 # 2. Buy all tradable tokens at once — one command, parallel
 rwa --json gm buy-basket JNJ 25 LLY 25 PFE 25 ABBV 25 --parallel -y
@@ -173,6 +175,7 @@ Parallel is safe for different tokens. jupiterz routes through multiple MMs inte
 
 With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
 
+- `confirmation_required` → `--json` was used without `-y` on a real (non-`--dry-run`) money-moving command; add `-y` to execute or `--dry-run` to preview. Not transient — never retry as-is.
 - `not_tradable` → skip token or check `list --search <SYM>`
 - `amount_below_minimum` → buy below 5 USDC (single or basket item); raise the amount
 - `insufficient_funds` → wallet lacks USDC, or the quoted route is not gasless and the wallet has no SOL (USDC-only wallets trade fine on gasless routes; send/reclaim always need SOL); fund the wallet, do not retry

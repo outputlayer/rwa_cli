@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/outputlayer/rwa_cli/main/install.sh
 
 Downloads a pre-built binary for Linux/macOS/Windows from [Releases](https://github.com/outputlayer/rwa_cli/releases), falling back to a source build. Update later with `rwa update`.
 
+The installer verifies every download against the release's SHA-256 checksums and fails closed (refuses to install) if that verification is impossible — no manifest, no checksum entry, or no `sha256sum`/`shasum` on the system. `RWA_INSTALL_INSECURE=1` is an explicit, unrecommended bypass.
+
 ## Quick start
 
 ```bash
@@ -53,7 +55,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
 - **Conditional orders.** `--limit-price <P> [share|token]` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; canonical form is a space-separated unit (`--limit-price 748 share`) to gate per underlying share instead; joined forms (`--limit-price 748share`) still work (bare number or explicit `token` both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC. Token sell amounts are raw; for dividend-accruing tokens wallets display slightly more (shares_per_token multiplier) — if an exact sell overshoots, the error shows both raw and wallet-displayed numbers; prefer `all`/`50%`.
-- **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
+- **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger with a tamper-evident hash chain; `rwa gm pnl` shows average entry price, realized and unrealized P&L (built from your trades only) plus `ledger_integrity` (`ok`/`legacy`/`broken@line N`) so a corrupted ledger is visible instead of silently mispricing.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.
 - **Slippage**: 1% default, hard-blocked above 3%; unfillable routes are retried through another market maker automatically.
@@ -68,7 +70,7 @@ npx skills add outputlayer/rwa_skills -g -y
 
 Then talk in plain language: *"Buy $100 of TSLA · Show my portfolio · Send all USDC to <ADDRESS>"*.
 
-Every command supports `--json` — a stable contract with typed `error_kind` values and exit code 75 for retry-worthy transient failures (1 otherwise). Rules: prefer `--json`, use `-y` only for real execution, never run wallet-changing commands as parallel shell processes (multi-token commands parallelize internally). Manual skill install: [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
+Every command supports `--json` — a stable contract with typed `error_kind` values and exit code 75 for retry-worthy transient failures (1 otherwise). Rules: prefer `--json`, use `-y` only for real execution, never run wallet-changing commands as parallel shell processes (multi-token commands parallelize internally). **`--json` without `-y` never executes** a money-moving command — it fails closed with `error_kind: confirmation_required` (exit 1) instead of running non-interactively; add `-y` to execute or `--dry-run` to preview. Manual skill install: [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
 
 ## RPC endpoints
 
@@ -97,9 +99,9 @@ export RWA_JUPITER_API_KEY="<your-jupiter-key>"    # optional: higher Jupiter li
 <summary><b>How it works</b></summary>
 
 - Ondo GM tokens are **total-return trackers** (dividends reinvested, so 1 token ≠ 1 share): token price = share price × multiplier, and `portfolio` shows `shares_per_token` once it drifts from 1. `TSLA` and `TSLAon` are both accepted.
-- Swaps route through [Jupiter](https://jup.ag/) (`swap/v2` → Ultra fallbacks → Metis). Quotes with bad slippage are refreshed across market makers; a route that would fail on-chain is excluded and requoted.
+- Swaps route through [Jupiter](https://jup.ag/) (`swap/v2` → Ultra fallbacks → Metis). Quotes with bad slippage are refreshed across market makers; a route that would fail on-chain is excluded and requoted. Quote fetching backs off up to 3.2s between retries within a ~20s budget per attempt, printing a `still fetching quote (...)` heartbeat to stderr so a slow quote stays visible instead of hanging silently.
 - **Every swap is verified before signing**: the transaction is simulated on-chain and the CLI refuses to sign unless the balance deltas match the quote (debit ≤ expected, credit ≥ quote − slippage). Wallet keys never leave the machine; encrypted storage is `age` with your passphrase.
-- `portfolio` JSON: `cash.{sol,usdc}` + `gm_positions.{value_usd, change_24h_usd, positions[]}`. Surfaced `error_kind` values: `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `condition_not_met`, `trading_paused`, `route_unfillable`, `rpc_unavailable`, `insufficient_funds`, `amount_below_minimum`, `no_position`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`.
+- `portfolio` JSON: `cash.{sol,usdc}` + `gm_positions.{value_usd, change_24h_usd, positions[]}`. Surfaced `error_kind` values: `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `condition_not_met`, `trading_paused`, `route_unfillable`, `rpc_unavailable`, `insufficient_funds`, `amount_below_minimum`, `no_position`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`, `confirmation_required` (`--json` without `-y`).
 
 </details>
 

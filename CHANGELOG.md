@@ -9,6 +9,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.0] — 2026-07-06 — confirmation_required, ledger integrity, install/quote hardening
+
+### Breaking
+
+- **`--json` without `-y` no longer executes.** Every money-moving command (`buy`, `sell`, `send`, `reclaim`, baskets, `close-all`, `update -y`, etc.) run with `--json` alone now fails closed with the typed `confirmation_required` (exit 1, not transient) instead of running non-interactively. Previously `--json` was treated as auto-consent on its own; now `-y` is required either way. `--dry-run` is unaffected and still previews without executing. The same gate covers auto-gas refuel: with `--json` and no `-y`, the refuel is skipped silently (never auto-approved, never prompted) rather than running ahead of the main operation's own consent check.
+
+### Added
+
+- **Tamper-evident trade ledger.** Each ledger line now carries a `prev` hash-chain link (hex of the first 16 bytes of SHA-256 over the raw previous line; the first entry chains to the hash of empty bytes). `gm pnl` JSON always carries `ledger_integrity`: `"ok"` (chain intact), `"legacy"` (unbroken but predates chaining), or `"broken@line N"` (first line whose link doesn't match). A broken chain warns on stderr but never fails `pnl` — P&L still computes from what's readable. In-process ledger appends (parallel basket/close-all legs) are now serialized so concurrent writers can't both chain to the same predecessor and produce a false `broken` verdict.
+- **Bounded quote-fetch retries with visible progress.** `/order` backoff is capped at 3.2s per retry (800ms · 2^attempt), and the whole multi-backend quote-fetch pass gets a ~20s retry budget (a fresh budget per outer retry, e.g. slippage refresh or route-unfillable requote) instead of retrying unboundedly. A `still fetching quote (...)` heartbeat prints to stderr on every retry so a slow quote stays visible instead of hanging silently.
+- **`install.sh` fails closed on any unverifiable download** — missing `SHA256SUMS.txt` manifest, no checksum entry for the archive, or no `sha256sum`/`shasum` available all now abort the install with exit 1 instead of installing an unverified binary. `RWA_INSTALL_INSECURE=1` is an explicit, unrecommended bypass.
+- **Passphrases held in `Zeroizing<String>`** end-to-end (wallet encrypt/decrypt, `keys` commands) instead of plain `String`, so a passphrase is zeroed on drop rather than lingering in freed memory.
+
+### Internal
+
+- Split oversized modules: `crates/ondo/src/gm.rs` → `symbol_resolve.rs`; `solana::balance` → `solana::mint`; `usecases::gm` → `usecases::gm_limit`. `verify_parsed` (wallet sign-time guard) and `get_metis_order` (Jupiter quote flow) decomposed into named steps — no logic changes, same evaluation order and short-circuit behavior.
+
+---
+
 ## [0.3.2] — 2026-07-02 — Trade ledger + P&L, full tag taxonomy in search
 
 ### Added
