@@ -12,7 +12,7 @@ pub use super::gm_positions::{
     compute_portfolio, filter_close_positions, ClosePosition, PortfolioPosition,
     PortfolioSummary, PortfolioUnavailable,
 };
-use super::gm_order::check_cost_gate;
+use super::gm_order::{check_cost_gate, check_limit_gate};
 
 pub use super::gm_internal::resolve_gm_mint;
 use super::gm_internal::{
@@ -196,6 +196,7 @@ pub async fn prepare_buy(
     quote_only: bool,
     max_bps: Option<u32>,
     balances: Option<BalanceSnapshot>,
+    limit_price_raw6: Option<u128>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -236,6 +237,7 @@ pub async fn prepare_buy(
     .await?;
 
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
+    check_limit_gate(true, &order.in_amount, &order.out_amount, limit_price_raw6)?;
     // Route-aware SOL gate: gasless routes need no SOL (USDC-only wallets
     // trade); self-paid routes (Metis) need MIN_SOL_FOR_FEES.
     if !quote_only {
@@ -268,6 +270,7 @@ pub async fn prepare_sell(
     slippage_bps: Option<u32>,
     json: bool,
     max_bps: Option<u32>,
+    limit_price_raw6: Option<u128>,
 ) -> Result<SwapPlan> {
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
@@ -302,6 +305,7 @@ pub async fn prepare_sell(
     .await?;
 
     check_cost_gate(slippage_pct, order.fee_bps, max_bps)?;
+    check_limit_gate(false, &order.out_amount, &order.in_amount, limit_price_raw6)?;
 
     Ok(SwapPlan {
         symbol,

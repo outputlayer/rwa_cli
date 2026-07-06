@@ -3,7 +3,7 @@ use eyre::{Result, WrapErr, eyre};
 use crate::{amounts, jupiter, solana, token_list};
 use super::gm::{
     SellOrderReady, BuyOrderReady, DEFAULT_SLIPPAGE_BPS, GmTradeError, GmTradeErrorKind,
-    cost_exceeds_max_bps,
+    cost_exceeds_max_bps, limit_price_exceeded,
 };
 use super::gm_internal::{
     MIN_USDC_AMOUNT, check_sol_for_route, check_tradable, get_order_checked,
@@ -23,6 +23,26 @@ pub(crate) fn check_cost_gate(
         return Err(GmTradeError::new(
             GmTradeErrorKind::CostTooHigh,
             format!("all-in cost {cost:.1} bps exceeds --max-bps {max}"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Reject the quote when its implied price (USDC per token) violates
+/// `--limit-price`. Single chokepoint for `prepare_buy`/`prepare_sell` —
+/// the quote that passes here is the one executed.
+pub(crate) fn check_limit_gate(
+    is_buy: bool,
+    usdc_raw: &str,
+    token_raw: &str,
+    limit_raw6: Option<u128>,
+) -> Result<()> {
+    if let Some((implied, limit)) = limit_price_exceeded(is_buy, usdc_raw, token_raw, limit_raw6) {
+        let dir = if is_buy { ">" } else { "<" };
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::ConditionNotMet,
+            format!("quoted price {implied:.6} USDC/token {dir} --limit-price {limit:.6}"),
         )
         .into());
     }
@@ -242,5 +262,19 @@ mod tests {
             ("SPYon".to_string(), 12_000_000u128),
         ];
         assert!(check_basket_buy_minimums(&items).is_ok());
+    }
+
+    #[test]
+    fn limit_gate_produces_condition_not_met() {
+        // implied 400 vs buy limit 399 → gated.
+        let err = check_limit_gate(true, "100000000", "250000000", Some(399_000_000))
+            .unwrap_err();
+        assert_eq!(crate::usecases::gm::classify_error(&err), Some("condition_not_met"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--limit-price"), "message names the flag: {msg}");
+        // No limit → passes.
+        assert!(check_limit_gate(true, "100000000", "250000000", None).is_ok());
+        // Sell side: implied 400 ≥ limit 399 → passes.
+        assert!(check_limit_gate(false, "100000000", "250000000", Some(399_000_000)).is_ok());
     }
 }

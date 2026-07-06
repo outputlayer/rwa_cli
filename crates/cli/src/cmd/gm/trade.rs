@@ -32,7 +32,7 @@ pub async fn buy(
         auto_gas(&w, rpc_url, yes, json, reserved).await?
     };
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, None).await?;
 
     if !json {
         println!(
@@ -130,7 +130,7 @@ pub async fn sell(
 ) -> Result<()> {
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps).await?;
+    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, None).await?;
 
     if !json {
         println!(
