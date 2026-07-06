@@ -96,7 +96,14 @@ verify_checksum() {
             shasum -a 256 -c "$(basename "$checksum_file")"
         )
     else
-        echo "Warning: sha256sum/shasum not found — skipping checksum verification" >&2
+        if [ "${RWA_INSTALL_INSECURE:-}" != "1" ]; then
+            echo "ERROR: cannot verify download (sha256sum/shasum not found)." >&2
+            echo "Fix: install coreutils (sha256sum) — or build from source:" >&2
+            echo "  cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa" >&2
+            echo "Or bypass verification at your own risk: RWA_INSTALL_INSECURE=1 <installer>" >&2
+            exit 1
+        fi
+        echo "WARNING: RWA_INSTALL_INSECURE=1 set — installing WITHOUT checksum verification." >&2
     fi
 }
 
@@ -146,7 +153,14 @@ install_prebuilt() {
     if download "${base_url}/SHA256SUMS.txt" "$checksums_path"; then
         verify_checksum "$archive_path" "$checksums_path"
     else
-        echo "Warning: SHA256SUMS.txt not found — skipping checksum verification" >&2
+        if [ "${RWA_INSTALL_INSECURE:-}" != "1" ]; then
+            echo "ERROR: cannot verify download (SHA256SUMS.txt not found)." >&2
+            echo "Fix: install coreutils (sha256sum) — or build from source:" >&2
+            echo "  cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa" >&2
+            echo "Or bypass verification at your own risk: RWA_INSTALL_INSECURE=1 <installer>" >&2
+            exit 1
+        fi
+        echo "WARNING: RWA_INSTALL_INSECURE=1 set — installing WITHOUT checksum verification." >&2
     fi
 
     mkdir -p "$INSTALL_DIR"
