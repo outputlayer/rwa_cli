@@ -277,4 +277,77 @@ mod tests {
         // Sell side: implied 400 ≥ limit 399 → passes.
         assert!(check_limit_gate(false, "100000000", "250000000", Some(399_000_000)).is_ok());
     }
+
+    /// User task: "Buy SPYon, cron-style, but only fill at 750 or better" —
+    /// `--limit-price 750token`. Composes `effective_limit_raw6` (token frame
+    /// is a no-op conversion) with `check_limit_gate` the way `prepare_buy`
+    /// really chains them. `effective_limit_raw6`/`check_limit_gate` are both
+    /// `pub(crate)`, so this lives here rather than in the external
+    /// `crates/ondo/tests/scenarios.rs`.
+    #[test]
+    fn cron_limit_buy_fires_only_at_its_own_token_price() {
+        use super::super::gm::{effective_limit_raw6, LimitFrame};
+        let limit = effective_limit_raw6(Some((750_000_000, LimitFrame::Token)), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(limit, 750_000_000);
+
+        // Implied 753.99 USDC/token (one raw token, 9 decimals): quote
+        // usdc_raw = 753_990_000, token_raw = 1_000_000_000.
+        let violated = check_limit_gate(true, "753990000", "1000000000", Some(limit)).is_err();
+        assert!(violated, "753.99 must violate a 750 buy limit");
+
+        // Implied 749.5 → better than the limit → fills.
+        assert!(check_limit_gate(true, "749500000", "1000000000", Some(limit)).is_ok());
+
+        // Equality (implied == limit) fills.
+        assert!(check_limit_gate(true, "750000000", "1000000000", Some(limit)).is_ok());
+    }
+
+    /// Same intent expressed in the SHARE frame: "fill only at 748/share or
+    /// better", with the position's dividend multiplier (m=1.0077209)
+    /// converting the user's share-price intent into the token-raw frame the
+    /// quote is actually gated in.
+    #[test]
+    fn cron_limit_buy_in_share_frame_converts_via_multiplier() {
+        use super::super::gm::{effective_limit_raw6, LimitFrame};
+        let m = 1.0077209_f64;
+        let limit = effective_limit_raw6(Some((748_000_000, LimitFrame::Share)), Some(m))
+            .unwrap()
+            .unwrap();
+        // 748 * 1.0077209 ≈ 753.775233 USDC/token.
+        assert_eq!(limit, 753_775_233);
+
+        // Implied 753.5 ≤ effective 753.775233 → fills.
+        assert!(check_limit_gate(true, "753500000", "1000000000", Some(limit)).is_ok());
+        // Implied 754.2 > effective 753.775233 → violated.
+        assert!(check_limit_gate(true, "754200000", "1000000000", Some(limit)).is_err());
+        // Equality (implied == the rounded effective limit) fills.
+        assert!(check_limit_gate(true, "753775233", "1000000000", Some(limit)).is_ok());
+    }
+
+    /// User task: "A 10:1 split just happened — does my standing share-frame
+    /// limit order still mean what I set it to mean?" A share-frame limit's
+    /// intent (a target SHARE price) must survive a multiplier jump: the same
+    /// limit re-expressed at the new (10x) multiplier lands back near the
+    /// original effective token-raw price.
+    #[test]
+    fn share_frame_limit_survives_a_ten_to_one_split() {
+        use super::super::gm::{effective_limit_raw6, LimitFrame};
+        // Pre-split: 748share at m=1.0077209 → effective ≈ 753.775233.
+        let pre = effective_limit_raw6(Some((748_000_000, LimitFrame::Share)), Some(1.0077209))
+            .unwrap()
+            .unwrap();
+        // Post-split: the user re-expresses the same underlying share target
+        // at 1/10th (74.8share) against the new multiplier (10.077).
+        let post = effective_limit_raw6(Some((74_800_000, LimitFrame::Share)), Some(10.077))
+            .unwrap()
+            .unwrap();
+        assert_eq!(pre, 753_775_233);
+        assert_eq!(post, 753_759_600);
+        // Both land within a few cents/token of each other — the split alone
+        // must not materially move the user's share-price intent.
+        let diff = (pre as f64 - post as f64).abs() / 1e6;
+        assert!(diff < 0.02, "effective limit drifted {diff} USDC/token across the split");
+    }
 }

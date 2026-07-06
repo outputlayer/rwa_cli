@@ -442,4 +442,40 @@ mod tests {
         assert!(matches_filters(&item, &["dividend".to_string()], false, &[], None, &[], &[]) == false);
         assert!(matches_filters(&item, &["large cap".to_string()], false, &[], None, &[], &[]));
     }
+
+    /// User task: "Script `gm list`/`gm tradable` output — a paused (ex-dividend)
+    /// asset must be visibly flagged, but a normal asset's JSON shouldn't grow a
+    /// noisy `trading_paused: false` on every single row." Known gap: neither
+    /// JSON shape had a serialization test before this.
+    #[test]
+    fn list_item_json_omits_trading_paused_unless_true() {
+        let normal = sample_item(); // trading_paused: false
+        let json = serde_json::to_value(&normal).unwrap();
+        assert!(json.get("trading_paused").is_none(), "false must be omitted: {json}");
+
+        let mut paused = sample_item();
+        paused.trading_paused = true;
+        let json = serde_json::to_value(&paused).unwrap();
+        assert_eq!(json["trading_paused"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn tradable_item_json_omits_trading_paused_unless_true() {
+        let normal = TradableItemJson {
+            input: "SPY".to_string(),
+            found: true,
+            symbol: Some("SPYon".to_string()),
+            name: Some("SPDR S&P 500 ETF".to_string()),
+            kind: Some("etf".to_string()),
+            sector: None,
+            tradable: true,
+            trading_paused: false,
+        };
+        let json = serde_json::to_value(&normal).unwrap();
+        assert!(json.get("trading_paused").is_none(), "false must be omitted: {json}");
+
+        let paused = TradableItemJson { trading_paused: true, ..normal };
+        let json = serde_json::to_value(&paused).unwrap();
+        assert_eq!(json["trading_paused"], serde_json::json!(true));
+    }
 }

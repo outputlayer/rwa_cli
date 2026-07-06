@@ -32,8 +32,8 @@ fn parse_limit_price(raw: Option<&str>) -> Result<Option<(u128, LimitFrame)>> {
 
 /// (share_price, shares_per_token) for display — only when the multiplier is
 /// known and materially differs from 1.
-fn share_view(plan: &usecases::gm::SwapPlan, token_amount: &str, usdc_amount: &str) -> (Option<f64>, Option<f64>) {
-    let Some(m) = plan.multiplier.filter(|m| (m - 1.0).abs() > 1e-9) else {
+fn share_view(multiplier: Option<f64>, token_amount: &str, usdc_amount: &str) -> (Option<f64>, Option<f64>) {
+    let Some(m) = multiplier.filter(|m| (m - 1.0).abs() > 1e-9) else {
         return (None, None);
     };
     let (Ok(tokens), Ok(usdc)) = (token_amount.parse::<f64>(), usdc_amount.parse::<f64>()) else {
@@ -89,7 +89,7 @@ pub async fn buy(
     };
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, limit_price_parsed).await?;
-    let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
+    let (share_price, shares_per_token) = share_view(plan.multiplier, &plan.amount, &plan.counter_amount);
 
     if !json {
         println!(
@@ -204,7 +204,7 @@ pub async fn sell(
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
     let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, limit_price_parsed).await?;
-    let (share_price, shares_per_token) = share_view(&plan, &plan.amount, &plan.counter_amount);
+    let (share_price, shares_per_token) = share_view(plan.multiplier, &plan.amount, &plan.counter_amount);
 
     if !json {
         println!(
@@ -303,7 +303,7 @@ pub async fn sell(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_limit_price, limit_display};
+    use super::{parse_limit_price, limit_display, share_view};
 
     #[test]
     fn limit_price_parsing() {
@@ -332,5 +332,42 @@ mod tests {
         assert_eq!(limit_display("753"), ("753".into(), "USDC/token"));
         assert_eq!(limit_display("753token"), ("753".into(), "USDC/token"));
         assert_eq!(limit_display("753TOKEN"), ("753".into(), "USDC/token"));
+    }
+
+    /// Audit fix: `share_view` is the one CLI function that divides by the
+    /// Scaled-UI multiplier (share price = token price / m) and it had zero
+    /// coverage — dropping the `/ m` would have passed every test in the repo.
+    #[test]
+    fn share_view_divides_token_price_by_multiplier() {
+        let m = 1.0077209;
+        // Sell 1 raw SPYon for 753.99 USDC → per-share price 753.99 / m
+        // ≈ 748.2131 (independently computed), NOT 753.99 (no division) and
+        // NOT 759.81 (multiplied instead of divided).
+        let (sp, spt) = share_view(Some(m), "1", "753.99");
+        let sp = sp.expect("share price must be present for m != 1");
+        assert!((sp - 748.2131).abs() < 1e-3, "share price {sp}");
+        assert!((sp * m - 753.99).abs() < 1e-6, "share price must invert to token price");
+        assert_eq!(spt, Some(m));
+
+        // Multi-token amounts divide through the token quantity too:
+        // 20.369073 tokens for 15358.077351 USDC → same per-share price.
+        let (sp2, _) = share_view(Some(m), "20.369073", "15358.077351");
+        assert!((sp2.unwrap() - 748.2131).abs() < 1e-3, "share price {sp2:?}");
+    }
+
+    #[test]
+    fn share_view_omitted_when_multiplier_unknown_or_one() {
+        // Unknown multiplier → nothing to show.
+        assert_eq!(share_view(None, "1", "753.99"), (None, None));
+        // Multiplier ≈ 1 (within 1e-9) → omitted, not shown as a redundant 1x.
+        assert_eq!(share_view(Some(1.0), "1", "753.99"), (None, None));
+        assert_eq!(share_view(Some(1.0 + 5e-10), "1", "753.99"), (None, None));
+        // A real but small multiplier IS shown.
+        let (sp, spt) = share_view(Some(1.00001), "1", "753.99");
+        assert!(sp.is_some());
+        assert_eq!(spt, Some(1.00001));
+        // Degenerate amounts: keep the multiplier, drop the price.
+        assert_eq!(share_view(Some(1.0077209), "0", "753.99"), (None, Some(1.0077209)));
+        assert_eq!(share_view(Some(1.0077209), "abc", "753.99"), (None, Some(1.0077209)));
     }
 }

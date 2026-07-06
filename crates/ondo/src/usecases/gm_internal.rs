@@ -445,5 +445,47 @@ mod tests {
         assert!(!msg.contains("wallet displays"), "msg: {msg}");
     }
 
+    /// User task, end to end: "Sell my entire SPYon dividend position."
+    /// `compute_portfolio` (pub API — see also `crates/ondo/tests/scenarios.rs`)
+    /// prices the raw balance the wallet actually holds; `all` must resolve to
+    /// that same raw amount, while typing the Phantom-displayed number instead
+    /// must be refused and must name both balances. `resolve_sell_amount` is
+    /// `pub(crate)`, so this composed scenario lives here rather than in the
+    /// external integration-test crate.
+    #[test]
+    fn dividend_token_buy_to_sell_all_uses_raw_not_wallet_displayed() {
+        let raw_amount = "20369073000"; // 20.369073 raw tokens, 9 decimals
+        let raw_display = 20.369073_f64;
+        let ui_display = 20.526341_f64; // Phantom shows raw × 1.0077209
+        let asset: crate::api::OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "SPYon",
+            "assetName": "SPDR S&P 500 ETF",
+            "primaryMarket": { "price": "753.99" }
+        }))
+        .unwrap();
+        let balance = crate::solana::SolanaTokenBalance {
+            symbol: "SPYon".into(),
+            mint: crate::types::Mint::from("k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
+            balance: raw_display,
+            ui_balance: Some(ui_display),
+            raw_amount: raw_amount.to_string(),
+        };
+        let summary = crate::usecases::gm::compute_portfolio(std::slice::from_ref(&balance), &[asset]);
+        let pos = &summary.positions[0];
+        assert!((pos.value_usd - raw_display * 753.99).abs() < 0.01, "value {}", pos.value_usd);
+        assert!((pos.shares_per_token.unwrap() - 1.0077209).abs() < 1e-6);
 
+        // Selling "all" sells the RAW amount, matching what was just priced.
+        let (display, raw) = resolve_sell_amount("all", "SPYon", raw_amount, 9, Some(ui_display)).unwrap();
+        assert_eq!(raw, raw_amount);
+        assert_eq!(display, "20.369073");
+
+        // Selling the wallet-displayed (ui) number instead overshoots the raw
+        // balance and must fail, naming both the held and attempted amounts.
+        let err = resolve_sell_amount(&ui_display.to_string(), "SPYon", raw_amount, 9, Some(ui_display))
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("20.369073"), "must name raw balance: {msg}");
+        assert!(msg.contains("20.526341"), "must name attempted (wallet-displayed) amount: {msg}");
+    }
 }

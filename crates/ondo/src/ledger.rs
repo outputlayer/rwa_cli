@@ -115,8 +115,16 @@ mod tests {
         let events = read_all_at(&dir, taker);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "buy");
+        assert_eq!(events[0].token, "TSLAon");
+        assert_eq!(events[0].qty_raw, "11786465");
         assert_eq!(events[0].usdc_raw.as_deref(), Some("5000000"));
+        assert_eq!(events[0].sig.as_deref(), Some("sig1"));
+        // Audit fix: the sell leg's amounts must round-trip too — this file
+        // feeds all P&L, so a mangled qty/usdc on read would misprice trades.
         assert_eq!(events[1].kind, "sell");
+        assert_eq!(events[1].qty_raw, "11786465");
+        assert_eq!(events[1].usdc_raw.as_deref(), Some("4991915"));
+        assert_eq!(events[1].sig.as_deref(), Some("sig2"));
 
         // Other wallets don't see these events.
         assert!(read_all_at(&dir, "OtherWallet").is_empty());
@@ -136,6 +144,11 @@ mod tests {
         .unwrap();
         let events = read_all_at(&dir, taker);
         assert_eq!(events.len(), 1);
+        // The survivor must be the parseable line, intact — not a half-parsed
+        // hybrid of the two.
+        assert_eq!(events[0].kind, "buy");
+        assert_eq!(events[0].token, "TSLAon");
+        assert_eq!(events[0].qty_raw, "1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

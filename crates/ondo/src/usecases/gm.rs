@@ -617,8 +617,11 @@ mod tests {
             out_usd_value: Some(99.0),
             ..Default::default()
         };
-        let result = check_slippage(&order, true);
-        assert!(result.is_ok());
+        // Audit fix: assert the computed value, not just Ok — a sign flip or
+        // wrong in/out pairing inside ±3% would otherwise pass unnoticed.
+        // $100 in → $99 out = −1% slippage, allowed and reported as-is.
+        let slip = check_slippage(&order, true).expect("within limit");
+        assert!((slip.unwrap() - (-1.0)).abs() < 0.01, "slippage {slip:?}");
     }
 
     #[test]
@@ -864,8 +867,11 @@ mod tests {
             }),
             offhours: None,
         };
-        let max = limits.max_notional(Session::Overnight);
-        assert!(max.unwrap_or(0.0) > 0.0);
+        // Audit fix: assert the parsed value, not merely "> 0" — a string
+        // parse bug yielding 1.0 (or dropping digits) passed the old check.
+        assert_eq!(limits.max_notional(Session::Overnight), Some(100000.0));
+        // A session with no limits entry has no cap.
+        assert_eq!(limits.max_notional(Session::Regular), None);
     }
 
     // ── parse_sell_pct edge cases ─────────────────────────────

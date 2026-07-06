@@ -126,6 +126,43 @@ async fn portfolio_parses_standard_response() {
     assert!((result.gm_tokens[0].balance - 2.5).abs() < 1e-9);
 }
 
+/// Audit fix: every other test in this file runs at multiplier == 1
+/// (uiAmount == raw/1e9), so the full RPC → parse → struct pipeline never
+/// proved that `balance` (raw frame) and `ui_balance` (Scaled-UI frame)
+/// stay distinct end to end. A Scaled-UI mint (m = 1.0077209): uiAmount
+/// 2.519302 for raw 2500000000 — `balance` must stay raw-derived (2.5).
+#[tokio::test]
+async fn portfolio_keeps_raw_and_scaled_ui_balances_distinct() {
+    let server = MockServer::start_async().await;
+
+    let _m = server.mock_async(|when, then| {
+        when.method(POST);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(batch_response(
+                1_500_000_000,
+                500_000_000,
+                // 2.5 raw × 1.0077209 = 2.519302 (independent literal).
+                serde_json::json!([token_entry(AAL_MINT, 2.519302, "2500000000")]),
+            ));
+    }).await;
+
+    let tokens = &[GmTokenEntry { symbol: "AALon", solana_address: Some(AAL_MINT) }];
+    let result = solana::get_portfolio_balances(WALLET, tokens, Some(&server.base_url()))
+        .await
+        .unwrap();
+
+    assert_eq!(result.gm_tokens.len(), 1);
+    let tb = &result.gm_tokens[0];
+    // Canonical raw frame — a regression that copies uiAmount into balance
+    // would double-count the dividend multiplier downstream.
+    assert!((tb.balance - 2.5).abs() < 1e-9, "balance={}", tb.balance);
+    assert_eq!(tb.raw_amount, "2500000000");
+    // The wallet-displayed quantity is carried separately.
+    let ui = tb.ui_balance.expect("scaled ui balance must be preserved");
+    assert!((ui - 2.519302).abs() < 1e-9, "ui_balance={ui}");
+}
+
 #[tokio::test]
 async fn portfolio_handles_out_of_order_batch_responses() {
     let server = MockServer::start_async().await;
