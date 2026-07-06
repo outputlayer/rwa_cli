@@ -386,6 +386,7 @@ mod tests {
                     value_usd: 96.44,
                     gm_alloc_pct: 100.0,
                     change_pct_24h: 1.23,
+                    shares_per_token: None,
                 }],
                 value_usd: 96.44,
                 change_24h_usd: 1.17,

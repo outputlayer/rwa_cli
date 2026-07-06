@@ -88,6 +88,10 @@ pub struct PositionJson {
     pub gm_alloc_pct: f64,
     #[serde(serialize_with = "ser_f64_2")]
     pub change_pct_24h: f64,
+    /// Scaled-UI multiplier: underlying shares per raw token (dividend
+    /// reinvestment accrual). Absent when 1 or unknown.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub shares_per_token: Option<f64>,
 }
 
 #[derive(Serialize)]

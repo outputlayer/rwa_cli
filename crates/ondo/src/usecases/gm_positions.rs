@@ -14,6 +14,9 @@ pub struct PortfolioPosition {
     pub value_usd: f64,
     pub gm_alloc_pct: f64,
     pub change_pct_24h: f64,
+    /// Scaled-UI multiplier (wallet-displayed / raw) — how many underlying
+    /// shares one raw token represents. `None` when unknown or exactly 1.
+    pub shares_per_token: Option<f64>,
 }
 
 pub struct PortfolioUnavailable {
@@ -61,6 +64,11 @@ pub fn compute_portfolio(
         } else {
             value
         };
+        let shares_per_token = tb
+            .ui_balance
+            .filter(|_| tb.balance > 0.0)
+            .map(|ui| ui / tb.balance)
+            .filter(|m| (m - 1.0).abs() > 1e-9);
         value_usd += value;
         prev_value_usd += prev_value;
         positions.push(PortfolioPosition {
@@ -70,6 +78,7 @@ pub fn compute_portfolio(
             value_usd: value,
             gm_alloc_pct: 0.0,
             change_pct_24h: pct_24h,
+            shares_per_token,
         });
     }
 
@@ -190,12 +199,12 @@ mod tests {
         .expect("valid asset json")
     }
 
-    fn balance(symbol: &str, ui: f64, raw: &str) -> solana::SolanaTokenBalance {
+    fn balance(symbol: &str, amount: f64, raw: &str) -> solana::SolanaTokenBalance {
         solana::SolanaTokenBalance {
             symbol: symbol.to_string(),
             mint: Mint::from("So11111111111111111111111111111111111111112"),
-            balance: ui,
-            ui_balance: Some(ui),
+            balance: amount,
+            ui_balance: Some(amount),
             raw_amount: raw.to_string(),
         }
     }
@@ -247,5 +256,47 @@ mod tests {
         assert_eq!(skipped.len(), 2);
         assert!(skipped.iter().any(|s| s.token == "DUSTon" && s.reason.contains("minimum")));
         assert!(skipped.iter().any(|s| s.token == "GHOSTon" && s.reason.contains("market data")));
+    }
+
+    fn spy_asset() -> api::OndoAsset {
+        serde_json::from_value(serde_json::json!({
+            "symbol": "SPYon",
+            "assetName": "SPDR S&P 500 ETF",
+            "primaryMarket": { "price": "753.99" }
+        })).unwrap()
+    }
+
+    #[test]
+    fn portfolio_value_uses_raw_frame_not_scaled_ui() {
+        // 20.369073 raw tokens; wallet displays 20.526341 (multiplier 1.0077209).
+        let balances = vec![solana::SolanaTokenBalance {
+            symbol: "SPYon".into(),
+            mint: crate::types::Mint::from("k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
+            balance: 20.369073,
+            ui_balance: Some(20.526341),
+            raw_amount: "20369073000".into(),
+        }];
+        let summary = compute_portfolio(&balances, &[spy_asset()]);
+        let pos = &summary.positions[0];
+        // value = raw × per-raw-token price — the multiplier must NOT be double-counted.
+        assert!((pos.value_usd - 20.369073 * 753.99).abs() < 0.01, "value {}", pos.value_usd);
+        assert!((pos.shares_per_token.unwrap() - 1.0077209).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shares_per_token_absent_when_ui_unknown_or_one() {
+        let mut tb = solana::SolanaTokenBalance {
+            symbol: "SPYon".into(),
+            mint: crate::types::Mint::from("k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
+            balance: 1.0,
+            ui_balance: None,
+            raw_amount: "1000000000".into(),
+        };
+        let s = compute_portfolio(&std::slice::from_ref(&tb), &[spy_asset()]);
+        assert_eq!(s.positions[0].shares_per_token, None);
+        // multiplier == 1 → omitted (nothing interesting to show).
+        tb.ui_balance = Some(1.0);
+        let s = compute_portfolio(&[tb], &[spy_asset()]);
+        assert_eq!(s.positions[0].shares_per_token, None);
     }
 }

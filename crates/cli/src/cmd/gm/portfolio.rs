@@ -39,6 +39,7 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
             value_usd: p.value_usd,
             gm_alloc_pct: p.gm_alloc_pct,
             change_pct_24h: p.change_pct_24h,
+            shares_per_token: p.shares_per_token,
         })
         .collect();
     let unavailable: Vec<PortfolioUnavailableJson> = summary
