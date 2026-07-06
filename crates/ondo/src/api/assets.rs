@@ -19,6 +19,10 @@ pub struct OndoAsset {
     #[serde(default)]
     pub tags: Vec<OndoAssetTag>,
     pub primary_market: Option<PrimaryMarket>,
+    /// Ondo pauses trading around dividend events (ex-dividend windows; ETFs
+    /// can pause longer until the distribution amount is known).
+    #[serde(default)]
+    pub is_trading_paused: bool,
 }
 
 impl OndoAsset {
@@ -143,6 +147,15 @@ pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoA
     assets.iter().find(|a| a.symbol.to_uppercase() == lookup)
 }
 
+/// Whether Ondo currently pauses trading for `symbol` (case-insensitive).
+/// Unknown symbols are not paused.
+#[must_use]
+pub fn is_trading_paused(symbol: &str, assets: &[OndoAsset]) -> bool {
+    assets
+        .iter()
+        .any(|a| a.symbol.eq_ignore_ascii_case(symbol) && a.is_trading_paused)
+}
+
 /// Parse a price string from Ondo market data.
 pub fn parse_price(s: &str) -> Result<f64> {
     parse_market_number("price", s, false)
@@ -225,6 +238,7 @@ mod tests {
             asset_name: "Tesla".into(),
             tags: vec![],
             primary_market: None,
+            is_trading_paused: false,
         }];
         assert!(find_asset("TSLAon", &assets).is_some());
     }
@@ -236,6 +250,7 @@ mod tests {
             asset_name: "Tesla".into(),
             tags: vec![],
             primary_market: None,
+            is_trading_paused: false,
         }];
         assert!(find_asset("TSLA", &assets).is_some());
     }
@@ -247,6 +262,7 @@ mod tests {
             asset_name: "Tesla".into(),
             tags: vec![],
             primary_market: None,
+            is_trading_paused: false,
         }];
         assert!(find_asset("tsla", &assets).is_some());
     }
@@ -258,6 +274,7 @@ mod tests {
             asset_name: "Tesla".into(),
             tags: vec![],
             primary_market: None,
+            is_trading_paused: false,
         }];
         assert!(find_asset("AAPL", &assets).is_none());
     }
@@ -273,6 +290,7 @@ mod tests {
                 price_change_24h: Some("4.56".into()),
                 price_change_pct_24h: Some("1.20".into()),
             }),
+            is_trading_paused: false,
         };
 
         let (price, pct) = market_snapshot(&asset).unwrap();
@@ -291,6 +309,7 @@ mod tests {
                 price_change_24h: None,
                 price_change_pct_24h: Some("1.20".into()),
             }),
+            is_trading_paused: false,
         }];
 
         let err = market_snapshot_for_symbol("TSLA", &assets).unwrap_err();
@@ -315,6 +334,7 @@ mod tests {
                 },
             ],
             primary_market: None,
+            is_trading_paused: false,
         };
         assert_eq!(asset.sector(), Some("Technology"));
         assert_eq!(asset.instrument_type(), Some("Stock"));
@@ -327,8 +347,26 @@ mod tests {
             asset_name: "Tesla".into(),
             tags: vec![],
             primary_market: None,
+            is_trading_paused: false,
         };
         assert_eq!(asset.sector(), None);
         assert_eq!(asset.instrument_type(), None);
+    }
+
+    #[test]
+    fn is_trading_paused_parses_and_matches_case_insensitively() {
+        let asset: OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "SPYon",
+            "assetName": "SPDR S&P 500 ETF",
+            "isTradingPaused": true
+        })).unwrap();
+        assert!(asset.is_trading_paused);
+        assert!(is_trading_paused("spyON", &[asset]));
+        // Absent field defaults to false; unknown symbol is not paused.
+        let quiet: OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "TSLAon", "assetName": "Tesla"
+        })).unwrap();
+        assert!(!quiet.is_trading_paused);
+        assert!(!is_trading_paused("NVDAon", &[quiet]));
     }
 }

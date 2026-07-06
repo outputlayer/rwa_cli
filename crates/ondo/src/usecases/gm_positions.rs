@@ -165,6 +165,15 @@ pub fn filter_close_positions(
             }
         };
 
+        if api::is_trading_paused(&tb.symbol, assets) {
+            skipped.push(CloseSkip {
+                token: tb.symbol.clone(),
+                estimated_usd: est_value,
+                reason: "trading_paused",
+            });
+            continue;
+        }
+
         if let Some(skip) = should_skip_position(&tb.symbol, est_value, tradable_set) {
             skipped.push(skip);
             continue;
@@ -281,6 +290,27 @@ mod tests {
         // value = raw × per-raw-token price — the multiplier must NOT be double-counted.
         assert!((pos.value_usd - 20.369073 * 753.99).abs() < 0.01, "value {}", pos.value_usd);
         assert!((pos.shares_per_token.unwrap() - 1.0077209).abs() < 1e-6);
+    }
+
+    #[test]
+    fn filter_close_positions_skips_paused_tokens() {
+        let paused: api::OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "SPYon", "assetName": "SPDR S&P 500 ETF",
+            "isTradingPaused": true,
+            "primaryMarket": { "price": "753.99" }
+        })).unwrap();
+        let balances = vec![solana::SolanaTokenBalance {
+            symbol: "SPYon".into(),
+            mint: crate::types::Mint::from("k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
+            balance: 1.0,
+            ui_balance: None,
+            raw_amount: "1000000000".into(),
+        }];
+        let tradable: std::collections::HashSet<String> = ["SPYON".to_string()].into();
+        let (positions, skipped) = filter_close_positions(&balances, 100.0, &[paused], &tradable).unwrap();
+        assert!(positions.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].reason, "trading_paused");
     }
 
     #[test]

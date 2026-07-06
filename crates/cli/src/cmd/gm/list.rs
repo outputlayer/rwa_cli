@@ -142,6 +142,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
                 kind: Some(item.kind.clone()),
                 sector: item.sector.clone(),
                 tradable: true,
+                trading_paused: item.trading_paused,
             })
             .collect::<Vec<_>>()
     } else {
@@ -163,6 +164,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
                         kind: Some(item.kind.clone()),
                         sector: item.sector.clone(),
                         tradable: item.tradable,
+                        trading_paused: item.trading_paused,
                     },
                     None => TradableItemJson {
                         input: input.clone(),
@@ -172,6 +174,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
                         kind: None,
                         sector: None,
                         tradable: false,
+                        trading_paused: false,
                     },
                 },
                 Err(_) => TradableItemJson {
@@ -182,6 +185,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
                     kind: None,
                     sector: None,
                     tradable: false,
+                    trading_paused: false,
                 },
             })
             .collect::<Vec<_>>()
@@ -250,6 +254,7 @@ async fn fetch_list_context() -> Result<ListContext> {
                 .map(|a| a.tag_labels().collect::<Vec<_>>().join(" ").to_lowercase())
                 .unwrap_or_default();
             let tradable = tradable_set.contains(&t.symbol.to_uppercase());
+            let trading_paused = asset.is_some_and(|a| a.is_trading_paused);
             ListItemJson {
                 symbol: t.symbol.to_string(),
                 name,
@@ -258,6 +263,7 @@ async fn fetch_list_context() -> Result<ListContext> {
                 asset_class,
                 region,
                 tradable,
+                trading_paused,
                 all_tags,
             }
         })
@@ -376,6 +382,7 @@ mod tests {
             asset_class: Some("Equities".to_string()),
             region: Some("US".to_string()),
             tradable: true,
+            trading_paused: false,
             all_tags: "industrials equities us large cap value".to_string(),
         }
     }

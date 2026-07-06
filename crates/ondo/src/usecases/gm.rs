@@ -32,6 +32,8 @@ pub enum GmTradeErrorKind {
     NoPosition,
     /// `--limit-price` condition not met by the quoted implied price.
     ConditionNotMet,
+    /// Ondo has paused trading for this asset (typically an ex-dividend window).
+    TradingPaused,
 }
 
 #[derive(Debug)]
@@ -68,6 +70,7 @@ impl GmTradeErrorKind {
             Self::InsufficientFunds => "insufficient_funds",
             Self::NoPosition => "no_position",
             Self::ConditionNotMet => "condition_not_met",
+            Self::TradingPaused => "trading_paused",
         }
     }
 }
@@ -596,9 +599,15 @@ mod tests {
         for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout"] {
             assert!(is_transient_kind(k), "{k} must be transient");
         }
-        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met"] {
+        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused"] {
             assert!(!is_transient_kind(k), "{k} must be permanent");
         }
+    }
+
+    #[test]
+    fn trading_paused_label_and_not_transient() {
+        assert_eq!(GmTradeErrorKind::TradingPaused.to_string(), "trading_paused");
+        assert!(!is_transient_kind("trading_paused"));
     }
 
     #[test]

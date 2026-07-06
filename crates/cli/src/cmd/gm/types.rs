@@ -165,6 +165,10 @@ pub struct ListItemJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     pub tradable: bool,
+    /// Ondo has paused trading for this asset (dividend window). Only
+    /// serialized when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trading_paused: bool,
     /// Lowercased haystack of every Ondo tag label (sector, asset class,
     /// region, factor/risk) — used by `--tag`/`--search`, not serialized.
     #[serde(skip)]
@@ -191,6 +195,10 @@ pub struct TradableItemJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sector: Option<String>,
     pub tradable: bool,
+    /// Ondo has paused trading for this asset (dividend window). Only
+    /// serialized when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trading_paused: bool,
 }
 
 #[derive(Serialize)]

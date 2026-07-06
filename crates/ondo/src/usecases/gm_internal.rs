@@ -107,6 +107,24 @@ pub(crate) async fn get_order_checked(
 /// market-closed block anymore — a token that can't trade off-hours gets a
 /// typed `market_closed`, everything else follows the per-session limits.
 pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
+    // Ondo pauses individual assets around dividend events. Fail open on
+    // fetch errors (mirrors the session-limits behavior below); the assets
+    // response is disk-cached for 60s, so this is usually a free lookup.
+    match api::fetch_assets().await {
+        Ok(assets) => {
+            if api::is_trading_paused(symbol, &assets) {
+                return Err(GmTradeError::new(
+                    GmTradeErrorKind::TradingPaused,
+                    format!(
+                        "{symbol} trading is paused by Ondo (typically an ex-dividend window; ETFs can pause longer until the distribution is known). Retry later — run `rwa gm tradable {symbol}` to re-check."
+                    ),
+                )
+                .into());
+            }
+        }
+        Err(e) => eprintln!("Warning: assets check unavailable ({e}); skipping trading-paused check for {symbol}."),
+    }
+
     let session = api::current_session();
     let off_hours = session == api::Session::Closed;
     let limits = match api::fetch_session_limits(api_url).await {
