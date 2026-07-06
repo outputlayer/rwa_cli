@@ -302,8 +302,11 @@ fn order_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis((800u64 * 2u64.pow(attempt)).min(3200))
 }
 
-/// Total quote-fetch retry budget (~20s per command): the FIRST attempt of
-/// any backend is always allowed; retries stop once the budget is spent.
+/// Retry budget for ONE multi-backend quote-fetch pass (~20s): the FIRST
+/// attempt of any backend is always allowed; retries stop once spent.
+/// Outer loops (slippage refresh, route-unfillable requote) deliberately get
+/// a fresh budget each — they exist for fill reliability, and the stderr
+/// heartbeat keeps their total duration visible.
 const ORDER_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 fn within_retry_budget(started: std::time::Instant, attempt: u32) -> bool {
     attempt == 0 || started.elapsed() < ORDER_RETRY_BUDGET
