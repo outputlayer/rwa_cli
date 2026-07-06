@@ -70,6 +70,9 @@ pub struct TradeJson {
     /// one. The Metis fallback path always fills both fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub router: Option<String>,
+    /// Echo of `--limit-price` as entered; absent when the flag was not used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_price: Option<String>,
 }
 
 #[derive(Serialize)]

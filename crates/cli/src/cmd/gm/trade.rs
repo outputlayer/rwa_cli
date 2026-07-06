@@ -1,7 +1,20 @@
-use eyre::Result;
+use eyre::{Result, WrapErr, eyre};
 use rwa_ondo::{amounts, jupiter, types::Symbol, usecases};
 
 use super::*;
+
+/// Parse `--limit-price` into raw 10^-6 USDC-per-token units. Reuses the
+/// strict amount parser: >6 decimal places are rejected, never rounded.
+fn parse_limit_price(raw: Option<&str>) -> Result<Option<u128>> {
+    let Some(raw) = raw else { return Ok(None) };
+    let raw6 = amounts::token_to_raw(raw, jupiter::USDC_DECIMALS)
+        .wrap_err("invalid --limit-price")?;
+    let v: u128 = raw6.parse().wrap_err("invalid --limit-price")?;
+    if v == 0 {
+        return Err(eyre!("--limit-price must be greater than 0"));
+    }
+    Ok(Some(v))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn buy(
@@ -14,8 +27,10 @@ pub async fn buy(
     slippage: Option<u32>,
     quote_only: bool,
     max_bps: Option<u32>,
+    limit_price: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let limit_price_raw6 = parse_limit_price(limit_price)?;
     // `--quote-only` previews any size by skipping the funds pre-flight; it still
     // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
     // Implemented for buy only — sell amounts derive from on-chain holdings.
@@ -32,7 +47,7 @@ pub async fn buy(
         auto_gas(&w, rpc_url, yes, json, reserved).await?
     };
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, None).await?;
+    let plan = usecases::gm::prepare_buy(&w, &symbol, amount, rpc_url, slippage, json, quote_only, max_bps, balances, limit_price_raw6).await?;
 
     if !json {
         println!(
@@ -58,6 +73,7 @@ pub async fn buy(
                 fee_bps: plan.order.fee_bps,
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
+                limit_price: limit_price.map(str::to_string),
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
@@ -74,6 +90,9 @@ pub async fn buy(
         }
         if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
             println!("  Est. all-in:  ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
+        }
+        if let Some(lp) = limit_price {
+            println!("  Limit price:  <= {lp} USDC/token (condition met)");
         }
         return Ok(());
     }
@@ -103,6 +122,7 @@ pub async fn buy(
             fee_bps: plan.order.fee_bps,
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
+            limit_price: limit_price.map(str::to_string),
         });
     }
 
@@ -126,11 +146,13 @@ pub async fn sell(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
+    limit_price: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let limit_price_raw6 = parse_limit_price(limit_price)?;
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
-    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, None).await?;
+    let plan = usecases::gm::prepare_sell(&w, &symbol, amount, rpc_url, slippage, json, max_bps, limit_price_raw6).await?;
 
     if !json {
         println!(
@@ -156,6 +178,7 @@ pub async fn sell(
                 fee_bps: plan.order.fee_bps,
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
+                limit_price: limit_price.map(str::to_string),
             });
         }
         println!("\n[DRY RUN] Trade not executed.");
@@ -171,6 +194,9 @@ pub async fn sell(
         }
         if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
             println!("  Est. all-in:   ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
+        }
+        if let Some(lp) = limit_price {
+            println!("  Limit price:   >= {lp} USDC/token (condition met)");
         }
         return Ok(());
     }
@@ -200,6 +226,7 @@ pub async fn sell(
             fee_bps: plan.order.fee_bps,
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
+            limit_price: limit_price.map(str::to_string),
         });
     }
 
@@ -211,4 +238,23 @@ pub async fn sell(
     }
     println!("  Tx:        {}", solscan_tx_url(&result.signature));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_limit_price;
+
+    #[test]
+    fn limit_price_parsing() {
+        assert_eq!(parse_limit_price(None).unwrap(), None);
+        assert_eq!(parse_limit_price(Some("400")).unwrap(), Some(400_000_000));
+        assert_eq!(parse_limit_price(Some("400.50")).unwrap(), Some(400_500_000));
+        // Smallest representable price: 10^-6 USDC per token.
+        assert_eq!(parse_limit_price(Some("0.000001")).unwrap(), Some(1));
+        // Zero, negatives, 7+ decimals, and garbage are rejected — never rounded.
+        assert!(parse_limit_price(Some("0")).is_err());
+        assert!(parse_limit_price(Some("-5")).is_err());
+        assert!(parse_limit_price(Some("400.1234567")).is_err());
+        assert!(parse_limit_price(Some("abc")).is_err());
+    }
 }

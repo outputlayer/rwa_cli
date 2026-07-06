@@ -66,6 +66,10 @@ pub enum GmAction {
         /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
         #[arg(long)]
         max_bps: Option<u32>,
+        /// Execute only if the quoted price (USDC per token) is at or better
+        /// than this limit (buy: <=). Otherwise fails with condition_not_met.
+        #[arg(long, conflicts_with = "quote_only")]
+        limit_price: Option<String>,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -86,6 +90,10 @@ pub enum GmAction {
         /// Reject the trade if quoted all-in cost (spread + fee) exceeds this many bps. Overrides RWA_MAX_BPS.
         #[arg(long)]
         max_bps: Option<u32>,
+        /// Execute only if the quoted price (USDC per token) is at or better
+        /// than this limit (sell: >=). Otherwise fails with condition_not_met.
+        #[arg(long)]
+        limit_price: Option<String>,
     },
 
     /// Portfolio positions and 24h change (Solana); for entry prices/P&L use `pnl`
@@ -242,7 +250,7 @@ pub enum GmAction {
 pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
-        GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps } => {
+        GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps, limit_price } => {
             let max_bps = effective_max_bps(max_bps);
             trade::buy(
                 &symbol,
@@ -254,13 +262,14 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
                 Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
                 quote_only,
                 max_bps,
+                limit_price.as_deref(),
                 selected,
             )
             .await
         }
-        GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps } => {
+        GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps, limit_price } => {
             let max_bps = effective_max_bps(max_bps);
-            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps, selected).await
+            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps, limit_price.as_deref(), selected).await
         }
         GmAction::Portfolio { wallet } => {
             portfolio::portfolio(wallet.as_deref(), json, rpc_url, selected).await
@@ -323,6 +332,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
 mod tests {
     use super::*;
     use serde_json::Value;
+    use clap::Parser;
 
     #[test]
     fn parse_max_bps_env_reads_valid_u32_only() {
@@ -334,7 +344,6 @@ mod tests {
 
     #[test]
     fn quote_only_conflicts_with_yes_at_parse_time() {
-        use clap::Parser;
         let res = crate::Cli::try_parse_from([
             "rwa", "gm", "buy", "TSLA", "100", "--quote-only", "--yes",
         ]);
@@ -343,7 +352,6 @@ mod tests {
 
     #[test]
     fn basket_and_close_all_accept_slippage_and_max_bps() {
-        use clap::Parser;
         for cmd in [
             ["rwa", "gm", "close-all", "--slippage", "50", "--max-bps", "30"].as_slice(),
             ["rwa", "gm", "buy-basket", "AAPL", "10", "--slippage", "50", "--max-bps", "30"].as_slice(),
@@ -356,7 +364,6 @@ mod tests {
 
     #[test]
     fn quote_only_alone_parses() {
-        use clap::Parser;
         let res = crate::Cli::try_parse_from([
             "rwa", "gm", "buy", "TSLA", "100", "--quote-only",
         ]);
@@ -466,6 +473,7 @@ mod tests {
             fee_bps: Some(5),
             gasless: Some(false),
             router: Some("jupiterz".into()),
+            limit_price: None,
         })
         .unwrap();
 
@@ -559,7 +567,6 @@ mod tests {
 
     #[test]
     fn global_wallet_flag_parses_before_and_after_subcommand() {
-        use clap::Parser;
         let a = crate::Cli::try_parse_from(["rwa", "--wallet", "cold", "gm", "list"]);
         assert!(a.is_ok(), "global --wallet before subcommand: {:?}", a.err());
         let b = crate::Cli::try_parse_from(["rwa", "gm", "portfolio", "--wallet", "cold"]);
@@ -567,6 +574,22 @@ mod tests {
         // positional portfolio address still works and is distinct from --wallet
         let c = crate::Cli::try_parse_from(["rwa", "gm", "portfolio", "SomeAddress"]);
         assert!(c.is_ok(), "positional wallet address: {:?}", c.err());
+    }
+
+    #[test]
+    fn limit_price_parses_and_conflicts_with_quote_only() {
+        let ok = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--limit-price", "400.50", "-y",
+        ]);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let ok = crate::Cli::try_parse_from([
+            "rwa", "gm", "sell", "TSLA", "all", "--limit-price", "450",
+        ]);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let conflict = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--limit-price", "400", "--quote-only",
+        ]);
+        assert!(conflict.is_err(), "--limit-price must conflict with --quote-only");
     }
 
     #[test]
