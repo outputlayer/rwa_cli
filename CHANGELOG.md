@@ -9,6 +9,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.1] - 2026-07-06
+
+### Added
+- `gm hours` surfaces the full availability picture: optional `paused_count`, `offhours_tradable_count`, and (with `--tradable`) the `offhours_tradable` flagship list in JSON; human output gains a `24/7 (offhours): N flagship tokens; paused now: M` line. 24/7 trading applies to flagship tokens only (6 of 440 today).
+
 ## [0.6.0] — 2026-07-06 — confirmation_required, ledger integrity, install/quote hardening
 
 ### Breaking
