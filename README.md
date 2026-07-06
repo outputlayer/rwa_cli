@@ -52,7 +52,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
 - **Conditional orders.** `--limit-price <P>` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; append `share` (`--limit-price 748share`) to gate per underlying share instead (bare number or explicit `token` suffix both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
-- **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC.
+- **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC. Token sell amounts are raw; for dividend-accruing tokens wallets display slightly more (shares_per_token multiplier) — if an exact sell overshoots, the error shows both raw and wallet-displayed numbers; prefer `all`/`50%`.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.

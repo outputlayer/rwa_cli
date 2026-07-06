@@ -45,7 +45,7 @@ cargo install --path bin/rwa
 ## Product conventions
 
 - Both `TSLA` and `TSLAon` are accepted token symbols
-- Amounts can be exact (`100`), percentage (`50%`), or `all`
+- Amounts can be exact (`100`), percentage (`50%`), or `all`; sell amounts are in RAW tokens — for dividend-accruing tokens wallets display raw × multiplier (shares_per_token), so "sell the number Phantom shows" can exceed the raw balance — the error then names both values; use `all`/`NN%` to avoid the mismatch
 - Inputs with too many decimal places must be rejected, not silently rounded
 - Minimum buy amount is 5 USDC — enforced for single `buy` and per item in `buy-basket`
 - `send` and `sell` are different actions
