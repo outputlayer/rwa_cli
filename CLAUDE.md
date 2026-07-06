@@ -52,7 +52,7 @@ cargo install --path bin/rwa
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape
 - `--max-bps <N>` (buy/sell/baskets/close-all) rejects trades whose quoted all-in cost (spread + fee) exceeds N bps; `RWA_MAX_BPS` is the env default; surfaced as `cost_too_high` (per-item `failed[]` entries in multi-trade commands)
-- `--limit-price <P>` (buy/sell only) makes the trade conditional: the quote's implied price (USDC per token) must be ≤ P for buy / ≥ P for sell (equality passes), else the command fails with `condition_not_met` (exit 1, not transient) — in `--dry-run` too. The gated quote is the one executed; worst-case fill = limit ± slippage tolerance. Price is per RAW token by default; append `share` (`--limit-price 748share`) to compare per underlying share via the mint's scaled-UI multiplier (the raw threshold then floats with dividend accrual — intended; requires the multiplier: RPC failure fails closed with exit 75). `token` suffix accepted for explicitness. On success/dry-run the JSON echoes the value as `limit_price`. Conflicts with `--quote-only`. Canonical synthetic limit order: run it from cron/a script every N minutes until it fills (exit 0), e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`; DCA is plain scheduled `buy -y`; stop-loss is an external reference-price check + market `sell -y` (price guarantee is not wanted there). Note: on a low-SOL wallet a real `-y` run may auto-refuel gas (USDC→SOL) before the condition check — bounded, and disabled by `RWA_NO_AUTO_GAS=1`
+- `--limit-price <P> [share|token]` (buy/sell only) makes the trade conditional: the quote's implied price (USDC per token) must be ≤ P for buy / ≥ P for sell (equality passes), else the command fails with `condition_not_met` (exit 1, not transient) — in `--dry-run` too. The gated quote is the one executed; worst-case fill = limit ± slippage tolerance. Price is per RAW token by default; canonical form gives the unit as a space-separated second word (`--limit-price 748 share`) to compare per underlying share via the mint's scaled-UI multiplier (the raw threshold then floats with dividend accrual — intended; requires the multiplier: RPC failure fails closed with exit 75); joined forms (`--limit-price 748share`) still work. `token` (bare = token) accepted for explicitness. On success/dry-run the JSON echoes the value as `limit_price` (space-joined when given as two words). Conflicts with `--quote-only`. Canonical synthetic limit order: run it from cron/a script every N minutes until it fills (exit 0), e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`; DCA is plain scheduled `buy -y`; stop-loss is an external reference-price check + market `sell -y` (price guarantee is not wanted there). Note: on a low-SOL wallet a real `-y` run may auto-refuel gas (USDC→SOL) before the condition check — bounded, and disabled by `RWA_NO_AUTO_GAS=1`
 - `--slippage <BPS>` is accepted by buy/sell and all multi-trade commands (baskets, close-all)
 - `close-all` is the canonical path for selling many positions
 - `portfolio` uses nested JSON: `cash.*` plus `gm_positions.*`
@@ -74,8 +74,8 @@ rwa gm buy <SYM> <AMT> --dry-run
 rwa gm buy <SYM> <AMT> -y
 rwa gm buy <SYM> <AMT> -y --slippage 50
 rwa gm buy <SYM> <AMT> --quote-only
-rwa gm buy <SYM> <AMT> --limit-price <P> -y     # execute only if quoted price <= P (USDC/token)
-rwa gm sell <SYM> <AMT> --limit-price <P> -y    # execute only if quoted price >= P
+rwa gm buy <SYM> <AMT> --limit-price <P> -y           # execute only if quoted price <= P (USDC/token)
+rwa gm sell <SYM> <AMT> --limit-price <P> share -y    # execute only if quoted price >= P (USDC/share)
 rwa gm sell <SYM> <AMT> --dry-run
 rwa gm sell <SYM> <AMT> -y
 rwa gm close-all --dry-run

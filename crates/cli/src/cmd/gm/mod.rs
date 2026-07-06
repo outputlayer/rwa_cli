@@ -67,11 +67,12 @@ pub enum GmAction {
         #[arg(long)]
         max_bps: Option<u32>,
         /// Execute only if the quoted price is at or better than this limit
-        /// (buy: <=, sell: >=). Price is USDC per raw token by default; append
-        /// `share` (e.g. 748share) to compare per underlying share instead.
-        /// Otherwise fails with condition_not_met.
-        #[arg(long, conflicts_with = "quote_only")]
-        limit_price: Option<String>,
+        /// (buy: <=, sell: >=). Price is USDC per raw token by default; give
+        /// the unit as a second word (e.g. `--limit-price 748 share`) to
+        /// compare per underlying share instead; joined forms (`748share`)
+        /// still work. Otherwise fails with condition_not_met.
+        #[arg(long, num_args = 1..=2, value_name = "PRICE [share|token]", conflicts_with = "quote_only")]
+        limit_price: Option<Vec<String>>,
     },
 
     /// Sell GM token for USDC via Jupiter (Solana)
@@ -93,11 +94,12 @@ pub enum GmAction {
         #[arg(long)]
         max_bps: Option<u32>,
         /// Execute only if the quoted price is at or better than this limit
-        /// (buy: <=, sell: >=). Price is USDC per raw token by default; append
-        /// `share` (e.g. 748share) to compare per underlying share instead.
-        /// Otherwise fails with condition_not_met.
-        #[arg(long)]
-        limit_price: Option<String>,
+        /// (buy: <=, sell: >=). Price is USDC per raw token by default; give
+        /// the unit as a second word (e.g. `--limit-price 748 share`) to
+        /// compare per underlying share instead; joined forms (`748share`)
+        /// still work. Otherwise fails with condition_not_met.
+        #[arg(long, num_args = 1..=2, value_name = "PRICE [share|token]")]
+        limit_price: Option<Vec<String>>,
     },
 
     /// Portfolio positions and 24h change (Solana); for entry prices/P&L use `pnl`
@@ -597,6 +599,37 @@ mod tests {
             "rwa", "gm", "buy", "TSLA", "100", "--limit-price", "400", "--quote-only",
         ]);
         assert!(conflict.is_err(), "--limit-price must conflict with --quote-only");
+    }
+
+    #[test]
+    fn limit_price_accepts_space_separated_unit_value() {
+        let ok = crate::Cli::try_parse_from([
+            "rwa", "gm", "buy", "TSLA", "100", "--limit-price", "748", "share", "-y",
+        ]);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let ok = crate::Cli::try_parse_from([
+            "rwa", "gm", "sell", "TSLA", "all", "--limit-price", "748", "-y",
+        ]);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    /// Danger-order guard: clap's multi-value option (`num_args = 1..=2`)
+    /// greedily consumes up to two following tokens. If `--limit-price` is
+    /// placed before the AMOUNT positional, it swallows both "748" and the
+    /// amount itself, leaving nothing for the required AMOUNT arg — this
+    /// MUST fail to parse rather than silently misinterpreting the amount
+    /// as part of the limit price.
+    #[test]
+    fn limit_price_before_amount_fails_to_parse() {
+        let err = crate::Cli::try_parse_from([
+            "rwa", "gm", "sell", "TSLA", "--limit-price", "748", "all",
+        ]);
+        assert!(err.is_err(), "--limit-price before AMOUNT must fail (missing AMOUNT), got {err:?}");
+
+        let err = crate::Cli::try_parse_from([
+            "rwa", "gm", "sell", "TSLA", "--limit-price", "748", "50%",
+        ]);
+        assert!(err.is_err(), "--limit-price before AMOUNT must fail (missing AMOUNT), got {err:?}");
     }
 
     #[test]

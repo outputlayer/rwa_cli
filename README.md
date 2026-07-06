@@ -30,7 +30,7 @@ rwa gm portfolio                 # 5. See your holdings
 |---------|-------------|
 | `rwa gm buy <SYM> <AMT> [-y]` | Buy with USDC (min 5 USDC) |
 | `rwa gm sell <SYM> <AMT> [-y]` | Sell for USDC (exact, `50%`, or `all`) |
-| `rwa gm buy/sell ... --limit-price <P>` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell); append `share`/`token` (bare = token) |
+| `rwa gm buy/sell ... --limit-price <P> [share\|token]` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell); e.g. `--limit-price 748 share` (bare = token) |
 | `rwa gm close-all [<PCT>] [-y]` | Sell every position (or a % of each) |
 | `rwa gm buy-basket <SYM AMT ...> [-y]` | Buy multiple tokens at once |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
@@ -51,7 +51,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 ## Things to know
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
-- **Conditional orders.** `--limit-price <P>` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; append `share` (`--limit-price 748share`) to gate per underlying share instead (bare number or explicit `token` suffix both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
+- **Conditional orders.** `--limit-price <P> [share|token]` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; canonical form is a space-separated unit (`--limit-price 748 share`) to gate per underlying share instead; joined forms (`--limit-price 748share`) still work (bare number or explicit `token` both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC. Token sell amounts are raw; for dividend-accruing tokens wallets display slightly more (shares_per_token multiplier) — if an exact sell overshoots, the error shows both raw and wallet-displayed numbers; prefer `all`/`50%`.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.

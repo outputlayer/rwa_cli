@@ -4,30 +4,115 @@ use rwa_ondo::usecases::gm::LimitFrame;
 
 use super::*;
 
-/// Parse `--limit-price` into (raw 10^-6 units, frame). Optional joined
-/// case-insensitive suffix picks the frame: `748share`, `753token`; bare
-/// number = token (backward compatible). Number rules unchanged: strict
-/// decimal parse, >6 decimal places rejected, must be > 0.
-fn parse_limit_price(raw: Option<&str>) -> Result<Option<(u128, LimitFrame)>> {
+/// Parse `--limit-price` into (raw 10^-6 units, frame). Accepts, case-
+/// insensitively:
+/// - two values in either order: `748 share`, `share 748`, `748 token`
+/// - one value with the unit joined directly or by a single ` `/`:`/`-`/`_`
+///   separator: `748share`, `748:share`, `748-share`, `748_share`,
+///   `share:748`, `share748`, or `"748 share"` passed as one shell arg
+/// - a bare number: `748` (defaults to Token — backward compatible)
+///
+/// Number rules unchanged: strict decimal parse, >6 decimal places rejected,
+/// must be > 0.
+fn parse_limit_price(raw: Option<&[String]>) -> Result<Option<(u128, LimitFrame)>> {
     let Some(raw) = raw else { return Ok(None) };
-    let lower = raw.to_ascii_lowercase();
-    let (number, frame) = if let Some(n) = lower.strip_suffix("share") {
-        (n, LimitFrame::Share)
-    } else if let Some(n) = lower.strip_suffix("token") {
-        (n, LimitFrame::Token)
-    } else {
-        (lower.as_str(), LimitFrame::Token)
+    let (number, frame) = match raw {
+        [one] => split_single_limit_price(one)?,
+        [a, b] => split_two_value_limit_price(a, b)?,
+        _ => {
+            return Err(eyre!(
+                "invalid --limit-price: expected a number and an optional unit (share/token)"
+            ));
+        }
     };
     if number.is_empty() {
-        return Err(eyre!("invalid --limit-price: missing number before the unit suffix"));
+        return Err(eyre!("invalid --limit-price: missing number"));
     }
-    let raw6 = amounts::token_to_raw(number, jupiter::USDC_DECIMALS)
+    let raw6 = amounts::token_to_raw(&number, jupiter::USDC_DECIMALS)
         .wrap_err("invalid --limit-price")?;
     let v: u128 = raw6.parse().wrap_err("invalid --limit-price")?;
     if v == 0 {
         return Err(eyre!("--limit-price must be greater than 0"));
     }
     Ok(Some((v, frame)))
+}
+
+/// Case-insensitive exact match on the unit words only — anything else
+/// (e.g. `shares`) is not a unit and falls through to the "unknown unit"
+/// teaching error rather than being silently accepted.
+fn unit_word(s: &str) -> Option<LimitFrame> {
+    match s.to_ascii_lowercase().as_str() {
+        "share" => Some(LimitFrame::Share),
+        "token" => Some(LimitFrame::Token),
+        _ => None,
+    }
+}
+
+/// Digits and at most one decimal point, and at least one digit — just
+/// enough to distinguish "this looks like the number operand" from "this
+/// looks like an attempted (possibly misspelled) unit".
+fn looks_numeric(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().any(|c| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+fn split_two_value_limit_price(a: &str, b: &str) -> Result<(String, LimitFrame)> {
+    match (unit_word(a), unit_word(b)) {
+        (Some(_), Some(_)) => Err(eyre!(
+            "invalid --limit-price: expected one number and one unit, got two units \"{a}\" and \"{b}\""
+        )),
+        (Some(frame), None) => Ok((b.to_string(), frame)),
+        (None, Some(frame)) => Ok((a.to_string(), frame)),
+        (None, None) => match (looks_numeric(a), looks_numeric(b)) {
+            (true, true) => Err(eyre!(
+                "invalid --limit-price: expected one number and one unit, got two numbers \"{a}\" and \"{b}\""
+            )),
+            (true, false) => Err(eyre!(
+                "invalid --limit-price: unknown unit \"{b}\" — use share or token (e.g. --limit-price 748 share)"
+            )),
+            (false, true) => Err(eyre!(
+                "invalid --limit-price: unknown unit \"{a}\" — use share or token (e.g. --limit-price 748 share)"
+            )),
+            (false, false) => Err(eyre!(
+                "invalid --limit-price: expected a number and a unit (share/token), got \"{a}\" and \"{b}\""
+            )),
+        },
+    }
+}
+
+/// A single joined value. The unit must appear at the very start or end of
+/// the (lowercased) string, optionally set off by one separator char from
+/// ` :-_` — this also covers a value containing a literal space when passed
+/// as one shell arg (e.g. `"748 share"`).
+fn split_single_limit_price(input: &str) -> Result<(String, LimitFrame)> {
+    let lower = input.to_ascii_lowercase();
+    const SEPS: [char; 4] = [' ', ':', '-', '_'];
+    const WORDS: [(&str, LimitFrame); 2] = [("share", LimitFrame::Share), ("token", LimitFrame::Token)];
+
+    for (word, frame) in WORDS {
+        if let Some(prefix) = lower.strip_suffix(word)
+            && let Some(last) = prefix.chars().last()
+        {
+            let number = if SEPS.contains(&last) { &prefix[..prefix.len() - 1] } else { prefix };
+            if !number.is_empty() {
+                return Ok((number.to_string(), frame));
+            }
+        }
+    }
+    for (word, frame) in WORDS {
+        if let Some(rest) = lower.strip_prefix(word)
+            && let Some(first) = rest.chars().next()
+        {
+            let number = if SEPS.contains(&first) { &rest[1..] } else { rest };
+            if !number.is_empty() {
+                return Ok((number.to_string(), frame));
+            }
+        }
+    }
+    // No recognized unit found; treat the whole value as the number (bare
+    // input, or garbage that `token_to_raw` will reject with a clear error).
+    Ok((lower, LimitFrame::Token))
 }
 
 /// (share_price, shares_per_token) for display — only when the multiplier is
@@ -45,16 +130,23 @@ fn share_view(multiplier: Option<f64>, token_amount: &str, usdc_amount: &str) ->
     (Some(usdc / tokens / m), Some(m))
 }
 
-/// Split a --limit-price input into (number, unit label) for display.
-fn limit_display(raw: &str) -> (String, &'static str) {
-    let lower = raw.to_ascii_lowercase();
-    if let Some(n) = lower.strip_suffix("share") {
-        (n.to_string(), "USDC/share")
-    } else if let Some(n) = lower.strip_suffix("token") {
-        (n.to_string(), "USDC/token")
-    } else {
-        (lower, "USDC/token")
-    }
+/// Render the already-parsed limit (raw 10^-6 units + frame) as a display
+/// number and unit label — independent of which input form the user typed.
+fn limit_display(parsed: (u128, LimitFrame)) -> (String, &'static str) {
+    let (raw, frame) = parsed;
+    let number = amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS);
+    let unit = match frame {
+        LimitFrame::Share => "USDC/share",
+        LimitFrame::Token => "USDC/token",
+    };
+    (number, unit)
+}
+
+/// JSON echo of `--limit-price` as one canonical string: two-value input
+/// joins with a single space (`748 share`); single-value input echoes
+/// exactly as entered.
+fn limit_price_echo(raw: Option<&[String]>) -> Option<String> {
+    raw.map(|v| v.join(" "))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -68,7 +160,7 @@ pub async fn buy(
     slippage: Option<u32>,
     quote_only: bool,
     max_bps: Option<u32>,
-    limit_price: Option<&str>,
+    limit_price: Option<&[String]>,
     selected: Option<&str>,
 ) -> Result<()> {
     let limit_price_parsed = parse_limit_price(limit_price)?;
@@ -115,7 +207,7 @@ pub async fn buy(
                 fee_bps: plan.order.fee_bps,
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
-                limit_price: limit_price.map(str::to_string),
+                limit_price: limit_price_echo(limit_price),
                 share_price,
                 shares_per_token,
             });
@@ -135,9 +227,9 @@ pub async fn buy(
         if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
             println!("  Est. all-in:  ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
         }
-        if let Some(lp) = limit_price {
+        if let Some(parsed) = limit_price_parsed {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
-            let (num, unit) = limit_display(lp);
+            let (num, unit) = limit_display(parsed);
             println!("  Limit price:  <= {num} {unit} (condition met)");
         }
         if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
@@ -171,7 +263,7 @@ pub async fn buy(
             fee_bps: plan.order.fee_bps,
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
-            limit_price: limit_price.map(str::to_string),
+            limit_price: limit_price_echo(limit_price),
             share_price,
             shares_per_token,
         });
@@ -197,7 +289,7 @@ pub async fn sell(
     rpc_url: Option<&str>,
     slippage: Option<u32>,
     max_bps: Option<u32>,
-    limit_price: Option<&str>,
+    limit_price: Option<&[String]>,
     selected: Option<&str>,
 ) -> Result<()> {
     let limit_price_parsed = parse_limit_price(limit_price)?;
@@ -230,7 +322,7 @@ pub async fn sell(
                 fee_bps: plan.order.fee_bps,
                 gasless: plan.order.gasless,
                 router: plan.order.router.clone(),
-                limit_price: limit_price.map(str::to_string),
+                limit_price: limit_price_echo(limit_price),
                 share_price,
                 shares_per_token,
             });
@@ -249,9 +341,9 @@ pub async fn sell(
         if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
             println!("  Est. all-in:   ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
         }
-        if let Some(lp) = limit_price {
+        if let Some(parsed) = limit_price_parsed {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
-            let (num, unit) = limit_display(lp);
+            let (num, unit) = limit_display(parsed);
             println!("  Limit price:   >= {num} {unit} (condition met)");
         }
         if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
@@ -285,7 +377,7 @@ pub async fn sell(
             fee_bps: plan.order.fee_bps,
             gasless: plan.order.gasless,
             router: plan.order.router.clone(),
-            limit_price: limit_price.map(str::to_string),
+            limit_price: limit_price_echo(limit_price),
             share_price,
             shares_per_token,
         });
@@ -303,35 +395,77 @@ pub async fn sell(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_limit_price, limit_display, share_view};
+    use super::{limit_display, limit_price_echo, parse_limit_price, share_view};
+
+    /// Build a `Vec<String>` from string literals for `parse_limit_price`.
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
 
     #[test]
-    fn limit_price_parsing() {
+    fn limit_price_parsing_bare_and_joined_single_value() {
         use rwa_ondo::usecases::gm::LimitFrame::{Share, Token};
         assert_eq!(parse_limit_price(None).unwrap(), None);
-        assert_eq!(parse_limit_price(Some("400")).unwrap(), Some((400_000_000, Token)));
-        assert_eq!(parse_limit_price(Some("400.50")).unwrap(), Some((400_500_000, Token)));
-        assert_eq!(parse_limit_price(Some("748share")).unwrap(), Some((748_000_000, Share)));
-        assert_eq!(parse_limit_price(Some("748SHARE")).unwrap(), Some((748_000_000, Share)));
-        assert_eq!(parse_limit_price(Some("753token")).unwrap(), Some((753_000_000, Token)));
-        assert_eq!(parse_limit_price(Some("0.000001")).unwrap(), Some((1, Token)));
-        // Rejections: zero, negative, 7+ decimals, garbage, suffix without number.
-        assert!(parse_limit_price(Some("0")).is_err());
-        assert!(parse_limit_price(Some("0share")).is_err());
-        assert!(parse_limit_price(Some("-5")).is_err());
-        assert!(parse_limit_price(Some("400.1234567")).is_err());
-        assert!(parse_limit_price(Some("abc")).is_err());
-        assert!(parse_limit_price(Some("share")).is_err());
-        assert!(parse_limit_price(Some("400shares")).is_err());
+        assert_eq!(parse_limit_price(Some(&v(&["400"]))).unwrap(), Some((400_000_000, Token)));
+        assert_eq!(parse_limit_price(Some(&v(&["400.50"]))).unwrap(), Some((400_500_000, Token)));
+        assert_eq!(parse_limit_price(Some(&v(&["748share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["748SHARE"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["753token"]))).unwrap(), Some((753_000_000, Token)));
+        assert_eq!(parse_limit_price(Some(&v(&["748:share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["748-share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["748_share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["share:748"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["share748"]))).unwrap(), Some((748_000_000, Share)));
+        // One shell arg containing a literal space.
+        assert_eq!(parse_limit_price(Some(&v(&["748 share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["0.000001"]))).unwrap(), Some((1, Token)));
+        // Rejections: zero, negative, 7+ decimals, garbage, suffix without number, misspelled unit.
+        assert!(parse_limit_price(Some(&v(&["0"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["0share"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["-5"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["400.1234567"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["abc"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["share"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["748shares"]))).is_err());
+        assert!(parse_limit_price(Some(&v(&["all"]))).is_err());
+    }
+
+    #[test]
+    fn limit_price_parsing_two_values_either_order() {
+        use rwa_ondo::usecases::gm::LimitFrame::{Share, Token};
+        assert_eq!(parse_limit_price(Some(&v(&["748", "share"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["share", "748"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["748", "token"]))).unwrap(), Some((748_000_000, Token)));
+        assert_eq!(parse_limit_price(Some(&v(&["token", "748"]))).unwrap(), Some((748_000_000, Token)));
+        assert_eq!(parse_limit_price(Some(&v(&["748", "SHARE"]))).unwrap(), Some((748_000_000, Share)));
+    }
+
+    #[test]
+    fn limit_price_parsing_two_values_rejections() {
+        // Misspelled unit -> teaching error names the bad unit.
+        let err = parse_limit_price(Some(&v(&["748", "shares"]))).unwrap_err();
+        assert!(err.to_string().contains("unknown unit \"shares\""), "{err}");
+        // Two units, no number.
+        assert!(parse_limit_price(Some(&v(&["share", "token"]))).is_err());
+        // Two numbers, no unit.
+        assert!(parse_limit_price(Some(&v(&["748", "100"]))).is_err());
     }
 
     #[test]
     fn limit_display_helper() {
-        assert_eq!(limit_display("748share"), ("748".into(), "USDC/share"));
-        assert_eq!(limit_display("748SHARE"), ("748".into(), "USDC/share"));
-        assert_eq!(limit_display("753"), ("753".into(), "USDC/token"));
-        assert_eq!(limit_display("753token"), ("753".into(), "USDC/token"));
-        assert_eq!(limit_display("753TOKEN"), ("753".into(), "USDC/token"));
+        use rwa_ondo::usecases::gm::LimitFrame::{Share, Token};
+        assert_eq!(limit_display((748_000_000, Share)), ("748".into(), "USDC/share"));
+        assert_eq!(limit_display((753_000_000, Token)), ("753".into(), "USDC/token"));
+        assert_eq!(limit_display((400_500_000, Token)), ("400.5".into(), "USDC/token"));
+    }
+
+    #[test]
+    fn limit_price_echo_joins_multi_value_and_passes_through_single() {
+        assert_eq!(limit_price_echo(None), None);
+        assert_eq!(limit_price_echo(Some(&v(&["400.50"]))), Some("400.50".to_string()));
+        assert_eq!(limit_price_echo(Some(&v(&["748share"]))), Some("748share".to_string()));
+        assert_eq!(limit_price_echo(Some(&v(&["748", "share"]))), Some("748 share".to_string()));
+        assert_eq!(limit_price_echo(Some(&v(&["share", "748"]))), Some("share 748".to_string()));
     }
 
     /// Audit fix: `share_view` is the one CLI function that divides by the
