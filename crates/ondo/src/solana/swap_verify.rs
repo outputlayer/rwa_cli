@@ -552,4 +552,25 @@ mod tests {
         let short = serde_json::json!({ "data": ["AAAA", "base64"] });
         assert_eq!(token_amount_from_account(Some(&short)), 0);
     }
+
+    #[test]
+    fn token_amount_reads_raw_offset_64_on_a_scaled_ui_mint_account_ignoring_extensions() {
+        // A Token-2022 account for a Scaled-UI-Amount mint (e.g. a dividend
+        // token like SPYon) is the same 165-byte base layout as classic SPL
+        // Token, followed by extension TLV data (the Scaled-UI config lives
+        // in the *mint* account, not here) — "offset 64 is always raw" is
+        // otherwise only a doc comment. Build a 200-byte account: base 165
+        // bytes + 35 bytes of trailing extension data, and plant a decoy
+        // value in the extension region that a buggy "scaled-aware" parser
+        // might mistake for the balance. The raw amount at offset 64 must be
+        // the one that comes back, unaffected by trailing bytes.
+        let mut data = vec![0u8; 200];
+        let raw_amount: u64 = 555_000_000; // canonical raw units at offset 64
+        data[64..72].copy_from_slice(&raw_amount.to_le_bytes());
+        let decoy: u64 = 999_000_000; // planted well past the base account
+        data[180..188].copy_from_slice(&decoy.to_le_bytes());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        let acc = serde_json::json!({ "data": [b64, "base64"] });
+        assert_eq!(token_amount_from_account(Some(&acc)), raw_amount as u128);
+    }
 }

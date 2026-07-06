@@ -73,8 +73,16 @@ pub async fn estimate_tx_fee(rpc_url: Option<&str>) -> f64 {
 /// Fetches recent priority fees from RPC with caching (10s TTL), adds 30% buffer.
 pub async fn estimate_tx_fee_lamports(rpc_url: Option<&str>) -> u64 {
     let priority = get_priority_fee_cached(rpc_url).await;
-    let total = BASE_FEE_LAMPORTS + priority;
-    (total as f64 * 1.3) as u64
+    buffered_lamports(BASE_FEE_LAMPORTS + priority)
+}
+
+/// Apply the 30% safety buffer to a lamport total. Pure (no RPC), so it is
+/// the one piece of the gas-estimate math that's unit-testable with exact,
+/// hand-computed numbers — the shared tail of both `estimate_tx_fee_lamports`
+/// and `estimate_gas_needed`. Truncates (matches the pre-extraction `as u64`
+/// behavior), not rounds.
+fn buffered_lamports(total_lamports: u64) -> u64 {
+    (total_lamports as f64 * 1.3) as u64
 }
 
 /// Estimate SOL needed for gas, optionally including ATA creation rent.
@@ -90,9 +98,7 @@ pub async fn estimate_gas_needed(needs_ata: bool, is_token_2022: bool, rpc_url: 
         let size = if is_token_2022 { TOKEN_2022_ACCOUNT_SIZE } else { SPL_TOKEN_ACCOUNT_SIZE };
         total_lamports += get_rent_exempt_cached(size, rpc_url).await;
     }
-    // 30% buffer on total
-    let with_buffer = (total_lamports as f64 * 1.3) as u64;
-    with_buffer as f64 / 1_000_000_000.0
+    buffered_lamports(total_lamports) as f64 / 1_000_000_000.0
 }
 
 /// Rent-exempt minimum for a classic SPL token account, from live RPC
@@ -217,7 +223,29 @@ mod tests {
         // With ATA must be significantly more than without
         assert!(with_spl > without + 0.001, "SPL ATA estimate should include rent");
         assert!(with_2022 > without + 0.001, "Token-2022 ATA estimate should include rent");
-        // Token-2022 should be >= SPL (more bytes)
-        assert!(with_2022 >= with_spl, "Token-2022 rent >= SPL rent");
+        // Token-2022 (182 bytes) must cost STRICTLY more rent than classic SPL
+        // (165 bytes) — rent-exemption scales monotonically with account size,
+        // so equality is only possible if `is_token_2022` was silently ignored
+        // and both branches priced the same (165-byte) size. `>=` let that
+        // mutant through; `>` does not.
+        assert!(
+            with_2022 > with_spl,
+            "Token-2022 rent must exceed SPL rent (with_2022={with_2022}, with_spl={with_spl})"
+        );
+    }
+
+    #[test]
+    fn buffered_lamports_applies_30_percent_with_truncation() {
+        // 5000 base fee alone (no priority): 5000 * 1.3 = 6500.0 exactly.
+        assert_eq!(buffered_lamports(BASE_FEE_LAMPORTS), 6_500);
+        // 6000 * 1.3 = 7800.0 exactly — a mutant using a 3% buffer (1.03)
+        // instead of 30% (1.3) would give 6180, not 7800.
+        assert_eq!(buffered_lamports(6_000), 7_800);
+        // 13 * 1.3 = 16.9 -> truncates (not rounds) to 16. A mutant using
+        // `.round()` instead of truncating `as u64` would give 17 here.
+        assert_eq!(buffered_lamports(13), 16);
+        // 500 * 1.3 = 650.0 exactly — no ambiguity, sanity floor.
+        assert_eq!(buffered_lamports(500), 650);
+        assert_eq!(buffered_lamports(0), 0);
     }
 }

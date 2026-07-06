@@ -165,5 +165,9 @@ mod tests {
         assert_eq!(b.gm_tokens[0].symbol, "TESTon");
         assert_eq!(b.gm_tokens[0].raw_amount, "1250000000");
         assert!((b.gm_tokens[0].balance - 1.25).abs() < 1e-9);
+        // Ultra has no Scaled-UI multiplier for this source; a mutant that fills
+        // ui_balance from sum_raw_derived (double-counting the raw value as if
+        // it were also the scaled value) must fail here.
+        assert_eq!(b.gm_tokens[0].ui_balance, None);
     }
 }

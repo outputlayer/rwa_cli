@@ -364,3 +364,61 @@ pub struct SellBasketItemJson {
     )]
     pub slippage_pct: Option<f64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Wrapper newtypes exercise each serializer exactly as the real JSON
+    // structs do (via `#[serde(serialize_with = "...")]`), pinning the
+    // rounded token text rather than re-deriving the formula in-test.
+    #[derive(Serialize)]
+    struct Wrap2(#[serde(serialize_with = "ser_f64_2")] f64);
+    #[derive(Serialize)]
+    struct Wrap4(#[serde(serialize_with = "ser_f64_4")] f64);
+    #[derive(Serialize)]
+    struct WrapOpt4(#[serde(serialize_with = "ser_opt_f64_4")] Option<f64>);
+
+    #[test]
+    fn ser_f64_2_rounds_half_away_from_zero_to_cents() {
+        // 19.99666 * 100 = 1999.666 -> round -> 2000 -> / 100 = 20.0.
+        // A mutant that drops the rounding (serializes v verbatim) would
+        // print "19.99666" instead of "20.0".
+        assert_eq!(serde_json::to_string(&Wrap2(19.996_66)).unwrap(), "20.0");
+        // 19.994 * 100 = 1999.4 -> round -> 1999 -> / 100 = 19.99 (rounds down).
+        assert_eq!(serde_json::to_string(&Wrap2(19.994)).unwrap(), "19.99");
+        // Exact halfway case: 0.125 * 100 = 12.5 -> round-half-away-from-zero
+        // -> 13 -> / 100 = 0.13. A mutant using `10000.0` here (the 4-decimal
+        // constant) would instead print "0.125" unrounded.
+        assert_eq!(serde_json::to_string(&Wrap2(0.125)).unwrap(), "0.13");
+        // Sign must survive: -1.005 * 100 = -100.49999999999999 (f64) ->
+        // round -> -100 -> / 100 = -1.0. A mutant dropping the sign or using
+        // `.floor()`/`.ceil()` instead of `.round()` would print -1.01 or -0.99.
+        assert_eq!(serde_json::to_string(&Wrap2(-1.005)).unwrap(), "-1.0");
+    }
+
+    #[test]
+    fn ser_f64_4_rounds_to_four_decimals() {
+        // 12.345678 * 10000 = 123456.78 -> round -> 123457 -> / 10000 = 12.3457.
+        // A mutant swapping in the 2-decimal constant (100.0) would instead
+        // print "12.35".
+        assert_eq!(serde_json::to_string(&Wrap4(12.345_678)).unwrap(), "12.3457");
+        // 0.00005 * 10000 = 0.5 -> round -> 1 -> / 10000 = 0.0001 (rounds up
+        // from the halfway point, not truncated to 0.0).
+        assert_eq!(serde_json::to_string(&Wrap4(0.000_05)).unwrap(), "0.0001");
+    }
+
+    #[test]
+    fn ser_opt_f64_4_matches_ser_f64_4_and_propagates_none() {
+        // Same rounding as ser_f64_4 (100/3 = 33.3333... -> 33.3333) — a
+        // mutant that reimplements this independently (e.g. copy-pasted with
+        // the 2-decimal constant) would desync the two and this would catch it.
+        assert_eq!(
+            serde_json::to_string(&WrapOpt4(Some(100.0 / 3.0))).unwrap(),
+            "33.3333"
+        );
+        // None must serialize as JSON null, not as 0.0 or be skipped (skipping
+        // is the caller's `skip_serializing_if`, not this fn's job).
+        assert_eq!(serde_json::to_string(&WrapOpt4(None)).unwrap(), "null");
+    }
+}

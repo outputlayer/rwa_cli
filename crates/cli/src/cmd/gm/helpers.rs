@@ -262,4 +262,76 @@ mod tests {
         assert_eq!(token_type_from_name("Tesla"), "stock");
         assert_eq!(token_type_from_name("Apple Inc"), "stock");
     }
+
+    #[tokio::test]
+    async fn run_swap_items_parallel_collects_successes_failures_and_sums_total() {
+        let items = vec![1i32, 2, 3, -4];
+        let (mut done, failed, total) = run_swap_items(
+            items,
+            true, // parallel
+            true, // json (suppress prints)
+            "items",
+            |_| String::new(),
+            |item: i32| async move {
+                if item < 0 {
+                    Err(CloseFailJson {
+                        token: item.to_string(),
+                        error: "boom".into(),
+                        error_kind: None,
+                    })
+                } else {
+                    Ok((item, item as f64))
+                }
+            },
+        )
+        .await;
+        // JoinSet completion order is not guaranteed — sort before comparing
+        // the success set. A mutant that drops failed items into `done` (or
+        // vice versa) would fail either the length or the sorted-content check.
+        done.sort();
+        assert_eq!(done, vec![1, 2, 3]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].token, "-4");
+        // Sum of the three successful values (1 + 2 + 3), not all four inputs
+        // and not the failed item's value — a mutant that folds in failures'
+        // values too would give 2.0 (1+2+3-4) instead of 6.0.
+        assert!((total - 6.0).abs() < 1e-9, "total was {total}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_swap_items_sequential_preserves_order_and_paces_between_items() {
+        let items = vec![10i32, 20, 30];
+        let start = tokio::time::Instant::now();
+        let (done, failed, total) = run_swap_items(
+            items,
+            false, // sequential
+            true,  // json
+            "items",
+            |_| String::new(),
+            |item: i32| async move {
+                if item == 10 {
+                    // First item takes longer internally. Sequential
+                    // processing still finishes it before starting the next
+                    // item, so the output order must stay [10, 20, 30]. A
+                    // mutant that runs the "sequential" branch through the
+                    // parallel JoinSet would let 20/30 (no internal delay)
+                    // race ahead and reorder this.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Ok::<(i32, f64), CloseFailJson>((item, item as f64))
+            },
+        )
+        .await;
+        assert_eq!(done, vec![10, 20, 30]);
+        assert!(failed.is_empty());
+        assert!((total - 60.0).abs() < 1e-9, "total was {total}");
+        // Sequential spacing is a documented 3s gap between items (2 gaps
+        // for 3 items = 6s minimum). A mutant that drops the inter-item
+        // `sleep` would finish near-instantly and fail this bound.
+        assert!(
+            start.elapsed() >= Duration::from_secs(6),
+            "elapsed only {:?}",
+            start.elapsed()
+        );
+    }
 }

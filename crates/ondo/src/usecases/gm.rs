@@ -279,6 +279,19 @@ pub async fn prepare_buy(
     })
 }
 
+/// Derive the Scaled-UI multiplier (underlying shares per raw token) from a
+/// balance's raw/ui-amount pair: `ui_balance / balance`, only when
+/// `ui_balance` is present, `balance` is strictly positive, and the ratio is
+/// finite and positive. Pure extraction of `prepare_sell`'s inline derivation
+/// (previously untested — no direct unit test existed) so it is testable
+/// without a wallet or RPC; no behavior change.
+fn derive_balance_multiplier(balance: f64, ui_balance: Option<f64>) -> Option<f64> {
+    ui_balance
+        .filter(|_| balance > 0.0)
+        .map(|ui| ui / balance)
+        .filter(|m| m.is_finite() && *m > 0.0)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_sell(
     wallet: &wallet::Wallet,
@@ -309,11 +322,7 @@ pub async fn prepare_sell(
         .into());
     }
 
-    let multiplier = bal
-        .ui_balance
-        .filter(|_| bal.balance > 0.0)
-        .map(|ui| ui / bal.balance)
-        .filter(|m| m.is_finite() && *m > 0.0);
+    let multiplier = derive_balance_multiplier(bal.balance, bal.ui_balance);
     let multiplier = match (multiplier, &limit_price) {
         (None, Some((_, LimitFrame::Share))) => {
             solana::get_mint_multiplier(&gm_mint, rpc_url).await.wrap_err(
@@ -580,6 +589,46 @@ mod tests {
         };
         let slip = calc_slippage(&order);
         assert!((slip.unwrap() - (-3.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn derive_balance_multiplier_matches_hand_computed_scaled_ratio() {
+        // SPYon fixture from the scenario suite: raw balance 20.369073,
+        // Scaled-UI balance 20.526341. m = ui/raw = 1.0077209208293376
+        // (hand-divided here, independent of any cached value in the code).
+        // A mutant swapping the operands (balance/ui) would give
+        // 0.9923380... instead; dropping the division entirely (returning
+        // ui_balance verbatim) would give 20.526341.
+        let m = derive_balance_multiplier(20.369073, Some(20.526341)).unwrap();
+        assert!((m - 1.007_720_920_829_337_6).abs() < 1e-12, "got {m}");
+    }
+
+    #[test]
+    fn derive_balance_multiplier_none_without_ui_balance() {
+        // No Scaled-UI info from this balance source (e.g. Jupiter Ultra
+        // holdings) — must not fabricate a multiplier.
+        assert_eq!(derive_balance_multiplier(5.0, None), None);
+    }
+
+    #[test]
+    fn derive_balance_multiplier_zero_balance_guards_against_div_by_zero() {
+        // balance <= 0 must short-circuit to None rather than divide by
+        // zero. A mutant relaxing `> 0.0` to `>= 0.0` would let this through
+        // (5.0 / 0.0 = inf, which the finite-check would then also need to
+        // catch — this test targets the balance guard specifically).
+        assert_eq!(derive_balance_multiplier(0.0, Some(5.0)), None);
+    }
+
+    #[test]
+    fn derive_balance_multiplier_rejects_non_finite_and_non_positive_ratios() {
+        // Non-finite ratio (NaN) must not leak through as a "valid" multiplier.
+        assert_eq!(derive_balance_multiplier(1.0, Some(f64::NAN)), None);
+        // A negative ui_balance (shouldn't occur, but the fn must not treat
+        // it as a valid multiplier) yields a negative ratio -> filtered out.
+        assert_eq!(derive_balance_multiplier(5.0, Some(-5.0)), None);
+        // Exactly 1.0 (no scaling) is a legitimate multiplier — must NOT be
+        // filtered by this fn (that's a display-layer decision elsewhere).
+        assert_eq!(derive_balance_multiplier(5.0, Some(5.0)), Some(1.0));
     }
 
     #[test]

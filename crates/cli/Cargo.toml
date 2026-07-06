@@ -32,6 +32,7 @@ toml.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 zip.workspace = true
