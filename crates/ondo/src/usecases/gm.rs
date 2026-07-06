@@ -30,6 +30,8 @@ pub enum GmTradeErrorKind {
     AmountBelowMinimum,
     InsufficientFunds,
     NoPosition,
+    /// `--limit-price` condition not met by the quoted implied price.
+    ConditionNotMet,
 }
 
 #[derive(Debug)]
@@ -65,6 +67,7 @@ impl GmTradeErrorKind {
             Self::AmountBelowMinimum => "amount_below_minimum",
             Self::InsufficientFunds => "insufficient_funds",
             Self::NoPosition => "no_position",
+            Self::ConditionNotMet => "condition_not_met",
         }
     }
 }
@@ -445,6 +448,35 @@ pub(crate) fn cost_exceeds_max_bps(
     (cost > max as f64).then_some((cost, max))
 }
 
+/// The `--limit-price` gate decision: `usdc_raw`/`token_raw` are the quote's
+/// USDC (6 decimals) and GM-token (9 decimals) sides; `limit_raw6` is the
+/// limit in 10^-6 USDC per token. Buy is violated when implied > limit,
+/// sell when implied < limit; equality passes. Unparseable or zero-token
+/// quotes fail closed (violated) — a degenerate quote must never trade.
+/// Returns `Some((implied_price, limit_price))` in display units when
+/// violated; `None` when passing or no limit was given.
+pub(crate) fn limit_price_exceeded(
+    is_buy: bool,
+    usdc_raw: &str,
+    token_raw: &str,
+    limit_raw6: Option<u128>,
+) -> Option<(f64, f64)> {
+    let limit = limit_raw6?;
+    let limit_display = limit as f64 / 1e6;
+    let (Ok(usdc), Ok(token)) = (usdc_raw.parse::<u128>(), token_raw.parse::<u128>()) else {
+        return Some((f64::NAN, limit_display));
+    };
+    if token == 0 {
+        return Some((f64::INFINITY, limit_display));
+    }
+    // implied (USDC/token) = (usdc/1e6) / (token/1e9) = usdc * 1e3 / token.
+    // Integer comparison: implied <= limit  ⟺  usdc * 1e9 <= limit * token.
+    let lhs = usdc.saturating_mul(1_000_000_000);
+    let rhs = limit.saturating_mul(token);
+    let violated = if is_buy { lhs > rhs } else { lhs < rhs };
+    violated.then(|| ((usdc as f64) * 1e3 / (token as f64), limit_display))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,7 +592,7 @@ mod tests {
         for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout"] {
             assert!(is_transient_kind(k), "{k} must be transient");
         }
-        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high"] {
+        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met"] {
             assert!(!is_transient_kind(k), "{k} must be permanent");
         }
     }
@@ -856,5 +888,45 @@ mod tests {
         assert_eq!(GmTradeErrorKind::CostTooHigh.to_string(), "cost_too_high");
         let wrapped = Err::<(), eyre::Error>(err).wrap_err("swap").unwrap_err();
         assert_eq!(classify_error(&wrapped), Some("cost_too_high"));
+    }
+
+    #[test]
+    fn limit_price_gate_decision() {
+        // 100 USDC (6 dec) for 0.25 token (9 dec) → implied 400 USDC/token.
+        let usdc = "100000000";
+        let token = "250000000";
+        // No limit → no gate.
+        assert_eq!(limit_price_exceeded(true, usdc, token, None), None);
+        // Buy: implied 400 ≤ limit 400 (equality) → passes.
+        assert_eq!(limit_price_exceeded(true, usdc, token, Some(400_000_000)), None);
+        // Buy: implied 400 > limit 399.999999 → violated.
+        let (implied, limit) =
+            limit_price_exceeded(true, usdc, token, Some(399_999_999)).unwrap();
+        assert!((implied - 400.0).abs() < 1e-9);
+        assert!((limit - 399.999999).abs() < 1e-9);
+        // Buy: implied 400 ≤ limit 400.000001 → passes.
+        assert_eq!(limit_price_exceeded(true, usdc, token, Some(400_000_001)), None);
+        // Sell: implied 400 ≥ limit 400 (equality) → passes.
+        assert_eq!(limit_price_exceeded(false, usdc, token, Some(400_000_000)), None);
+        // Sell: implied 400 < limit 400.000001 → violated.
+        assert!(limit_price_exceeded(false, usdc, token, Some(400_000_001)).is_some());
+        // Sell: implied 400 ≥ limit 399.999999 → passes.
+        assert_eq!(limit_price_exceeded(false, usdc, token, Some(399_999_999)), None);
+        // Degenerate quote (zero token side) fails closed.
+        assert!(limit_price_exceeded(true, usdc, "0", Some(400_000_000)).is_some());
+        // Unparseable raw amounts fail closed.
+        assert!(limit_price_exceeded(true, "garbage", token, Some(400_000_000)).is_some());
+    }
+
+    #[test]
+    fn condition_not_met_classifies() {
+        assert_eq!(GmTradeErrorKind::ConditionNotMet.to_string(), "condition_not_met");
+        let err: eyre::Error = GmTradeError::new(
+            GmTradeErrorKind::ConditionNotMet,
+            "quoted price 401.20 USDC/token > --limit-price 400",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("condition_not_met"));
+        assert!(!is_transient_kind("condition_not_met"));
     }
 }
