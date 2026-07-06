@@ -33,6 +33,18 @@ pub struct HoursJson {
     pub tradable_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tradable: Option<Vec<String>>,
+    /// Assets currently dividend-paused (`is_trading_paused`). Absent when
+    /// asset metadata couldn't be fetched (fail-open).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paused_count: Option<usize>,
+    /// Flagship assets that trade 24/7 via Ondo's offhours session
+    /// (`is_offhours_tradable`). Absent when asset metadata couldn't be
+    /// fetched (fail-open).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offhours_tradable_count: Option<usize>,
+    /// The flagship symbols themselves; only populated with `--tradable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offhours_tradable: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -410,6 +422,50 @@ mod tests {
         // 0.00005 * 10000 = 0.5 -> round -> 1 -> / 10000 = 0.0001 (rounds up
         // from the halfway point, not truncated to 0.0).
         assert_eq!(serde_json::to_string(&Wrap4(0.000_05)).unwrap(), "0.0001");
+    }
+
+    #[test]
+    fn hours_json_omits_new_optional_fields_when_none() {
+        let json = serde_json::to_value(HoursJson {
+            status: "open",
+            session: "Regular",
+            session_hours: "9:30 AM - 3:59 PM ET",
+            now: "Monday 10:00 AM ET".into(),
+            countdown: "next session in 5h 59m".into(),
+            tradable_count: Some(440),
+            tradable: None,
+            paused_count: None,
+            offhours_tradable_count: None,
+            offhours_tradable: None,
+        })
+        .unwrap();
+        assert!(json.get("paused_count").is_none());
+        assert!(json.get("offhours_tradable_count").is_none());
+        assert!(json.get("offhours_tradable").is_none());
+        assert_eq!(json.get("tradable_count"), Some(&serde_json::json!(440)));
+    }
+
+    #[test]
+    fn hours_json_includes_new_optional_fields_when_some() {
+        let json = serde_json::to_value(HoursJson {
+            status: "closed",
+            session: "Closed",
+            session_hours: "Weekend / NYSE holidays",
+            now: "Saturday 10:00 AM ET".into(),
+            countdown: "opens in 22h 0m".into(),
+            tradable_count: Some(6),
+            tradable: Some(vec!["TSLAon".to_string()]),
+            paused_count: Some(121),
+            offhours_tradable_count: Some(6),
+            offhours_tradable: Some(vec!["TSLAon".to_string(), "NVDAon".to_string()]),
+        })
+        .unwrap();
+        assert_eq!(json.get("paused_count"), Some(&serde_json::json!(121)));
+        assert_eq!(json.get("offhours_tradable_count"), Some(&serde_json::json!(6)));
+        assert_eq!(
+            json.get("offhours_tradable"),
+            Some(&serde_json::json!(["TSLAon", "NVDAon"]))
+        );
     }
 
     #[test]

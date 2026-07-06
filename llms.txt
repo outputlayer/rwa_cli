@@ -35,8 +35,8 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ## Commands
 
 ### Market info
-- `rwa --json gm hours` — current session + tradable count
-- `rwa --json gm hours --tradable` — all tokens tradable right now
+- `rwa --json gm hours` — current session + tradable count, plus optional `offhours_tradable_count`/`paused_count` (24/7 flagship set size, dividend-paused count; absent if asset metadata fetch fails)
+- `rwa --json gm hours --tradable` — all tokens tradable right now, plus `offhours_tradable` (the flagship symbols)
 - `rwa --json gm list` — all tokens with tradable status
 - `rwa --json gm search --search <keyword>` — filter by symbol, name, or sector
 - `rwa --json gm search --tradable-only --sector <SECTOR> --type <stock|etf> --name-keyword <WORD>` — bulk filtering without Python

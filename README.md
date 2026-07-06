@@ -38,7 +38,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm pnl` | Avg entry price + realized/unrealized P&L (from your CLI trades) |
-| `rwa gm hours [--tradable]` | Current session (+ what trades right now) |
+| `rwa gm hours [--tradable]` | Current session (+ what trades right now; 24/7 = flagships only) |
 | `rwa gm list` / `search` / `tradable` | Browse & filter (sector, `--tag asia/dividend/...`) |
 | `rwa gm history <SYM> [-r 1D..ALL]` | Price history |
 | `rwa gm send <TOKEN> <AMT> <TO> [-y]` | Transfer SOL/USDC/tokens to another wallet |

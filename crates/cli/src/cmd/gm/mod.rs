@@ -38,7 +38,7 @@ pub(super) use types::{
 
 #[derive(Subcommand, Debug)]
 pub enum GmAction {
-    /// Check market status, current session, and tradable tokens
+    /// Current session and what trades right now (24/7 applies to flagship tokens only)
     Hours {
         /// Show full list of tradable tokens (omitted by default in --json)
         #[arg(long)]

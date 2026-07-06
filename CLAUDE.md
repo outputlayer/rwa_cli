@@ -63,8 +63,8 @@ cargo install --path bin/rwa
 ## Commands
 
 ```bash
-rwa gm hours
-rwa gm hours --tradable
+rwa gm hours                # + offhours flagship count and dividend-pause count (fail-open)
+rwa gm hours --tradable     # also lists the offhours flagship symbols
 rwa gm list
 rwa gm search --search <keyword>
 rwa gm search --tradable-only --sector <SECTOR>
@@ -178,7 +178,7 @@ rwa update -y
 - Use `gm tradable <SYM...>` to check one or many symbols
 - Use `gm search --tradable-only ...` for bulk scans without Python
 - `list`/`search` JSON items carry optional `asset_class` and `region` (Ondo tags) alongside `sector`; sector-less ETFs display `asset class · region`. `--tag <label>` filters across ALL Ondo tag categories (sector, asset class, region, factor/risk — 24 factor labels like Large Cap/Dividend/High Yield); `--search` matches them too
-- Use `hours --tradable` only when the user wants the full currently tradable set
+- Use `hours --tradable` only when the user wants the full currently tradable set; `hours` (no flag) already reports `offhours_tradable_count`/`paused_count` — optional, absent on asset-fetch failure
 - Use `buy-basket` / `sell-basket` for multi-token trades; parallel is the default (use `--sequential` only if rate-limited)
 - For full exit: `close-all -> reclaim -> send USDC all -> send SOL all`
 - Use `--wallet <name>` (or `RWA_WALLET`) to pick among named wallets; `rwa keys list --json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`

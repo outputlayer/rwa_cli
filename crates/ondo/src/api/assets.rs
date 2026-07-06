@@ -23,6 +23,10 @@ pub struct OndoAsset {
     /// can pause longer until the distribution amount is known).
     #[serde(default)]
     pub is_trading_paused: bool,
+    /// Whether this is one of the select flagship tokens that trade during
+    /// Ondo's 24/7 "offhours" session (weekends/holidays); most assets do not.
+    #[serde(default)]
+    pub is_offhours_tradable: bool,
 }
 
 impl OndoAsset {
@@ -238,6 +242,7 @@ mod tests {
             tags: vec![],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         }];
         assert!(find_asset("TSLAon", &assets).is_some());
     }
@@ -250,6 +255,7 @@ mod tests {
             tags: vec![],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         }];
         assert!(find_asset("TSLA", &assets).is_some());
     }
@@ -262,6 +268,7 @@ mod tests {
             tags: vec![],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         }];
         assert!(find_asset("tsla", &assets).is_some());
     }
@@ -274,6 +281,7 @@ mod tests {
             tags: vec![],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         }];
         assert!(find_asset("AAPL", &assets).is_none());
     }
@@ -290,6 +298,7 @@ mod tests {
                 price_change_pct_24h: Some("1.20".into()),
             }),
             is_trading_paused: false,
+            is_offhours_tradable: false,
         };
 
         let (price, pct) = market_snapshot(&asset).unwrap();
@@ -309,6 +318,7 @@ mod tests {
                 price_change_pct_24h: Some("1.20".into()),
             }),
             is_trading_paused: false,
+            is_offhours_tradable: false,
         }];
 
         let err = market_snapshot_for_symbol("TSLA", &assets).unwrap_err();
@@ -334,6 +344,7 @@ mod tests {
             ],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         };
         assert_eq!(asset.sector(), Some("Technology"));
         assert_eq!(asset.instrument_type(), Some("Stock"));
@@ -347,6 +358,7 @@ mod tests {
             tags: vec![],
             primary_market: None,
             is_trading_paused: false,
+            is_offhours_tradable: false,
         };
         assert_eq!(asset.sector(), None);
         assert_eq!(asset.instrument_type(), None);
@@ -372,5 +384,22 @@ mod tests {
         })).unwrap();
         assert!(!quiet.is_trading_paused);
         assert!(!is_trading_paused("NVDAon", &[quiet]));
+    }
+
+    #[test]
+    fn is_offhours_tradable_parses_true_and_defaults_false() {
+        let flagship: OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "TSLAon",
+            "assetName": "Tesla",
+            "isOffhoursTradable": true
+        })).unwrap();
+        assert!(flagship.is_offhours_tradable);
+
+        // Absent field defaults to false — most assets don't trade offhours.
+        let regular: OndoAsset = serde_json::from_value(serde_json::json!({
+            "symbol": "AAPLon",
+            "assetName": "Apple"
+        })).unwrap();
+        assert!(!regular.is_offhours_tradable);
     }
 }

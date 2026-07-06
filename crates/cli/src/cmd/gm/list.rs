@@ -25,8 +25,14 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     };
 
     // Fetched in every session: weekends/holidays map to Ondo's offhours
-    // session, where select flagship tokens still trade 24/7.
-    let (tradable_count, tradable_list) = match api::fetch_session_limits(None).await {
+    // session, where select flagship tokens still trade 24/7. Both calls are
+    // disk-cached (60s) and independent — fetch concurrently.
+    let (limits_res, assets_res) = tokio::join!(
+        api::fetch_session_limits(None),
+        api::fetch_assets(),
+    );
+
+    let (tradable_count, tradable_list) = match limits_res {
         Ok(limits) => {
             let tradable: Vec<String> = limits.iter()
                 .filter(|l| l.is_tradable(session))
@@ -42,6 +48,26 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
         Err(_) => (None, None),
     };
 
+    // Asset metadata: paused (dividend window) and offhours-flagship counts.
+    // Fail-open — on fetch error these fields are simply absent from JSON.
+    let (paused_count, offhours_tradable_count, offhours_tradable_list) = match assets_res {
+        Ok(assets) => {
+            let paused = assets.iter().filter(|a| a.is_trading_paused).count();
+            let offhours: Vec<String> = assets
+                .iter()
+                .filter(|a| a.is_offhours_tradable)
+                .map(|a| a.symbol.clone())
+                .collect();
+            let offhours_count = offhours.len();
+            if show_tradable {
+                (Some(paused), Some(offhours_count), Some(offhours))
+            } else {
+                (Some(paused), Some(offhours_count), None)
+            }
+        }
+        Err(_) => (None, None, None),
+    };
+
     let status = if closed { "closed" } else { "open" };
 
     if json {
@@ -53,6 +79,9 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
             countdown,
             tradable_count,
             tradable: tradable_list,
+            paused_count,
+            offhours_tradable_count,
+            offhours_tradable: offhours_tradable_list,
         });
     }
 
@@ -76,6 +105,9 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
         if let Some(count) = tradable_count {
             println!("  Tradable now: {} tokens", count);
         }
+    }
+    if let (Some(offhours), Some(paused)) = (offhours_tradable_count, paused_count) {
+        println!("  24/7 (offhours): {} flagship tokens; paused now: {}", offhours, paused);
     }
     Ok(())
 }
