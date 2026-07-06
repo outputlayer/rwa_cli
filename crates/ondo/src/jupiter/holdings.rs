@@ -63,7 +63,10 @@ pub(crate) fn holdings_to_balances(
         gm_tokens.push(SolanaTokenBalance {
             symbol: t.symbol.to_string(),
             mint: Mint::from(mint),
+            // Ultra returns raw on-chain amounts — already the canonical raw
+            // frame. No Scaled-UI value available from this source.
             balance: sum_ui(accts),
+            ui_balance: None,
             raw_amount: raw.to_string(),
         });
     }

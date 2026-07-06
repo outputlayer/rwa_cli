@@ -130,7 +130,7 @@ pub async fn get_usdc_balance(wallet: &str, rpc_url: Option<&str>) -> Result<f64
     Ok(ui)
 }
 
-/// Get raw USDC balance as (ui_amount, raw_amount_string).
+/// Get raw USDC balance as (raw_derived, raw_amount_string).
 /// The raw amount avoids float precision loss for exact transfers.
 pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result<(f64, String)> {
     let accounts: GetTokenAccountsResult = rpc_call_simple(
@@ -140,7 +140,8 @@ pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result
         RpcMode::Race,
     ).await?;
     let parsed = accounts.accounts();
-    sum_matching_raw_amounts(&parsed, USDC_MINT)
+    let (raw_derived, _ui, raw_amount) = sum_matching_raw_amounts(&parsed, USDC_MINT)?;
+    Ok((raw_derived, raw_amount))
 }
 
 /// A Solana SPL token balance.
@@ -148,7 +149,14 @@ pub async fn get_usdc_balance_raw(wallet: &str, rpc_url: Option<&str>) -> Result
 pub struct SolanaTokenBalance {
     pub symbol: String,
     pub mint: Mint,
+    /// Raw-derived quantity (raw / 10^decimals) — the CLI's canonical frame:
+    /// consistent with swap amounts, the trade ledger, and Ondo/Jupiter prices
+    /// (which are per RAW token, not per wallet-displayed token).
     pub balance: f64,
+    /// Wallet-display (Token-2022 Scaled UI) quantity from RPC `uiAmount` =
+    /// raw × multiplier. `None` when the source doesn't provide it (RPC
+    /// omission or the Jupiter holdings fallback).
+    pub ui_balance: Option<f64>,
     /// Raw on-chain amount as string (no float precision loss).
     pub raw_amount: String,
 }
@@ -178,33 +186,40 @@ fn parse_gm_balances(accounts: &[TokenAccountInfo], mint_map: &std::collections:
         if raw_amount == 0 {
             continue;
         }
-        let amount = match info.token_amount.ui_amount {
-            Some(amount) => amount,
-            None => match raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals) {
-                Ok(amount) => amount,
-                Err(_) => continue,
-            },
+        let raw_derived = match raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals) {
+            Ok(amount) => amount,
+            Err(_) => continue,
         };
         if let Some(entry) = mint_map.get(info.mint.as_str()) {
             let balance = balances.entry(entry.symbol.to_string()).or_insert_with(|| SolanaTokenBalance {
                 symbol: entry.symbol.to_string(),
                 mint: Mint::from(info.mint.as_str()),
                 balance: 0.0,
+                ui_balance: Some(0.0),
                 raw_amount: "0".to_string(),
             });
             let current_raw: u128 = match balance.raw_amount.parse() {
                 Ok(raw) => raw,
                 Err(_) => continue,
             };
-            balance.balance += amount;
+            balance.balance += raw_derived;
+            // Accumulate ui_balance if present; set to None permanently if ANY account lacks it
+            if let Some(ui) = info.token_amount.ui_amount {
+                if let Some(ref mut ui_balance) = balance.ui_balance {
+                    *ui_balance += ui;
+                }
+            } else {
+                balance.ui_balance = None;
+            }
             balance.raw_amount = current_raw.saturating_add(raw_amount).to_string();
         }
     }
     balances.into_values().collect()
 }
 
-fn sum_matching_raw_amounts(accounts: &[TokenAccountInfo], mint: &str) -> Result<(f64, String)> {
-    let mut ui_total = 0.0;
+fn sum_matching_raw_amounts(accounts: &[TokenAccountInfo], mint: &str) -> Result<(f64, Option<f64>, String)> {
+    let mut raw_derived_total = 0.0;
+    let mut ui_total = Some(0.0);
     let mut raw_total = 0u128;
 
     for acc in accounts {
@@ -217,17 +232,24 @@ fn sum_matching_raw_amounts(accounts: &[TokenAccountInfo], mint: &str) -> Result
         if raw == 0 {
             continue;
         }
-        let ui = match info.token_amount.ui_amount {
-            Some(ui) => ui,
-            None => raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals)?,
-        };
-        ui_total += ui;
+        let raw_derived = raw_amount_to_f64(&info.token_amount.amount, info.token_amount.decimals)?;
+        raw_derived_total += raw_derived;
+
+        // Accumulate ui_balance: set to None permanently if ANY account lacks it
+        if let Some(ui) = info.token_amount.ui_amount {
+            if let Some(ref mut ui_sum) = ui_total {
+                *ui_sum += ui;
+            }
+        } else {
+            ui_total = None;
+        }
+
         raw_total = raw_total
             .checked_add(raw)
             .ok_or_else(|| eyre!("On-chain amount overflow while summing balances for mint {mint}"))?;
     }
 
-    Ok((ui_total, raw_total.to_string()))
+    Ok((raw_derived_total, ui_total, raw_total.to_string()))
 }
 
 /// Fetch all GM token balances for a Solana wallet.
@@ -260,7 +282,7 @@ pub async fn get_balance(
     ).await?;
 
     let parsed = accounts.accounts();
-    let (balance, raw_amount) = sum_matching_raw_amounts(&parsed, mint)?;
+    let (balance, ui_balance, raw_amount) = sum_matching_raw_amounts(&parsed, mint)?;
     if raw_amount == "0" {
         return Err(NoTokenAccount { mint: mint.to_string() }.into());
     }
@@ -268,6 +290,7 @@ pub async fn get_balance(
         symbol: String::new(),
         mint: mint.clone(),
         balance,
+        ui_balance,
         raw_amount,
     })
 }
@@ -408,6 +431,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn balance_is_raw_derived_and_ui_balance_carries_scaled_value() {
+        // Scaled-UI mint: uiAmount (1.2596..) = raw/1e9 (1.25) × multiplier (1.0077).
+        let accounts: GetTokenAccountsResult = serde_json::from_value(serde_json::json!({
+            "value": [{
+                "pubkey": "Account1111111111111111111111111111111111111",
+                "account": { "lamports": 1, "data": { "parsed": { "info": {
+                    "mint": "Mint11111111111111111111111111111111111111",
+                    "tokenAmount": { "uiAmount": 1.259651, "amount": "1250000000", "decimals": 9 }
+                }}}}
+            }]
+        })).unwrap();
+        let entry = GmTokenEntry {
+            symbol: "SPYon",
+            solana_address: Some("Mint11111111111111111111111111111111111111"),
+        };
+        let mint_map = std::collections::HashMap::from([("Mint11111111111111111111111111111111111111", &entry)]);
+        let balances = parse_gm_balances(&accounts.accounts(), &mint_map);
+        assert_eq!(balances.len(), 1);
+        // balance = raw-derived (canonical frame), NOT the RPC's scaled uiAmount.
+        assert!((balances[0].balance - 1.25).abs() < 1e-9);
+        // The scaled value is preserved separately.
+        assert!((balances[0].ui_balance.unwrap() - 1.259651).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ui_balance_none_when_any_account_omits_ui_amount() {
+        let accounts: GetTokenAccountsResult = serde_json::from_value(serde_json::json!({
+            "value": [{
+                "pubkey": "Account1111111111111111111111111111111111111",
+                "account": { "lamports": 1, "data": { "parsed": { "info": {
+                    "mint": "Mint11111111111111111111111111111111111111",
+                    "tokenAmount": { "uiAmount": null, "amount": "1250000000", "decimals": 9 }
+                }}}}
+            }]
+        })).unwrap();
+        let entry = GmTokenEntry {
+            symbol: "SPYon",
+            solana_address: Some("Mint11111111111111111111111111111111111111"),
+        };
+        let mint_map = std::collections::HashMap::from([("Mint11111111111111111111111111111111111111", &entry)]);
+        let balances = parse_gm_balances(&accounts.accounts(), &mint_map);
+        assert!((balances[0].balance - 1.25).abs() < 1e-9);
+        assert_eq!(balances[0].ui_balance, None);
+    }
+
+    #[test]
+    fn get_balance_style_sum_returns_raw_derived_ui_and_raw() {
+        let accounts: GetTokenAccountsResult = serde_json::from_value(serde_json::json!({
+            "value": [{
+                "pubkey": "Account1111111111111111111111111111111111111",
+                "account": { "lamports": 1, "data": { "parsed": { "info": {
+                    "mint": USDC_MINT,
+                    "tokenAmount": { "uiAmount": 1.5, "amount": "1500000", "decimals": 6 }
+                }}}}
+            }]
+        })).unwrap();
+        let (raw_derived, ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
+        assert!((raw_derived - 1.5).abs() < 1e-9);
+        assert!((ui.unwrap() - 1.5).abs() < 1e-9);
+        assert_eq!(raw, "1500000");
+    }
+
+    #[test]
     fn is_rpc_unavailable_detects_unavailable_through_chain() {
         use eyre::WrapErr;
         use super::super::rpc::{SolanaRpcError, SolanaRpcErrorKind};
@@ -475,7 +561,10 @@ mod tests {
         let balances = parse_gm_balances(&accounts.accounts(), &mint_map);
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].symbol, "TESTon");
+        // balance = raw-derived (canonical frame)
         assert!((balances[0].balance - 2.0).abs() < 1e-9);
+        // ui_balance equals raw-derived when uiAmount = raw-derived (no scaling)
+        assert!((balances[0].ui_balance.unwrap() - 2.0).abs() < 1e-9);
         assert_eq!(balances[0].raw_amount, "2000000000");
     }
 
@@ -514,8 +603,9 @@ mod tests {
             ]
         })).unwrap();
 
-        let (ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
-        assert!((ui - 3.75).abs() < 1e-9);
+        let (raw_derived, ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
+        assert!((raw_derived - 3.75).abs() < 1e-9);
+        assert!((ui.unwrap() - 3.75).abs() < 1e-9);
         assert_eq!(raw, "3750000");
     }
 
@@ -548,6 +638,8 @@ mod tests {
         let balances = parse_gm_balances(&accounts.accounts(), &mint_map);
         assert_eq!(balances.len(), 1);
         assert!((balances[0].balance - 1.25).abs() < 1e-9);
+        // When RPC omits uiAmount, ui_balance is None
+        assert_eq!(balances[0].ui_balance, None);
         assert_eq!(balances[0].raw_amount, "1250000000");
     }
 
@@ -572,8 +664,9 @@ mod tests {
             ]
         })).unwrap();
 
-        let (ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
-        assert!((ui - 1.5).abs() < 1e-9);
+        let (raw_derived, ui, raw) = sum_matching_raw_amounts(&accounts.accounts(), USDC_MINT).unwrap();
+        assert!((raw_derived - 1.5).abs() < 1e-9);
+        assert_eq!(ui, None);
         assert_eq!(raw, "1500000");
     }
 
@@ -605,6 +698,7 @@ mod tests {
             symbol: String::new(),
             mint: Mint::from("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
             balance: 0.0,
+            ui_balance: None,
             raw_amount: "0".to_string(),
         };
         assert_eq!(&*b.mint, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");

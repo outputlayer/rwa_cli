@@ -195,6 +195,7 @@ mod tests {
             symbol: symbol.to_string(),
             mint: Mint::from("So11111111111111111111111111111111111111112"),
             balance: ui,
+            ui_balance: Some(ui),
             raw_amount: raw.to_string(),
         }
     }
