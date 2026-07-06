@@ -81,7 +81,14 @@ verify_checksum() {
     checksum_file="$(dirname "$archive")/SHA256SUMS.single"
 
     if ! grep " ${archive_name}\$" "$checksums" > "$checksum_file"; then
-        echo "Warning: no checksum entry found for ${archive_name} — skipping verification" >&2
+        if [ "${RWA_INSTALL_INSECURE:-}" != "1" ]; then
+            echo "ERROR: no checksum entry found for ${archive_name} in SHA256SUMS.txt." >&2
+            echo "Fix: manifest may be corrupt or incomplete — or build from source:" >&2
+            echo "  cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa" >&2
+            echo "Or bypass verification at your own risk: RWA_INSTALL_INSECURE=1 <installer>" >&2
+            exit 1
+        fi
+        echo "WARNING: RWA_INSTALL_INSECURE=1 set — installing WITHOUT checksum verification." >&2
         return 0
     fi
 
