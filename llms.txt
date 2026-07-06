@@ -45,7 +45,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm buy <SYM> <AMT> --dry-run` — preview buy
 - `rwa --json gm buy <SYM> <AMT> --quote-only` — quote any size without a balance check; never executes (rejects `-y`), still enforces market hours + slippage. JSON `status` is `dry_run` (same shape as `--dry-run`). Use to size a trade before funding.
 - `rwa --json gm buy/sell <SYM> <AMT> --max-bps <N>` — reject the trade if quoted all-in cost (spread+fee) > N bps; returns `error_kind: cost_too_high`. `RWA_MAX_BPS` sets a global default. Works in `--dry-run` as a cost check. Also accepted by `buy-basket`/`sell-basket`/`close-all` (over-budget items land in `failed[]` with `error_kind: cost_too_high`), as is `--slippage <BPS>`.
-- `rwa --json gm buy/sell <SYM> <AMT> --limit-price <P>` — conditional trade: executes only if the quote's implied price (USDC/token) is <= P for buy, >= P for sell (equality passes); otherwise fails with `error_kind: condition_not_met` (exit 1, not transient) — same in `--dry-run`. The gated quote executes as-is, so worst-case fill is limit +/- slippage tolerance. Conflicts with `--quote-only`. JSON echoes `limit_price`. Synthetic limit order: schedule it (cron/loop) every N minutes until it exits 0, e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`. DCA is plain scheduled `buy -y` (no limit); stop-loss is an external reference-price check + market `sell -y`, not `--limit-price`. Real `-y` runs on low-SOL wallets may auto-refuel gas (USDC→SOL) before the condition check, bounded and disabled by RWA_NO_AUTO_GAS=1.
+- `rwa --json gm buy/sell <SYM> <AMT> --limit-price <P>` — conditional trade: executes only if the quote's implied price (USDC/token) is <= P for buy, >= P for sell (equality passes); otherwise fails with `error_kind: condition_not_met` (exit 1, not transient) — same in `--dry-run`. The gated quote executes as-is, so worst-case fill is limit +/- slippage tolerance. Price is per RAW token by default; append `share` (e.g. `--limit-price 748share`) to gate per underlying share via the mint's scaled-UI multiplier instead — the raw threshold then floats with dividend accrual (intended); requires reading the multiplier, so RPC failure fails closed with exit 75. `token` suffix is accepted for explicitness (bare number = token, same as `token`). Conflicts with `--quote-only`. JSON echoes `limit_price`. Synthetic limit order: schedule it (cron/loop) every N minutes until it exits 0, e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`. DCA is plain scheduled `buy -y` (no limit); stop-loss is an external reference-price check + market `sell -y`, not `--limit-price`. Real `-y` runs on low-SOL wallets may auto-refuel gas (USDC→SOL) before the condition check, bounded and disabled by RWA_NO_AUTO_GAS=1.
 - `rwa --json gm buy <SYM> <AMT> -y` — execute buy
 - `rwa --json gm sell <SYM> <AMT> --dry-run` — preview sell
 - `rwa --json gm sell <SYM> <AMT> -y` — execute sell
@@ -79,6 +79,8 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `gm_positions.change_24h_pct`
 
 Do not rely on legacy flat `portfolio` fields.
+
+GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via the mint's multiplier, so token price = share price × multiplier and wallet balances = raw × multiplier. The CLI's canonical frame is RAW everywhere (amounts, prices, ledger, pnl). `portfolio` values each position as raw × price and adds `shares_per_token` per position; `buy`/`sell` previews (including `--quote-only`/`--dry-run`) add `share_price`. Both `share_price` and `shares_per_token` are informational only (never the trade input/output) and are only present when the multiplier != 1 (omitted for ordinary 1:1 mints).
 
 ### Transfers
 - `rwa --json gm send SOL <AMT> <TO> --dry-run` — preview SOL transfer
@@ -177,6 +179,7 @@ With `--json`, failures return `{"status":"error","error":"..."}` on stdout and 
 - `no_position` → selling a token the wallet does not hold; check `portfolio` first
 - Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock contention); exit 1 = permanent
 - `market_closed` → token does not trade off-hours; tell user when regular trading reopens (Sunday 8 PM ET) or suggest an off-hours flagship token
+- `trading_paused` → Ondo paused this asset around a dividend event (ex-dividend window; longer for ETFs); on buy/sell it's a hard error, in close-all/baskets the item lands in `skipped[]` with this reason, and `list`/`search`/`tradable` may carry `"trading_paused":true`; wait and retry later, don't treat as `not_tradable`
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token
 - `confirmation_timeout` → tx may still land; check Solscan before retrying

@@ -30,7 +30,7 @@ rwa gm portfolio                 # 5. See your holdings
 |---------|-------------|
 | `rwa gm buy <SYM> <AMT> [-y]` | Buy with USDC (min 5 USDC) |
 | `rwa gm sell <SYM> <AMT> [-y]` | Sell for USDC (exact, `50%`, or `all`) |
-| `rwa gm buy/sell ... --limit-price <P>` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell) |
+| `rwa gm buy/sell ... --limit-price <P>` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell); append `share`/`token` (bare = token) |
 | `rwa gm close-all [<PCT>] [-y]` | Sell every position (or a % of each) |
 | `rwa gm buy-basket <SYM AMT ...> [-y]` | Buy multiple tokens at once |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
@@ -51,7 +51,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 ## Things to know
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
-- **Conditional orders.** `--limit-price <P>` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
+- **Conditional orders.** `--limit-price <P>` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; append `share` (`--limit-price 748share`) to gate per underlying share instead (bare number or explicit `token` suffix both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger; `rwa gm pnl` shows average entry price, realized and unrealized P&L — built from your trades only.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
@@ -96,10 +96,10 @@ export RWA_JUPITER_API_KEY="<your-jupiter-key>"    # optional: higher Jupiter li
 <details>
 <summary><b>How it works</b></summary>
 
-- Ondo GM tokens are **total-return trackers** (dividends reinvested, so 1 token ≠ 1 share). `TSLA` and `TSLAon` are both accepted.
+- Ondo GM tokens are **total-return trackers** (dividends reinvested, so 1 token ≠ 1 share): token price = share price × multiplier, and `portfolio` shows `shares_per_token` once it drifts from 1. `TSLA` and `TSLAon` are both accepted.
 - Swaps route through [Jupiter](https://jup.ag/) (`swap/v2` → Ultra fallbacks → Metis). Quotes with bad slippage are refreshed across market makers; a route that would fail on-chain is excluded and requoted.
 - **Every swap is verified before signing**: the transaction is simulated on-chain and the CLI refuses to sign unless the balance deltas match the quote (debit ≤ expected, credit ≥ quote − slippage). Wallet keys never leave the machine; encrypted storage is `age` with your passphrase.
-- `portfolio` JSON: `cash.{sol,usdc}` + `gm_positions.{value_usd, change_24h_usd, positions[]}`. Surfaced `error_kind` values: `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `route_unfillable`, `rpc_unavailable`, `insufficient_funds`, `amount_below_minimum`, `no_position`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`.
+- `portfolio` JSON: `cash.{sol,usdc}` + `gm_positions.{value_usd, change_24h_usd, positions[]}`. Surfaced `error_kind` values: `market_closed`, `not_tradable`, `slippage_too_high`, `cost_too_high`, `condition_not_met`, `trading_paused`, `route_unfillable`, `rpc_unavailable`, `insufficient_funds`, `amount_below_minimum`, `no_position`, `confirmation_timeout`, `on_chain_failure`, `execute_unavailable`.
 
 </details>
 
