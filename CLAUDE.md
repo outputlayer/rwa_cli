@@ -170,7 +170,7 @@ rwa update -y
 
 - Always prefer `rwa --json`
 - Use `-y` only for real execution
-- **`--json` without `-y` never executes** (breaking since v0.6.0): a money-moving command run with `--json` alone fails closed with `confirmation_required` (exit 1) instead of running non-interactively. This also gates auto-gas refuel: json auto-approves the refuel only when `-y` is also passed. Add `-y` to execute, or `--dry-run` to preview
+- **`--json` without `-y` never executes** (breaking since v0.6.0): the six gated money-moving commands (buy, sell, send, buy-basket, sell-basket, close-all) run with `--json` alone fail closed with `confirmation_required` (exit 1) instead of running non-interactively. `reclaim` reclaims rent to your own wallet and runs without confirmation. This also gates auto-gas refuel: json auto-approves the refuel only when `-y` is also passed. Add `-y` to execute, or `--dry-run` to preview
 - Use `--dry-run` for large or uncertain actions
 - Never run wallet-changing commands in parallel
 - Treat JSON output as a stable contract for scripts and agents

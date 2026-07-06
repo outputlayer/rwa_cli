@@ -27,7 +27,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
 - Use `-y` only for real execution, not for `--dry-run`
-- `--json` without `-y` NEVER executes a money-moving command: it fails closed with `error_kind: confirmation_required` (exit 1, not transient) instead of running non-interactively. This also gates auto-gas refuel — with `--json` alone (no `-y`), refuel is skipped silently rather than auto-approved. Add `-y` to execute, or `--dry-run` to preview.
+- `--json` without `-y` NEVER executes the six gated money-moving commands (buy, sell, send, buy-basket, sell-basket, close-all): it fails closed with `error_kind: confirmation_required` (exit 1, not transient) instead of running non-interactively. `reclaim` reclaims rent to your own wallet and runs without confirmation. This also gates auto-gas refuel — with `--json` alone (no `-y`), refuel is skipped silently rather than auto-approved. Add `-y` to execute, or `--dry-run` to preview.
 - There is no `quote` command; use `buy/sell --dry-run`
 - `send` transfers assets to another wallet; `sell` swaps for USDC
 - CLI auto-retries swap failures; do NOT manually retry them
@@ -175,7 +175,7 @@ Parallel is safe for different tokens. jupiterz routes through multiple MMs inte
 
 With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
 
-- `confirmation_required` → `--json` was used without `-y` on a real (non-`--dry-run`) money-moving command; add `-y` to execute or `--dry-run` to preview. Not transient — never retry as-is.
+- `confirmation_required` → `--json` was used without `-y` on a real (non-`--dry-run`) invocation of one of the six gated commands (buy, sell, send, buy-basket, sell-basket, close-all); add `-y` to execute or `--dry-run` to preview. `reclaim` reclaims rent to your own wallet and is never gated. Not transient — never retry as-is.
 - `not_tradable` → skip token or check `list --search <SYM>`
 - `amount_below_minimum` → buy below 5 USDC (single or basket item); raise the amount
 - `insufficient_funds` → wallet lacks USDC, or the quoted route is not gasless and the wallet has no SOL (USDC-only wallets trade fine on gasless routes; send/reclaim always need SOL); fund the wallet, do not retry

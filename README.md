@@ -70,7 +70,7 @@ npx skills add outputlayer/rwa_skills -g -y
 
 Then talk in plain language: *"Buy $100 of TSLA · Show my portfolio · Send all USDC to <ADDRESS>"*.
 
-Every command supports `--json` — a stable contract with typed `error_kind` values and exit code 75 for retry-worthy transient failures (1 otherwise). Rules: prefer `--json`, use `-y` only for real execution, never run wallet-changing commands as parallel shell processes (multi-token commands parallelize internally). **`--json` without `-y` never executes** a money-moving command — it fails closed with `error_kind: confirmation_required` (exit 1) instead of running non-interactively; add `-y` to execute or `--dry-run` to preview. Manual skill install: [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
+Every command supports `--json` — a stable contract with typed `error_kind` values and exit code 75 for retry-worthy transient failures (1 otherwise). Rules: prefer `--json`, use `-y` only for real execution, never run wallet-changing commands as parallel shell processes (multi-token commands parallelize internally). **`--json` without `-y` never executes** the six gated money-moving commands (buy, sell, send, buy-basket, sell-basket, close-all) — it fails closed with `error_kind: confirmation_required` (exit 1) instead of running non-interactively; add `-y` to execute or `--dry-run` to preview. `reclaim` reclaims rent to your own wallet and runs without confirmation. Manual skill install: [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
 
 ## RPC endpoints
 

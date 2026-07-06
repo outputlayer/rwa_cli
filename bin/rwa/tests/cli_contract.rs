@@ -268,6 +268,14 @@ fn buy_basket_dry_run_enforces_max_bps() {
     let home = test_home("basket-max-bps");
     let server = MockServer::start();
 
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones) resolved as "not found" == not paused.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
     // preflight_basket_buy: SOL via getBalance, USDC via getTokenAccountsByOwner.
     server.mock(|when, then| {
         when.method(POST).path("/rpc").body_contains("getBalance");
@@ -338,6 +346,7 @@ fn buy_basket_dry_run_enforces_max_bps() {
     let out = rwa(&home)
         .args(["--json", "gm", "buy-basket", "AAL", "10", "--dry-run", "--max-bps", "10"])
         .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
         .env("RWA_ONDO_SESSION_URL", server.url("/session"))
         .env("RWA_JUPITER_URL", server.base_url())
         .output()
@@ -369,6 +378,14 @@ fn buy_quote_only_json_emits_dry_run_shape() {
     let home = test_home("buy-quote-only");
     let server = MockServer::start();
 
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones) resolved as "not found" == not paused.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
     // Quote-only must never need funds — a dead RPC proves it stays off-chain.
     server.mock(|when, then| {
         when.method(POST).path("/rpc");
@@ -402,6 +419,7 @@ fn buy_quote_only_json_emits_dry_run_shape() {
     let out = rwa(&home)
         .args(["--json", "gm", "buy", "AAL", "10", "--quote-only"])
         .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
         .env("RWA_ONDO_SESSION_URL", server.url("/session"))
         .env("RWA_JUPITER_URL", server.base_url())
         .output()
@@ -437,6 +455,15 @@ fn buy_json_without_yes_is_confirmation_required_and_never_executes() {
     let home = test_home("buy-confirmation-required");
     let server = MockServer::start();
 
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones, e.g. TSLA) resolved as "not found" == not
+    // paused. Without this the preflight hits the live Ondo assets API.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
     // auto_gas + preflight: healthy SOL/USDC balances, no refuel needed.
     server.mock(|when, then| {
         when.method(POST).path("/rpc").body_contains("getBalance");
@@ -525,6 +552,7 @@ fn buy_json_without_yes_is_confirmation_required_and_never_executes() {
     let out = rwa(&home)
         .args(["--json", "gm", "buy", "TSLA", "5"])
         .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
         .env("RWA_ONDO_SESSION_URL", server.url("/session"))
         .env("RWA_JUPITER_URL", server.base_url())
         .output()
@@ -978,6 +1006,14 @@ fn sell_all_dry_run_emits_trade_json_shape() {
     let home = test_home("sell-dry-run");
     let server = MockServer::start();
 
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones) resolved as "not found" == not paused.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
     // AAL position: 2.0 tokens (9 decimals) on the wallet.
     server.mock(|when, then| {
         when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
@@ -1018,6 +1054,7 @@ fn sell_all_dry_run_emits_trade_json_shape() {
     let out = rwa(&home)
         .args(["--json", "gm", "sell", "AAL", "all", "--dry-run"])
         .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
         .env("RWA_ONDO_SESSION_URL", server.url("/session"))
         .env("RWA_JUPITER_URL", server.base_url())
         .output()
