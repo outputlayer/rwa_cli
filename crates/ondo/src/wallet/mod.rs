@@ -523,6 +523,49 @@ mod tests {
         assert_eq!(Wallet::from_mnemonic(&phrase).unwrap().pubkey(), w.pubkey());
     }
 
+    /// Entropy invariant — the regression guard against the "weak RNG" wallet-
+    /// drain class (Trust Wallet 2023 / CVE-2023-31290, Milk Sad, Coinspect's
+    /// "Ill Bloom"). Those wallets shrank the effective keyspace to ~2^32 by
+    /// seeding a non-CSPRNG (MT19937) from 32-bit wall-clock time, so seeds
+    /// were brute-forceable. Two properties defeat that class and are pinned
+    /// here:
+    ///   1. Width — a 12-word phrase must recover to a full 16 bytes (128 bits)
+    ///      of entropy and a 24-word phrase to 32 bytes (256 bits). Truncating
+    ///      `fill_bytes` or mis-sizing the buffer would fail this.
+    ///   2. No collisions — many back-to-back generations must all differ. A
+    ///      time-seeded generator emits identical entropy for calls landing in
+    ///      the same clock tick; a real CSPRNG (rand 0.8 ThreadRng = ChaCha12
+    ///      seeded from the OS via getrandom) never collides here. The birthday
+    ///      odds of a genuine 128-bit collision across 256 draws are ~2^-113 —
+    ///      a failure means the source degraded, not bad luck.
+    #[test]
+    fn generated_mnemonic_carries_full_csprng_entropy() {
+        use std::collections::HashSet;
+
+        // Width: recovered entropy is exactly 16 / 32 bytes, and never the
+        // all-zero buffer a no-op fill would leave behind.
+        let (_w12, p12) = Wallet::generate_with_mnemonic(12).unwrap();
+        let e12 = p12.parse::<bip39::Mnemonic>().unwrap().to_entropy();
+        assert_eq!(e12.len(), 16, "12-word phrase must encode 128 bits of entropy");
+        assert!(e12.iter().any(|&b| b != 0), "entropy must not be all-zero");
+
+        let (_w24, p24) = Wallet::generate_with_mnemonic(24).unwrap();
+        let e24 = p24.parse::<bip39::Mnemonic>().unwrap().to_entropy();
+        assert_eq!(e24.len(), 32, "24-word phrase must encode 256 bits of entropy");
+
+        // No collisions across 256 rapid draws — the direct test for a
+        // time-seeded / constant PRNG, which would repeat within a clock tick.
+        let mut seen = HashSet::new();
+        for _ in 0..256 {
+            let (_w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+            let entropy = phrase.parse::<bip39::Mnemonic>().unwrap().to_entropy();
+            assert!(
+                seen.insert(entropy),
+                "two generations produced identical entropy — source is not a CSPRNG"
+            );
+        }
+    }
+
     #[test]
     fn generate_unique_keys() {
         let w1 = Wallet::generate();
