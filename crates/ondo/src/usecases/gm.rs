@@ -21,7 +21,7 @@ use super::gm_internal::{
     check_tradable, check_sol_for_route, preflight_buy_raw,
     get_order_checked, resolve_sell_amount,
 };
-use super::gm_execute::{execute_with_retry, finalize_execution, finalize_execution_error, record_swap_outcome, SwapAuditCtx, SwapParams};
+use super::gm_execute::{execute_with_retry, finalize_execution, record_swap_outcome, SwapAuditCtx, SwapParams};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GmTradeErrorKind {
@@ -391,10 +391,10 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
         slippage_bps: plan.swap.slippage_bps,
         backend: plan.order.backend.label().to_string(),
     };
-    let outcome = match execute_with_retry(wallet, &plan.order, json, &params).await {
-        Ok(result) => Ok(finalize_execution(&plan.order, &result, plan.output_decimals)),
-        Err(e) => Err(finalize_execution_error(e, plan.symbol.as_ref())),
-    };
+    let outcome = execute_with_retry(wallet, &plan.order, json, &params)
+        .await
+        .wrap_err("swap execution failed")
+        .map(|result| finalize_execution(&plan.order, &result, plan.output_decimals));
     record_swap_outcome(ctx, &outcome);
     let exec = outcome?;
     if let Some(actual) = exec.actual_slippage_pct

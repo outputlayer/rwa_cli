@@ -9,41 +9,6 @@ use super::gm::{
 };
 use super::gm_internal::MAX_SWAP_RETRIES;
 
-/// Message for a buy/sell whose quoted route failed the pre-sign safety
-/// simulation with no fillable alternative. This is often a FALSE negative for
-/// thin RFQ tokens: on-chain evidence shows the market maker funds the fill
-/// just-in-time at `/execute` (mints in the same block), which local simulation
-/// — run before submission — can't see. State that honestly instead of claiming
-/// there is no liquidity. Kind stays `route_unfillable`; the behavioural fix
-/// (trusting the maker's just-in-time fill) is tracked separately.
-pub(crate) fn presign_refusal_message(symbol: &str) -> String {
-    format!(
-        "{symbol}: couldn't submit this trade — the on-chain safety check couldn't confirm \
-         the fill. This RFQ market maker fills just-in-time on execution, which the local \
-         check can't see yet."
-    )
-}
-
-/// Shape a terminal execution error for the user. By the time execution runs
-/// the initial quote has already succeeded, so a `RouteUnfillable` here can
-/// only mean the fill failed and no secondary route remained — swap the raw
-/// backend wall for the primary-market guidance while KEEPING the
-/// `route_unfillable` kind so the JSON contract is unchanged. Any other error
-/// keeps the generic "swap execution failed" context.
-pub(crate) fn finalize_execution_error(err: eyre::Error, symbol: &str) -> eyre::Error {
-    if let Some(f) = err.downcast_ref::<jupiter::ExecuteFailure>()
-        && f.kind == jupiter::ExecuteFailureKind::RouteUnfillable
-    {
-        return jupiter::ExecuteFailure {
-            kind: jupiter::ExecuteFailureKind::RouteUnfillable,
-            code: None,
-            message: presign_refusal_message(symbol),
-        }
-        .into();
-    }
-    err.wrap_err("swap execution failed")
-}
-
 /// A refreshed (post-retry) quote must stay within slippage tolerance of the
 /// quote the user previewed/confirmed — auto-rerouting must never silently
 /// accept a materially worse price. Returns `Some((refreshed_out, floor))`
@@ -370,48 +335,6 @@ pub(crate) fn calc_actual_slippage(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn presign_refusal_message_is_accurate_and_symbol_led() {
-        let s = presign_refusal_message("PFEon");
-        assert!(s.starts_with("PFEon:"), "leads with the symbol");
-        assert!(s.contains("just-in-time"), "explains the JIT-mint reality");
-        assert!(!s.contains("app.ondo.finance"), "no false 'buy on the app' claim");
-        assert!(!s.contains("no secondary liquidity"), "no false 'no liquidity' claim");
-        assert!(!s.contains("No swap route found"), "not the raw backend wall");
-    }
-
-    #[test]
-    fn finalize_route_unfillable_rewrites_message_keeps_kind() {
-        let e: eyre::Error = jupiter::ExecuteFailure {
-            kind: jupiter::ExecuteFailureKind::RouteUnfillable,
-            code: None,
-            message: "no swap route available across Jupiter backends".into(),
-        }
-        .into();
-        let out = finalize_execution_error(e, "PFEon");
-        let f = out
-            .downcast_ref::<jupiter::ExecuteFailure>()
-            .expect("still an ExecuteFailure so error_kind survives to JSON");
-        assert_eq!(f.kind, jupiter::ExecuteFailureKind::RouteUnfillable);
-        assert!(f.message.starts_with("PFEon:"));
-        assert!(f.message.contains("just-in-time"));
-        assert!(!f.message.contains("app.ondo.finance"));
-    }
-
-    #[test]
-    fn finalize_other_kinds_keep_generic_context() {
-        let e: eyre::Error = jupiter::ExecuteFailure {
-            kind: jupiter::ExecuteFailureKind::Unavailable,
-            code: None,
-            message: "execute endpoint down".into(),
-        }
-        .into();
-        let out = finalize_execution_error(e, "PFEon");
-        let s = out.to_string();
-        assert!(s.contains("swap execution failed"), "keeps prior context: {s}");
-        assert!(!s.contains("app.ondo.finance"), "no primary-market guidance for other kinds");
-    }
 
     #[test]
     fn refreshed_quote_floor_blocks_materially_worse_quote() {

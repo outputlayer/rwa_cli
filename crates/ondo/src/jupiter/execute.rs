@@ -78,10 +78,38 @@ fn quoted_out_amount(order: &OrderResponse) -> Result<u64, ExecuteFailure> {
     })
 }
 
+/// A route that funds the fill just-in-time — an RFQ market maker mints/positions
+/// inventory at `/execute` (same-block), which a pre-execute simulation can't
+/// see. Detected via `gasless`: RFQ makers sponsor gas; AMM routes (Metis) don't.
+fn route_funds_just_in_time(order: &OrderResponse) -> bool {
+    order.gasless == Some(true)
+}
+
+/// Whether a FAILED pre-sign simulation is nonetheless safe to submit. The ONLY
+/// safe case is a simulation that merely ERRORED (`OnChainWouldFail`) on a route
+/// that funds the fill just-in-time: the maker mints at `/execute` (invisible to
+/// the pre-execute sim) and the on-chain min-output enforces honesty. A sim that
+/// SUCCEEDED but showed dishonest deltas (`UnsafeDelta`/`OutputBelowQuote`) or
+/// that could not run (`RpcUnavailable`) is NEVER submitted.
+fn proceed_despite_sim_failure(err: &solana::SwapSimError, allow_jit_fill: bool) -> bool {
+    allow_jit_fill && matches!(err, solana::SwapSimError::OnChainWouldFail(_))
+}
+
+/// The execute-failure kind to surface for a REFUSED simulation.
+fn sim_failure_kind(err: &solana::SwapSimError) -> ExecuteFailureKind {
+    match err {
+        solana::SwapSimError::OnChainWouldFail(_)
+        | solana::SwapSimError::OutputBelowQuote(_) => ExecuteFailureKind::RouteUnfillable,
+        solana::SwapSimError::UnsafeDelta(_)
+        | solana::SwapSimError::RpcUnavailable(_) => ExecuteFailureKind::Unknown,
+    }
+}
+
 async fn presign_simulation_gate(
     tx_b64: &str,
     order: &OrderResponse,
     expected: &ExpectedSwap,
+    allow_jit_fill: bool,
 ) -> Result<()> {
     let min_output = solana::min_output_floor(quoted_out_amount(order)?, order.slippage_bps);
     if let Err(e) = solana::verify_swap_simulation(
@@ -95,19 +123,31 @@ async fn presign_simulation_gate(
     )
     .await
     {
-        // An unfillable route (RFQ MM can't fill) or a dishonest fill (credits
-        // materially less than quoted) is retryable with that router excluded;
-        // an unsafe delta or unreachable RPC is a hard, non-retryable refusal.
-        // Map accordingly so `execute_with_retry` can route around it.
-        let kind = match e.downcast_ref::<solana::SwapSimError>() {
-            Some(solana::SwapSimError::OnChainWouldFail(_))
-            | Some(solana::SwapSimError::OutputBelowQuote(_)) => {
-                ExecuteFailureKind::RouteUnfillable
+        // A SwapSimError decodes to a precise cause; anything else is an
+        // unexpected failure and is refused (fail-closed).
+        let Some(sim) = e.downcast_ref::<solana::SwapSimError>() else {
+            return Err(ExecuteFailure {
+                kind: ExecuteFailureKind::Unknown,
+                code: None,
+                message: format!("pre-sign swap simulation check failed: {e}"),
             }
-            _ => ExecuteFailureKind::Unknown,
+            .into());
         };
+        // A sim that merely ERRORED on a just-in-time-funding RFQ route is a
+        // false negative — the maker mints the fill at /execute (invisible here)
+        // and the on-chain min-output enforces honesty. Submit anyway.
+        if proceed_despite_sim_failure(sim, allow_jit_fill) {
+            eprintln!(
+                "note: pre-sign simulation couldn't confirm the fill (RFQ maker funds \
+                 just-in-time); submitting — Jupiter /execute enforces min-output on-chain"
+            );
+            return Ok(());
+        }
+        // Dishonest deltas (UnsafeDelta/OutputBelowQuote), an unreachable RPC, or
+        // a non-JIT route: a hard refusal. OnChainWouldFail/OutputBelowQuote are
+        // retryable with the router excluded; the rest are not.
         return Err(ExecuteFailure {
-            kind,
+            kind: sim_failure_kind(sim),
             code: None,
             message: format!("pre-sign swap simulation check failed: {e}"),
         }
@@ -127,7 +167,10 @@ async fn execute_managed_order(
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
 
-    presign_simulation_gate(tx_b64, order, expected).await?;
+    // Managed /execute: Jupiter co-signs + validates server-side and the maker
+    // funds RFQ fills just-in-time, so a sim that only ERRORED on a JIT route is
+    // submitted anyway (on-chain min-output still enforces honesty).
+    presign_simulation_gate(tx_b64, order, expected, route_funds_just_in_time(order)).await?;
 
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
@@ -194,9 +237,9 @@ async fn execute_metis_order(
         .transaction
         .as_deref()
         .ok_or_else(|| eyre!("No transaction in order"))?;
-    // Same economic gate as managed routes: Metis v1 carries minOut on-chain,
-    // but defense-in-depth says verify the simulated deltas before signing too.
-    presign_simulation_gate(tx_b64, order, expected).await?;
+    // Metis submits the signed tx directly via RPC (no Jupiter /execute), so the
+    // simulation IS the last line of defence — always strict, never the JIT relax.
+    presign_simulation_gate(tx_b64, order, expected, false).await?;
     let signed_tx = wallet
         .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;
@@ -248,6 +291,28 @@ fn check_execute_result(resp: &ExecuteResponse) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana::SwapSimError as E;
+
+    #[test]
+    fn jit_proceed_only_on_would_fail_and_only_when_allowed() {
+        // The one safe case: sim ERRORED on a just-in-time-funding route.
+        assert!(proceed_despite_sim_failure(&E::OnChainWouldFail("x".into()), true));
+        // Same error but the route can't fund JIT (e.g. Metis) → refuse.
+        assert!(!proceed_despite_sim_failure(&E::OnChainWouldFail("x".into()), false));
+        // SAFETY INVARIANT: a sim that SUCCEEDED but is dishonest, or couldn't
+        // run, is NEVER submitted — even on a JIT-funding route.
+        assert!(!proceed_despite_sim_failure(&E::OutputBelowQuote("x".into()), true));
+        assert!(!proceed_despite_sim_failure(&E::UnsafeDelta("x".into()), true));
+        assert!(!proceed_despite_sim_failure(&E::RpcUnavailable("x".into()), true));
+    }
+
+    #[test]
+    fn sim_failure_kind_maps_each_variant() {
+        assert_eq!(sim_failure_kind(&E::OnChainWouldFail("x".into())), ExecuteFailureKind::RouteUnfillable);
+        assert_eq!(sim_failure_kind(&E::OutputBelowQuote("x".into())), ExecuteFailureKind::RouteUnfillable);
+        assert_eq!(sim_failure_kind(&E::UnsafeDelta("x".into())), ExecuteFailureKind::Unknown);
+        assert_eq!(sim_failure_kind(&E::RpcUnavailable("x".into())), ExecuteFailureKind::Unknown);
+    }
 
     #[test]
     fn execute_http_error_kind_maps_transient_vs_hard() {
