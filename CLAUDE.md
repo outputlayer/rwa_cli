@@ -108,6 +108,8 @@ rwa keys decrypt
 rwa keys show
 rwa keys add <NAME> --path <PATH>                       # register an existing key file by name
 rwa keys add <NAME> --seed-phrase "..." --path <PATH>   # import a seed phrase to <PATH> (encrypted by default) and register
+rwa keys add <NAME> --seed-phrase "..." --account 1 --path <PATH>              # import at m/44'/501'/1'/0' (Phantom "Account 2")
+rwa keys add <NAME> --seed-phrase "..." --derivation-path "m/44'/501'/1'/0'" --path <PATH>  # same, explicit BIP44 path
 rwa keys add <NAME> --private-key <KEY> --path <PATH>   # import a base58/hex/base64 key to <PATH> and register
 rwa keys export --reveal            # print private key (base58 + JSON) and stored recovery phrase
 rwa keys list                       # list named wallets (* = active)
@@ -155,6 +157,7 @@ rwa update -y
 ## Wallet behavior
 
 - `keys generate` is mnemonic-first: the wallet derives from a fresh 12-word BIP39 phrase at `m/44'/501'/0'/0'` (Phantom/Solflare-compatible); the phrase is printed once. Encrypted wallets embed the phrase inside the age payload (`{key, mnemonic}` object; legacy bare arrays still load); plaintext `key.json` never stores it
+- Seed-phrase import (`keys import`/`keys add --seed-phrase`) accepts an optional derivation path: `--account <N>` (→ `m/44'/501'/N'/0'`; `N=0` default, matches Phantom/Solflare "Account N+1") or the mutually-exclusive `--derivation-path <PATH>` (full BIP44). Both apply only to seed import (rejected on `--file`/`--private-key`). A non-default path warns on stderr that the recovery phrase alone restores account 0 — the path must be recorded to restore that wallet elsewhere (the path is NOT yet stored in the payload; re-import with the same `--derivation-path`)
 - `keys export` prints the base58 keypair (Phantom import format), the solana-keygen JSON array, and the stored recovery phrase; gated behind an interactive confirmation or `--reveal` (mandatory with `--json`)
 - Plaintext wallet: `~/.config/rwa/key.json`
 - Encrypted wallet: `~/.config/rwa/key.age`

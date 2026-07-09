@@ -19,6 +19,49 @@ const SLIP10_ED25519_SEED: &[u8] = b"ed25519 seed";
 /// Standard Solana derivation path: m/44'/501'/0'/0'
 const SOLANA_DERIVATION_PATH: &[u32] = &[44, 501, 0, 0];
 
+/// Default Solana derivation path — Phantom/Solflare "Account 1" (index 0).
+pub const DEFAULT_DERIVATION_PATH: &str = "m/44'/501'/0'/0'";
+
+/// Standard Solana derivation path for account `n`: `m/44'/501'/n'/0'`.
+/// `account_derivation_path(0)` is the default; `n` maps to the (n+1)-th
+/// account label in Phantom/Solflare.
+pub fn account_derivation_path(n: u32) -> String {
+    format!("m/44'/501'/{n}'/0'")
+}
+
+/// Parse a BIP-44 path like `m/44'/501'/1'/0'` into raw indices. The `'`/`h`
+/// hardened markers are accepted; ed25519/SLIP-10 hardens every level during
+/// derivation regardless, so the markers are advisory.
+fn parse_derivation_path(path: &str) -> Result<Vec<u32>> {
+    let mut segments = path.trim().split('/');
+    match segments.next() {
+        Some("m") | Some("M") => {}
+        _ => return Err(eyre!("derivation path must start with 'm', got {path:?}")),
+    }
+    let mut indices = Vec::new();
+    for seg in segments {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue; // tolerate a trailing slash
+        }
+        let num = seg
+            .strip_suffix('\'')
+            .or_else(|| seg.strip_suffix('h'))
+            .unwrap_or(seg);
+        let idx: u32 = num
+            .parse()
+            .map_err(|_| eyre!("invalid derivation path segment {seg:?} in {path:?}"))?;
+        if idx >= 0x8000_0000 {
+            return Err(eyre!("derivation index {idx} out of range in {path:?}"));
+        }
+        indices.push(idx);
+    }
+    if indices.is_empty() {
+        return Err(eyre!("derivation path {path:?} has no indices"));
+    }
+    Ok(indices)
+}
+
 /// A Solana wallet backed by an Ed25519 keypair.
 pub struct Wallet {
     signing_key: SigningKey,
@@ -220,6 +263,12 @@ impl Wallet {
     /// Import from a BIP39 mnemonic phrase (12 or 24 words).
     /// Derives via SLIP-10 at m/44'/501'/0'/0' (standard Solana path).
     pub fn from_mnemonic(phrase: &str) -> Result<Self> {
+        Self::derive_mnemonic(phrase, SOLANA_DERIVATION_PATH)
+    }
+
+    /// SLIP-10 ed25519 derivation of a mnemonic at an explicit index path.
+    /// Every level is hardened (ed25519 supports hardened derivation only).
+    fn derive_mnemonic(phrase: &str, path: &[u32]) -> Result<Self> {
         let mnemonic: bip39::Mnemonic = phrase.parse()
             .map_err(|e| eyre!("Invalid mnemonic: {e}"))?;
         let seed = Zeroizing::new(mnemonic.to_seed(""));
@@ -232,8 +281,8 @@ impl Wallet {
         let mut secret = Zeroizing::new(result[..32].to_vec());
         let mut chain_code = Zeroizing::new(result[32..].to_vec());
 
-        // Derive hardened child keys for m/44'/501'/0'/0'
-        for &index in SOLANA_DERIVATION_PATH {
+        // Derive hardened child keys along the path
+        for &index in path {
             let hardened = index | 0x80000000;
             let mut mac = HmacSha512::new_from_slice(&chain_code)
                 .map_err(|e| eyre!("HMAC derive failed: {e}"))?;
@@ -249,6 +298,14 @@ impl Wallet {
             .map_err(|_| eyre!("SLIP-10 derivation produced invalid key length"))?);
         let signing_key = SigningKey::from_bytes(&secret_bytes);
         Ok(Self { signing_key })
+    }
+
+    /// Import from a BIP39 mnemonic at a caller-supplied derivation path
+    /// (e.g. `m/44'/501'/1'/0'` for a non-default account). Use
+    /// [`account_derivation_path`] to build a path from an account index.
+    pub fn from_mnemonic_at(phrase: &str, derivation_path: &str) -> Result<Self> {
+        let path = parse_derivation_path(derivation_path)?;
+        Self::derive_mnemonic(phrase, &path)
     }
 
     /// Load the default wallet from ~/.config/rwa/key.json.
@@ -687,6 +744,58 @@ mod tests {
     #[test]
     fn from_mnemonic_invalid() {
         assert!(Wallet::from_mnemonic("not a valid mnemonic").is_err());
+    }
+
+    const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[test]
+    fn parse_derivation_path_standard() {
+        assert_eq!(parse_derivation_path("m/44'/501'/1'/0'").unwrap(), vec![44, 501, 1, 0]);
+    }
+
+    #[test]
+    fn parse_derivation_path_accepts_h_marker_and_trailing_slash() {
+        assert_eq!(parse_derivation_path("m/44h/501h/2h/0h/").unwrap(), vec![44, 501, 2, 0]);
+    }
+
+    #[test]
+    fn parse_derivation_path_rejects_bad_start_and_nonnumeric() {
+        assert!(parse_derivation_path("44'/501'/0'/0'").is_err());
+        assert!(parse_derivation_path("m/44'/xyz'/0'/0'").is_err());
+        assert!(parse_derivation_path("m").is_err());
+    }
+
+    #[test]
+    fn account_derivation_path_builds_standard_solana_path() {
+        assert_eq!(account_derivation_path(0), "m/44'/501'/0'/0'");
+        assert_eq!(account_derivation_path(2), "m/44'/501'/2'/0'");
+    }
+
+    #[test]
+    fn from_mnemonic_at_default_path_matches_from_mnemonic() {
+        assert_eq!(
+            Wallet::from_mnemonic_at(ABANDON, "m/44'/501'/0'/0'").unwrap().pubkey(),
+            Wallet::from_mnemonic(ABANDON).unwrap().pubkey()
+        );
+    }
+
+    #[test]
+    fn from_mnemonic_at_account_one_matches_independent_reference() {
+        // Independently derived (python SLIP-10 ed25519, no shared code) at
+        // m/44'/501'/1'/0' — this is Phantom/Solflare "Account 2".
+        assert_eq!(
+            Wallet::from_mnemonic_at(ABANDON, "m/44'/501'/1'/0'").unwrap().pubkey(),
+            "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb"
+        );
+        assert_ne!(
+            Wallet::from_mnemonic_at(ABANDON, "m/44'/501'/1'/0'").unwrap().pubkey(),
+            Wallet::from_mnemonic(ABANDON).unwrap().pubkey()
+        );
+    }
+
+    #[test]
+    fn from_mnemonic_at_rejects_bad_path() {
+        assert!(Wallet::from_mnemonic_at(ABANDON, "not-a-path").is_err());
     }
 
     #[test]

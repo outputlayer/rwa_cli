@@ -3,6 +3,32 @@ use eyre::Result;
 use rwa_ondo::wallet::{self, Wallet};
 use zeroize::Zeroizing;
 
+/// Resolve the seed-import derivation path from the mutually-exclusive
+/// `--account <N>` (→ `m/44'/501'/N'/0'`) and `--derivation-path <PATH>` flags.
+/// Neither given → the default Solana path (account 0).
+fn resolve_derivation_path(account: Option<u32>, derivation_path: Option<String>) -> Result<String> {
+    match (account, derivation_path) {
+        (Some(_), Some(_)) => {
+            Err(eyre::eyre!("--account and --derivation-path are mutually exclusive"))
+        }
+        (Some(n), None) => Ok(wallet::account_derivation_path(n)),
+        (None, Some(p)) => Ok(p),
+        (None, None) => Ok(wallet::DEFAULT_DERIVATION_PATH.to_string()),
+    }
+}
+
+/// A seed imported at a non-default path can't be restored from the phrase
+/// alone (that yields account 0) — warn the user to record the path too.
+fn warn_non_default_path(derivation_path: &str) {
+    if derivation_path != wallet::DEFAULT_DERIVATION_PATH {
+        eprintln!(
+            "NOTE: derived at {derivation_path}. The recovery phrase alone restores the default \
+             account (m/44'/501'/0'/0') — record this path; restore THIS wallet elsewhere with \
+             `--derivation-path {derivation_path}`."
+        );
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum KeysAction {
     /// Generate a new Solana wallet
@@ -29,6 +55,14 @@ pub enum KeysAction {
         /// BIP39 seed phrase (12 or 24 words). Omit value to enter interactively (safer).
         #[arg(long, num_args = 0..=1, default_missing_value = "")]
         seed_phrase: Option<String>,
+
+        /// Account index for --seed-phrase import (0 = default). Derives m/44'/501'/N'/0' — Phantom/Solflare "Account N+1".
+        #[arg(long, conflicts_with = "derivation_path")]
+        account: Option<u32>,
+
+        /// Full BIP44 derivation path for --seed-phrase import (e.g. "m/44'/501'/1'/0'").
+        #[arg(long)]
+        derivation_path: Option<String>,
 
         /// Save wallet as plaintext key.json instead of encrypted key.age (not recommended)
         #[arg(long)]
@@ -60,6 +94,12 @@ pub enum KeysAction {
         /// Import from a BIP39 seed phrase (omit the value to enter it interactively)
         #[arg(long, num_args = 0..=1, default_missing_value = "", conflicts_with = "private_key")]
         seed_phrase: Option<String>,
+        /// Account index for --seed-phrase import (0 = default). Derives m/44'/501'/N'/0'.
+        #[arg(long, conflicts_with_all = ["private_key", "derivation_path"])]
+        account: Option<u32>,
+        /// Full BIP44 derivation path for --seed-phrase import (e.g. "m/44'/501'/1'/0'").
+        #[arg(long, conflicts_with = "private_key")]
+        derivation_path: Option<String>,
         /// Import from a base58/hex/base64 private key
         #[arg(long)]
         private_key: Option<String>,
@@ -99,11 +139,12 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             }
             generate(allow_plaintext).await
         }
-        KeysAction::Import { file, private_key, seed_phrase, allow_plaintext, encrypt } => {
+        KeysAction::Import { file, private_key, seed_phrase, account, derivation_path, allow_plaintext, encrypt } => {
             if encrypt {
                 eprintln!("WARNING: --encrypt is deprecated; encryption is now the default. Use --allow-plaintext to opt out.");
             }
-            import(file, private_key, seed_phrase, allow_plaintext).await
+            let path = resolve_derivation_path(account, derivation_path)?;
+            import(file, private_key, seed_phrase, path, allow_plaintext).await
         }
         KeysAction::Show => show(selected).await,
         KeysAction::Encrypt => {
@@ -118,8 +159,9 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             }
             decrypt_wallet().await
         }
-        KeysAction::Add { name, path, seed_phrase, private_key, allow_plaintext } => {
-            add(&name, &path, seed_phrase, private_key, allow_plaintext, json).await
+        KeysAction::Add { name, path, seed_phrase, account, derivation_path, private_key, allow_plaintext } => {
+            let deriv = resolve_derivation_path(account, derivation_path)?;
+            add(&name, &path, seed_phrase, deriv, private_key, allow_plaintext, json).await
         }
         KeysAction::Export { reveal } => export(selected, reveal, json).await,
         KeysAction::List => list(json).await,
@@ -174,6 +216,7 @@ async fn import(
     file: Option<String>,
     private_key: Option<String>,
     seed_phrase: Option<String>,
+    derivation_path: String,
     allow_plaintext: bool,
 ) -> Result<()> {
     let json_path = wallet::default_key_path()?;
@@ -181,6 +224,11 @@ async fn import(
     if json_path.exists() || age_path.exists() {
         return Err(eyre::eyre!(
             "Wallet already exists. Delete it first if you want to import a new one."
+        ));
+    }
+    if derivation_path != wallet::DEFAULT_DERIVATION_PATH && seed_phrase.is_none() {
+        return Err(eyre::eyre!(
+            "--account/--derivation-path only apply to --seed-phrase import"
         ));
     }
 
@@ -199,7 +247,8 @@ async fn import(
             } else {
                 sp
             };
-            let w = Wallet::from_mnemonic(&phrase)?;
+            let w = Wallet::from_mnemonic_at(&phrase, &derivation_path)?;
+            warn_non_default_path(&derivation_path);
             imported_phrase = Some(phrase);
             w
         }
@@ -405,10 +454,16 @@ async fn add(
     name: &str,
     path: &str,
     seed_phrase: Option<String>,
+    derivation_path: String,
     private_key: Option<String>,
     allow_plaintext: bool,
     json: bool,
 ) -> Result<()> {
+    if derivation_path != wallet::DEFAULT_DERIVATION_PATH && seed_phrase.is_none() {
+        return Err(eyre::eyre!(
+            "--account/--derivation-path only apply to --seed-phrase import"
+        ));
+    }
     let cfg = config_dir()?;
     // Validate the name and reject duplicates BEFORE any file is written, so an
     // import that names an existing wallet never leaves an orphan key file.
@@ -440,7 +495,8 @@ async fn add(
             } else {
                 sp
             };
-            let w = Wallet::from_mnemonic(&phrase)?;
+            let w = Wallet::from_mnemonic_at(&phrase, &derivation_path)?;
+            warn_non_default_path(&derivation_path);
             imported_phrase = Some(phrase);
             Some(w)
         }
@@ -609,6 +665,17 @@ fn prompt_new_passphrase() -> Result<Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_derivation_path_defaults_and_flags() {
+        assert_eq!(resolve_derivation_path(None, None).unwrap(), "m/44'/501'/0'/0'");
+        assert_eq!(resolve_derivation_path(Some(1), None).unwrap(), "m/44'/501'/1'/0'");
+        assert_eq!(
+            resolve_derivation_path(None, Some("m/44'/501'/5'/0'".to_string())).unwrap(),
+            "m/44'/501'/5'/0'"
+        );
+        assert!(resolve_derivation_path(Some(1), Some("m/44'/501'/1'/0'".to_string())).is_err());
+    }
 
     // ── Task A.2 tests ────────────────────────────────────────
 
