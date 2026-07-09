@@ -193,7 +193,7 @@ impl ExecuteFailureKind {
             Self::SwapRejected => "swap rejected",
             Self::InternalError => "internal error — retry",
             Self::Unavailable => "unavailable — retry",
-            Self::RouteUnfillable => "quoted route can't fill — trying another",
+            Self::RouteUnfillable => "quoted route couldn't fill on-chain",
             Self::Unknown => "",
         }
     }

@@ -9,17 +9,18 @@ use super::gm::{
 };
 use super::gm_internal::MAX_SWAP_RETRIES;
 
-/// Message for a buy/sell that reached a valid quote but could not be filled
-/// on any secondary route: the RFQ market maker had no inventory and there is
-/// no AMM pool. These thin Ondo GM tokens are minted just-in-time on Ondo's
-/// primary market, which Jupiter can't reach — so the actionable advice is to
-/// trade them on the Ondo app. Reached only after a real fill-failure (the
-/// initial quote already succeeded), so this cause is certain, not a guess.
-pub(crate) fn no_secondary_liquidity_message(symbol: &str) -> String {
+/// Message for a buy/sell whose quoted route failed the pre-sign safety
+/// simulation with no fillable alternative. This is often a FALSE negative for
+/// thin RFQ tokens: on-chain evidence shows the market maker funds the fill
+/// just-in-time at `/execute` (mints in the same block), which local simulation
+/// — run before submission — can't see. State that honestly instead of claiming
+/// there is no liquidity. Kind stays `route_unfillable`; the behavioural fix
+/// (trusting the maker's just-in-time fill) is tracked separately.
+pub(crate) fn presign_refusal_message(symbol: &str) -> String {
     format!(
-        "{symbol}: no secondary liquidity — the market maker has no inventory and \
-         there is no AMM pool. This token trades on Ondo's primary market; \
-         buy it via app.ondo.finance"
+        "{symbol}: couldn't submit this trade — the on-chain safety check couldn't confirm \
+         the fill. This RFQ market maker fills just-in-time on execution, which the local \
+         check can't see yet."
     )
 }
 
@@ -36,7 +37,7 @@ pub(crate) fn finalize_execution_error(err: eyre::Error, symbol: &str) -> eyre::
         return jupiter::ExecuteFailure {
             kind: jupiter::ExecuteFailureKind::RouteUnfillable,
             code: None,
-            message: no_secondary_liquidity_message(symbol),
+            message: presign_refusal_message(symbol),
         }
         .into();
     }
@@ -371,16 +372,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_secondary_liquidity_message_names_symbol_and_points_to_ondo() {
-        let s = no_secondary_liquidity_message("PFEon");
+    fn presign_refusal_message_is_accurate_and_symbol_led() {
+        let s = presign_refusal_message("PFEon");
         assert!(s.starts_with("PFEon:"), "leads with the symbol");
-        assert!(s.contains("no secondary liquidity"));
-        assert!(s.contains("app.ondo.finance"), "gives the actionable next step");
+        assert!(s.contains("just-in-time"), "explains the JIT-mint reality");
+        assert!(!s.contains("app.ondo.finance"), "no false 'buy on the app' claim");
+        assert!(!s.contains("no secondary liquidity"), "no false 'no liquidity' claim");
         assert!(!s.contains("No swap route found"), "not the raw backend wall");
     }
 
     #[test]
-    fn finalize_route_unfillable_becomes_primary_market_guidance_keeps_kind() {
+    fn finalize_route_unfillable_rewrites_message_keeps_kind() {
         let e: eyre::Error = jupiter::ExecuteFailure {
             kind: jupiter::ExecuteFailureKind::RouteUnfillable,
             code: None,
@@ -393,7 +395,8 @@ mod tests {
             .expect("still an ExecuteFailure so error_kind survives to JSON");
         assert_eq!(f.kind, jupiter::ExecuteFailureKind::RouteUnfillable);
         assert!(f.message.starts_with("PFEon:"));
-        assert!(f.message.contains("app.ondo.finance"));
+        assert!(f.message.contains("just-in-time"));
+        assert!(!f.message.contains("app.ondo.finance"));
     }
 
     #[test]
