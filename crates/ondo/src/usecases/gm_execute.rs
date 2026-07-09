@@ -9,6 +9,40 @@ use super::gm::{
 };
 use super::gm_internal::MAX_SWAP_RETRIES;
 
+/// Message for a buy/sell that reached a valid quote but could not be filled
+/// on any secondary route: the RFQ market maker had no inventory and there is
+/// no AMM pool. These thin Ondo GM tokens are minted just-in-time on Ondo's
+/// primary market, which Jupiter can't reach — so the actionable advice is to
+/// trade them on the Ondo app. Reached only after a real fill-failure (the
+/// initial quote already succeeded), so this cause is certain, not a guess.
+pub(crate) fn no_secondary_liquidity_message(symbol: &str) -> String {
+    format!(
+        "{symbol}: no secondary liquidity — the market maker has no inventory and \
+         there is no AMM pool. This token trades on Ondo's primary market; \
+         buy it via app.ondo.finance"
+    )
+}
+
+/// Shape a terminal execution error for the user. By the time execution runs
+/// the initial quote has already succeeded, so a `RouteUnfillable` here can
+/// only mean the fill failed and no secondary route remained — swap the raw
+/// backend wall for the primary-market guidance while KEEPING the
+/// `route_unfillable` kind so the JSON contract is unchanged. Any other error
+/// keeps the generic "swap execution failed" context.
+pub(crate) fn finalize_execution_error(err: eyre::Error, symbol: &str) -> eyre::Error {
+    if let Some(f) = err.downcast_ref::<jupiter::ExecuteFailure>()
+        && f.kind == jupiter::ExecuteFailureKind::RouteUnfillable
+    {
+        return jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::RouteUnfillable,
+            code: None,
+            message: no_secondary_liquidity_message(symbol),
+        }
+        .into();
+    }
+    err.wrap_err("swap execution failed")
+}
+
 /// A refreshed (post-retry) quote must stay within slippage tolerance of the
 /// quote the user previewed/confirmed — auto-rerouting must never silently
 /// accept a materially worse price. Returns `Some((refreshed_out, floor))`
@@ -283,8 +317,7 @@ pub(crate) async fn execute_with_retry(
                         params.slippage_bps,
                         &excluded_routers,
                     )
-                    .await
-                    .wrap_err("failed to refresh quote after transient error")?;
+                    .await?;
                     // The user previewed/confirmed the ORIGINAL quote. A reroute
                     // that prices materially worse (premarket spread, lone MM)
                     // must abort, not silently execute.
@@ -336,6 +369,46 @@ pub(crate) fn calc_actual_slippage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_secondary_liquidity_message_names_symbol_and_points_to_ondo() {
+        let s = no_secondary_liquidity_message("PFEon");
+        assert!(s.starts_with("PFEon:"), "leads with the symbol");
+        assert!(s.contains("no secondary liquidity"));
+        assert!(s.contains("app.ondo.finance"), "gives the actionable next step");
+        assert!(!s.contains("No swap route found"), "not the raw backend wall");
+    }
+
+    #[test]
+    fn finalize_route_unfillable_becomes_primary_market_guidance_keeps_kind() {
+        let e: eyre::Error = jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::RouteUnfillable,
+            code: None,
+            message: "no swap route available across Jupiter backends".into(),
+        }
+        .into();
+        let out = finalize_execution_error(e, "PFEon");
+        let f = out
+            .downcast_ref::<jupiter::ExecuteFailure>()
+            .expect("still an ExecuteFailure so error_kind survives to JSON");
+        assert_eq!(f.kind, jupiter::ExecuteFailureKind::RouteUnfillable);
+        assert!(f.message.starts_with("PFEon:"));
+        assert!(f.message.contains("app.ondo.finance"));
+    }
+
+    #[test]
+    fn finalize_other_kinds_keep_generic_context() {
+        let e: eyre::Error = jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::Unavailable,
+            code: None,
+            message: "execute endpoint down".into(),
+        }
+        .into();
+        let out = finalize_execution_error(e, "PFEon");
+        let s = out.to_string();
+        assert!(s.contains("swap execution failed"), "keeps prior context: {s}");
+        assert!(!s.contains("app.ondo.finance"), "no primary-market guidance for other kinds");
+    }
 
     #[test]
     fn refreshed_quote_floor_blocks_materially_worse_quote() {

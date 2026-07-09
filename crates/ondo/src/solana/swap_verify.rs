@@ -55,6 +55,25 @@ impl std::fmt::Display for SwapSimError {
 
 impl std::error::Error for SwapSimError {}
 
+/// Condense a failed swap-simulation into a one-line human cause instead of
+/// dumping the entire program-log. The most common on-chain failure for GM
+/// tokens is an RFQ market maker with no inventory, which surfaces as an SPL
+/// `insufficient funds` log — we name that plainly. Full raw error + logs are
+/// kept only when `debug` (RWA_DEBUG) is set, so they stay available for
+/// diagnosis without spamming every retry line.
+pub(crate) fn summarize_sim_failure(err: &str, logs: &str, debug: bool) -> String {
+    let cause = if logs.contains("insufficient funds") {
+        "market maker could not fill the order (insufficient inventory)"
+    } else {
+        "transaction would fail on-chain"
+    };
+    if debug {
+        format!("{cause} [sim {err}: {logs}]")
+    } else {
+        cause.to_string()
+    }
+}
+
 /// SPL token `Account` layout: `mint[32] | owner[32] | amount[u64 LE] | …`.
 /// The `amount` field sits at byte offset 64 for both classic Token and
 /// Token-2022 (extensions, if any, follow the base 165-byte account).
@@ -219,7 +238,12 @@ pub async fn verify_swap_simulation(
                     .join(" | ")
             })
             .unwrap_or_default();
-        return Err(SwapSimError::OnChainWouldFail(format!("simulation error {err}: {logs}")).into());
+        return Err(SwapSimError::OnChainWouldFail(summarize_sim_failure(
+            &err.to_string(),
+            &logs,
+            crate::debug_enabled(),
+        ))
+        .into());
     }
 
     let pre_accounts = pre.get("value").and_then(|v| v.as_array());
@@ -267,6 +291,33 @@ mod tests {
     #[test]
     fn safe_when_input_slightly_under_expected() {
         assert!(deltas_are_safe(39_900_000, 40_000_000, 1_000, 0).is_ok());
+    }
+
+    #[test]
+    fn sim_failure_insufficient_funds_reads_as_maker_no_inventory() {
+        let logs = "Program 61DF invoke [1] | Program log: Instruction: Fill | \
+                    Program log: Instruction: TransferChecked | Program log: Error: insufficient funds";
+        let s = summarize_sim_failure("{\"InstructionError\":[3,{\"Custom\":1}]}", logs, false);
+        assert_eq!(
+            s,
+            "market maker could not fill the order (insufficient inventory)"
+        );
+        assert!(!s.contains("Program"), "concise mode must not dump program logs");
+    }
+
+    #[test]
+    fn sim_failure_debug_keeps_raw_error_and_logs() {
+        let logs = "Program 61DF ... insufficient funds";
+        let s = summarize_sim_failure("ERRJSON", logs, true);
+        assert!(s.contains("insufficient inventory"));
+        assert!(s.contains("ERRJSON"), "debug keeps raw error");
+        assert!(s.contains("Program 61DF"), "debug keeps raw logs");
+    }
+
+    #[test]
+    fn sim_failure_generic_when_cause_unknown() {
+        let s = summarize_sim_failure("ERR", "Program log: some other failure", false);
+        assert_eq!(s, "transaction would fail on-chain");
     }
 
     #[test]

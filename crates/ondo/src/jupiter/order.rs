@@ -133,10 +133,7 @@ async fn get_order_impl(
             Err(ExecuteFailure {
                 kind: ExecuteFailureKind::RouteUnfillable,
                 code: None,
-                message: format!(
-                    "No swap route found across public Jupiter backends: {}",
-                    failures.join(" | ")
-                ),
+                message: concise_no_route(&failures, crate::debug_enabled()),
             }
             .into())
         }
@@ -324,6 +321,20 @@ fn is_retryable_order_error(msg: &str) -> bool {
         || msg.contains("/order network error")
         || msg.contains("/order rate limited")
         || msg.contains("/order server error")
+}
+
+/// Collapse the per-backend quote-failure list into one concise line. Every
+/// backend declining means "no route" — the individual `{requestId}` payloads
+/// are diagnostic noise, so we drop them unless `debug` (RWA_DEBUG) is set.
+pub(crate) fn concise_no_route(failures: &[String], debug: bool) -> String {
+    if debug {
+        format!(
+            "No swap route found across public Jupiter backends: {}",
+            failures.join(" | ")
+        )
+    } else {
+        "no swap route available across Jupiter backends".to_string()
+    }
 }
 
 /// Errors that mean "this backend can't fill the order" — continue down the
@@ -595,6 +606,26 @@ mod tests {
         assert!(is_route_like_order_error("COULD_NOT_FIND_ANY_ROUTE"));
         assert!(is_route_like_order_error("TOKEN_NOT_TRADABLE"));
         assert!(!is_route_like_order_error("Jupiter /order server error (500)"));
+    }
+
+    #[test]
+    fn concise_no_route_drops_backend_noise_by_default() {
+        let failures = vec![
+            "swap-v2-lite: Failed to get quotes {requestId:abc}".to_string(),
+            "metis-v1-lite: TOKEN_NOT_TRADABLE".to_string(),
+        ];
+        let s = concise_no_route(&failures, false);
+        assert_eq!(s, "no swap route available across Jupiter backends");
+        assert!(!s.contains("requestId"), "concise mode drops per-backend payloads");
+        assert!(!s.contains("metis"), "concise mode drops backend names");
+    }
+
+    #[test]
+    fn concise_no_route_keeps_backend_detail_in_debug() {
+        let failures = vec!["swap-v2-lite: Failed to get quotes {requestId:abc}".to_string()];
+        let s = concise_no_route(&failures, true);
+        assert!(s.contains("requestId:abc"), "debug keeps the raw per-backend failures");
+        assert!(s.contains("swap-v2-lite"));
     }
 
     #[test]
