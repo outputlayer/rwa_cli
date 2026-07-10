@@ -85,6 +85,16 @@ fn route_funds_just_in_time(order: &OrderResponse) -> bool {
     order.gasless == Some(true)
 }
 
+/// Whether the pre-sign gate may relax on an errored simulation for this submit
+/// path. ONLY the managed `/execute` path may — there Jupiter co-signs and
+/// server-validates, and the maker funds a gasless RFQ fill just-in-time. The
+/// Metis path direct-submits via RPC with no server backstop, so it is ALWAYS
+/// strict regardless of `gasless`. This is the money-safety wiring: a Metis
+/// route that failed simulation must never be signed.
+fn allow_jit_fill(managed_execute: bool, order: &OrderResponse) -> bool {
+    managed_execute && route_funds_just_in_time(order)
+}
+
 /// Whether a FAILED pre-sign simulation is nonetheless safe to submit. The ONLY
 /// safe case is a simulation that merely ERRORED (`OnChainWouldFail`) on a route
 /// that funds the fill just-in-time: the maker mints at `/execute` (invisible to
@@ -179,7 +189,7 @@ async fn execute_managed_order(
     // Managed /execute: Jupiter co-signs + validates server-side and the maker
     // funds RFQ fills just-in-time, so a sim that only ERRORED on a JIT route is
     // submitted anyway (on-chain min-output still enforces honesty).
-    presign_simulation_gate(tx_b64, order, expected, route_funds_just_in_time(order)).await?;
+    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill(true, order)).await?;
 
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
@@ -248,7 +258,7 @@ async fn execute_metis_order(
         .ok_or_else(|| eyre!("No transaction in order"))?;
     // Metis submits the signed tx directly via RPC (no Jupiter /execute), so the
     // simulation IS the last line of defence — always strict, never the JIT relax.
-    presign_simulation_gate(tx_b64, order, expected, false).await?;
+    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill(false, order)).await?;
     let signed_tx = wallet
         .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;
@@ -327,6 +337,19 @@ mod tests {
         err.downcast_ref::<ExecuteFailure>()
             .expect("refusal carries an ExecuteFailure so error_kind survives")
             .kind
+    }
+
+    #[test]
+    fn allow_jit_fill_is_managed_gasless_only_metis_always_strict() {
+        let gasless = OrderResponse { gasless: Some(true), ..OrderResponse::default() };
+        let not_gasless = OrderResponse { gasless: Some(false), ..OrderResponse::default() };
+        // Managed /execute may relax only for a gasless (JIT-funding) route.
+        assert!(allow_jit_fill(true, &gasless));
+        assert!(!allow_jit_fill(true, &not_gasless));
+        // SAFETY: the Metis direct-submit path is NEVER allowed to relax, even if
+        // the order erroneously carried gasless:true — the sim is its only backstop.
+        assert!(!allow_jit_fill(false, &gasless));
+        assert!(!allow_jit_fill(false, &not_gasless));
     }
 
     #[test]

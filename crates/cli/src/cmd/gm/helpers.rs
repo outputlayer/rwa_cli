@@ -201,6 +201,10 @@ where
     // starts pushing back (retries climb past the baseline), widen the gap to a
     // serial pace so we stop feeding the burst. Adaptive to whatever per-wallet
     // limit the user has, so a keyless public wallet gets the best of both.
+    // Trade-off (perf only): the counter counts any retryable /order pushback, so
+    // a single non-rate-limit transient on an early item latches the wider pace
+    // for the rest of this basket. Acceptable — it only slows launches, never
+    // money movement (execution uses a fixed pace and ignores this counter).
     let stagger = quote_stagger();
     let retries_baseline = jupiter::order_retry_count();
     let mut order_set: JoinSet<(String, Result<T>)> = JoinSet::new();
@@ -516,6 +520,37 @@ mod tests {
         assert_eq!(quote_stagger_from(Some("120")), Duration::from_millis(120));
         assert_eq!(quote_stagger_from(Some("0")), Duration::from_millis(0));
         assert_eq!(quote_stagger_from(Some("garbage")), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn parallel_fetch_widens_gap_after_a_throttle_signal() {
+        let t0 = tokio::time::Instant::now();
+        let items = vec![1i32, 2i32, 3i32];
+        let (mut ready, failed) = fetch_orders_parallel(
+            items,
+            true,
+            "orders",
+            |_: &i32| String::new(),
+            |item: i32| async move {
+                // Simulate Jupiter pushing back on the FIRST quote: bump the
+                // retry counter the launcher paces against.
+                if item == 1 {
+                    rwa_ondo::jupiter::note_order_retry();
+                }
+                (item.to_string(), Ok::<i32, eyre::Report>(item))
+            },
+        )
+        .await;
+        ready.sort();
+        assert_eq!(ready, vec![1, 2, 3], "all items still resolve");
+        assert!(failed.is_empty());
+        // Item 1's retry bumps the counter before item 2's launch check, so the
+        // remaining launches widen to SEQUENTIAL_SPACING — at least one 3s gap.
+        assert!(
+            t0.elapsed() >= SEQUENTIAL_SPACING,
+            "a throttle signal must widen the launch pacing, got {:?}",
+            t0.elapsed()
+        );
     }
 
     #[tokio::test(start_paused = true)]

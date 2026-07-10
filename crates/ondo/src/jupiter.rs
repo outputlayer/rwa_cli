@@ -10,6 +10,7 @@
 //! - `order` — `/order` flow with retries and Metis V1 fallback.
 //! - `execute` — `/execute` flow per `OrderBackend`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Semaphore;
 
 mod execute;
@@ -80,17 +81,19 @@ static EXECUTE_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 /// wallet and widen its launch pacing — a keyless-friendly adaptive back-off, so
 /// a public user without an API key gets fast parallel when the endpoint is
 /// generous and a graceful serial pace when it is not.
-static ORDER_RETRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ORDER_RETRIES: AtomicU64 = AtomicU64::new(0);
 
-/// Record that a `/order` fetch is backing off to retry (called at the retry site).
-pub(crate) fn note_order_retry() {
-    ORDER_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+/// Record that a `/order` fetch is backing off to retry. Called at the retry
+/// site; also `pub` so the basket-launcher tests (a separate crate) can simulate
+/// Jupiter pushback without a live rate limit.
+pub fn note_order_retry() {
+    ORDER_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Process-wide `/order` retry count so far — the pushback signal the basket
 /// launcher paces against.
 pub fn order_retry_count() -> u64 {
-    ORDER_RETRIES.load(std::sync::atomic::Ordering::Relaxed)
+    ORDER_RETRIES.load(Ordering::Relaxed)
 }
 
 fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
