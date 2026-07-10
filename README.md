@@ -59,6 +59,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.
 - **Slippage**: 1% default, hard-blocked above 3%; unfillable routes are retried through another market maker automatically.
+- **Liquidity is market-maker-driven.** These tokens trade only against USDC, filled by Ondo's RFQ makers (who mint just-in-time). Thin single-name tokens depend on a maker being able to fill *right now* — a rare `route_unfillable` (exit 1) means none could; retry shortly. Under a keyless wallet, Jupiter's per-wallet rate limit also bounds throughput (set `RWA_JUPITER_API_KEY` to raise it).
 - **Back up your wallet.** `keys generate` derives from a BIP39 phrase (works in Phantom/Solflare) and shows it once; encrypted wallets keep it — reveal anytime with `keys export --reveal`.
 - **Sessions are ET-based** — Pre-Market 4:00, Regular 9:30, Post-Market 16:00, Overnight 20:00. Weekends/holidays are off-hours: only flagship tokens (TSLAon, NVDAon, SPYon, QQQon, GOOGLon, …) trade then. `rwa gm hours --tradable` shows what's available right now.
 
