@@ -568,9 +568,17 @@ mod tests {
         ready.sort();
         assert_eq!(ready, vec![1, 2, 3], "all items still resolve despite staggering");
         assert!(failed.is_empty());
-        // 3 launches ⇒ at least 2 stagger gaps elapse.
+        // 3 launches ⇒ at least 2 default stagger gaps elapse. Pinned to the
+        // CONST (not `quote_stagger()`, which would collapse to `>= 0` under
+        // RWA_QUOTE_STAGGER_MS=0 and pass vacuously).
+        // >= 2 default stagger gaps. Pinned to the CONST (not `quote_stagger()`,
+        // which would collapse to `>= 0` under RWA_QUOTE_STAGGER_MS=0 and pass
+        // vacuously). Only a lower bound: `ORDER_RETRIES` is a process-global a
+        // sibling test may bump, spuriously tripping the widen — which only makes
+        // elapsed larger, so it can't fail this bound (an upper bound here would
+        // be flaky under parallel test execution).
         assert!(
-            t0.elapsed() >= quote_stagger() * 2,
+            t0.elapsed() >= Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS) * 2,
             "expected >= 2 stagger gaps, got {:?}",
             t0.elapsed()
         );

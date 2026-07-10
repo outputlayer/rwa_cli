@@ -679,6 +679,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates RWA_PASSPHRASE — must not race other env tests
     #[allow(unsafe_code)]
     fn prompt_passphrase_returns_zeroizing() {
         // Test requires env var mutation to exercise env var code path

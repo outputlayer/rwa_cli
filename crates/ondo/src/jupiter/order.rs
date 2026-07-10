@@ -827,6 +827,7 @@ mod tests {
             then.status(500).body("upstream exploded");
         }).await;
 
+        let retries_before = crate::jupiter::order_retry_count();
         let err = get_order(
             Some(&server.base_url()),
             USDC_MINT,
@@ -838,6 +839,16 @@ mod tests {
 
         mock.assert_hits_async((ORDER_MAX_RETRIES + 1) as usize).await;
         assert!(err.to_string().contains("server error"), "err: {err}");
+        // Each of those retries must record a `note_order_retry` — the pushback
+        // signal the parallel-basket launcher paces against. Lower bound (the
+        // counter is a process-global a sibling may also bump), but this call's
+        // own ORDER_MAX_RETRIES retries alone satisfy it, so a removed
+        // `note_order_retry` at the retry site fails this (never flaky: only
+        // grows). Proven-real via the mock hit count above, not `start_paused`.
+        assert!(
+            crate::jupiter::order_retry_count() >= retries_before + ORDER_MAX_RETRIES as u64,
+            "the retry loop must bump the order-retry counter"
+        );
     }
 
     #[tokio::test]
@@ -922,31 +933,4 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("No swap route found"));
     }
 
-    // A retryable /order failure (429) drives the retry loop, which bumps the
-    // process-wide retry counter the basket launcher paces against. start_paused
-    // so the backoff sleeps advance virtual time instead of blocking ~9s.
-    #[tokio::test(start_paused = true)]
-    async fn retryable_order_failure_bumps_the_retry_counter() {
-        use httpmock::prelude::*;
-        let server = MockServer::start_async().await;
-        server.mock_async(|when, then| {
-            when.method(GET).path("/order");
-            then.status(429).body("rate limited");
-        }).await;
-
-        let before = crate::jupiter::order_retry_count();
-        let _ = get_order(
-            Some(&server.base_url()),
-            USDC_MINT,
-            "So11111111111111111111111111111112",
-            "1000000",
-            "FakeWallet111111111111111111111111111111",
-            None,
-        )
-        .await;
-        assert!(
-            crate::jupiter::order_retry_count() > before,
-            "a retryable /order failure must record at least one retry"
-        );
-    }
 }

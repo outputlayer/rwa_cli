@@ -712,52 +712,52 @@ mod tests {
 
     // ── Task A.2 tests ────────────────────────────────────────
 
-    #[test]
-    fn keys_generate_default_creates_age_file() {
-        // Simulate what generate() does: without allow_plaintext, it would call
-        // prompt_new_passphrase() which reads RWA_PASSPHRASE env var.
-        // We test the wallet API directly to verify key.age is the default output path.
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "rwa_test_gen_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(42)
-        ));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-        let age_path = tmp_dir.join("key.age");
-        let json_path = tmp_dir.join("key.json");
+    // Drives the REAL `generate` command against a hermetic temp config dir, so a
+    // regression to plaintext-by-default (a security downgrade) is caught. The
+    // old tests bypassed `generate()` entirely — they called `save_encrypted`/
+    // `save` on hand-picked paths and asserted the file they just wrote existed,
+    // which would pass even if the default flipped to plaintext. (No other test
+    // reads `config_dir()` at runtime, so the process-wide HOME override here
+    // can't race a sibling; same env-test approach as `wallets.rs`.)
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn generate_command_defaults_to_encrypted_and_opts_into_plaintext() {
+        let base = std::env::temp_dir().join(format!("rwa_gen_cmd_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // SAFETY: no other test reads these env vars / config_dir() concurrently
+        // (verified: config_dir() is only called by production handlers, none of
+        // which other tests invoke), so the process-wide mutation can't race.
+        unsafe {
+            std::env::set_var("HOME", &base);
+            std::env::set_var("XDG_CONFIG_HOME", base.join(".config"));
+            std::env::set_var("RWA_PASSPHRASE", "TestPass2026!secure");
+        }
 
-        let w = Wallet::generate();
-        let passphrase = "TestPass2026!secure";
-        w.save_encrypted(&age_path, passphrase).expect("save_encrypted must succeed");
+        let age = wallet::encrypted_key_path().unwrap();
+        let json = wallet::default_key_path().unwrap();
+        assert!(!age.exists() && !json.exists(), "clean slate");
 
-        assert!(age_path.exists(), "default (encrypted) path key.age must exist");
-        assert!(!json_path.exists(), "plaintext key.json must NOT exist by default");
+        // Default (no --allow-plaintext) MUST produce an encrypted wallet.
+        execute(KeysAction::Generate { allow_plaintext: false, encrypt: false }, false, None)
+            .await
+            .expect("generate (default) should succeed");
+        assert!(age.exists(), "default generate must write the encrypted key.age");
+        assert!(
+            wallet::is_age_encrypted(&age).unwrap(),
+            "key.age must be genuinely age-encrypted, not plaintext"
+        );
+        assert!(!json.exists(), "default generate must NOT write plaintext key.json");
 
-        // cleanup
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-    }
+        // Opt in to plaintext on a fresh slate (generate refuses over an existing wallet).
+        std::fs::remove_file(&age).unwrap();
+        execute(KeysAction::Generate { allow_plaintext: true, encrypt: false }, false, None)
+            .await
+            .expect("generate (--allow-plaintext) should succeed");
+        assert!(json.exists(), "--allow-plaintext must write key.json");
+        assert!(!age.exists(), "--allow-plaintext must NOT write key.age");
 
-    #[test]
-    fn keys_generate_allow_plaintext_creates_json_file() {
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "rwa_test_plaintext_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(43)
-        ));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-        let json_path = tmp_dir.join("key.json");
-
-        let w = Wallet::generate();
-        w.save(&json_path).expect("save plaintext must succeed");
-
-        assert!(json_path.exists(), "--allow-plaintext path must create key.json");
-
-        // cleanup
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     // ── Task A.3 tests ────────────────────────────────────────

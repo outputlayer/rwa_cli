@@ -33,6 +33,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true
+serial_test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]

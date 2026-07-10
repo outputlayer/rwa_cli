@@ -68,6 +68,7 @@ httpmock = "0.7"
 proptest = "1"
 zeroize = "1"
 criterion = "0.5"
+serial_test = "3"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
