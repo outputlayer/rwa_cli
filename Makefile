@@ -10,7 +10,12 @@ export RUSTFLAGS := -Dwarnings
 
 .PHONY: ci check lint test integration release fmt install-hooks
 
-## ci — full CI-parity gate; run before every push (mirrors ci.yml exactly)
+# NOTE: `make ci` mirrors ci.yml's BUILD/TEST/LINT jobs (the ones a code change
+# can break). The separate `audit` job (cargo-audit / RUSTSEC advisory scan) is
+# NOT mirrored here: it needs the advisory DB and can go red on a newly-published
+# advisory with no code change, so it must not gate a local push.
+
+## ci — full CI-parity gate; run before every push (mirrors ci.yml's build/test jobs)
 ci: check lint test integration release
 	@echo "✅ CI-parity gate passed — matches .github/workflows/ci.yml"
 
@@ -27,10 +32,11 @@ test:
 	cargo test -p rwa-ondo --lib
 	cargo test -p rwa-cli --lib
 
-## integration — the mock-backed integration + JSON-contract suites
+## integration — the mock-backed integration + JSON-contract + docs-drift suites
 integration:
 	cargo test -p rwa-ondo --test rpc_portfolio
 	cargo test -p rwa --test cli_contract
+	cargo test -p rwa-cli --test docs_sync
 
 ## release — release build (the gating "Release Build" job)
 release:

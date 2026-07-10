@@ -46,3 +46,33 @@ fn every_command_is_documented() {
         missing.join("\n")
     );
 }
+
+/// Drift guard for the AGENT CONTRACT: every `GmTradeErrorKind` label must be
+/// documented in llms.txt (the agent manual), README.md, and CLAUDE.md. Seven
+/// kinds were added in 0.7.2 alone; before this guard a new one reached agents
+/// undocumented if the author forgot the three prose lists. The source list is
+/// `GmTradeErrorKind::ALL`, kept exhaustive by a compile-time tripwire in the
+/// ondo crate.
+#[test]
+fn error_kinds_are_documented() {
+    use rwa_ondo::usecases::gm::GmTradeErrorKind;
+    let docs = [
+        ("llms.txt", doc("llms.txt")),
+        ("README.md", doc("README.md")),
+        ("CLAUDE.md", doc("CLAUDE.md")),
+    ];
+    let mut missing = Vec::new();
+    for kind in GmTradeErrorKind::ALL {
+        let label = kind.label();
+        for (file, content) in &docs {
+            if !content.contains(label) {
+                missing.push(format!("  error_kind `{label}` is not documented in {file}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "Undocumented error kinds — agents branch on these; add to llms.txt / README.md / CLAUDE.md:\n{}",
+        missing.join("\n")
+    );
+}

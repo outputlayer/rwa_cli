@@ -77,6 +77,31 @@ impl std::fmt::Display for GmTradeError {
 }
 
 impl GmTradeErrorKind {
+    /// Every variant, in declaration order. Source list for the docs-coverage
+    /// guard (`error_kinds_are_documented` in the cli crate asserts each label
+    /// appears in llms.txt / README / CLAUDE.md). Adding a variant already
+    /// breaks `label()`'s exhaustive match at compile time — when you fix that,
+    /// add the variant here and document it, or the guard fails.
+    pub const ALL: [GmTradeErrorKind; 17] = [
+        Self::MarketClosed,
+        Self::NotTradable,
+        Self::SlippageTooHigh,
+        Self::CostTooHigh,
+        Self::AmountBelowMinimum,
+        Self::InsufficientFunds,
+        Self::NoPosition,
+        Self::ConditionNotMet,
+        Self::TradingPaused,
+        Self::ConfirmationRequired,
+        Self::UnknownToken,
+        Self::InvalidAmount,
+        Self::InvalidAddress,
+        Self::UnknownWallet,
+        Self::SelfSend,
+        Self::RevealRequired,
+        Self::LockContention,
+    ];
+
     /// Stable label used in JSON `error_kind` fields and error Display.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -1065,5 +1090,39 @@ mod tests {
         assert_eq!(classify_error(&err), Some("unknown_token"));
         // The message still teaches the discovery path for humans.
         assert!(err.to_string().contains("gm search"), "should point at search: {err}");
+    }
+
+    #[test]
+    fn all_error_kinds_listed_with_unique_labels() {
+        // Compile-time tripwire: adding a variant breaks this exhaustive match
+        // (and `label()`'s), a reminder to add it to `ALL` and document it —
+        // the cli-crate `error_kinds_are_documented` guard then checks the docs.
+        for k in GmTradeErrorKind::ALL {
+            match k {
+                GmTradeErrorKind::MarketClosed
+                | GmTradeErrorKind::NotTradable
+                | GmTradeErrorKind::SlippageTooHigh
+                | GmTradeErrorKind::CostTooHigh
+                | GmTradeErrorKind::AmountBelowMinimum
+                | GmTradeErrorKind::InsufficientFunds
+                | GmTradeErrorKind::NoPosition
+                | GmTradeErrorKind::ConditionNotMet
+                | GmTradeErrorKind::TradingPaused
+                | GmTradeErrorKind::ConfirmationRequired
+                | GmTradeErrorKind::UnknownToken
+                | GmTradeErrorKind::InvalidAmount
+                | GmTradeErrorKind::InvalidAddress
+                | GmTradeErrorKind::UnknownWallet
+                | GmTradeErrorKind::SelfSend
+                | GmTradeErrorKind::RevealRequired
+                | GmTradeErrorKind::LockContention => {}
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for k in GmTradeErrorKind::ALL {
+            let l = k.label();
+            assert!(!l.is_empty(), "empty label for {k:?}");
+            assert!(seen.insert(l), "duplicate error_kind label: {l}");
+        }
     }
 }

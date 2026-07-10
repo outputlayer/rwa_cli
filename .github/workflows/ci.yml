@@ -63,6 +63,10 @@ jobs:
       - name: CLI contract tests (rwa)
         run: cargo test -p rwa --test cli_contract
 
+      # Drift guards: every command + every error_kind is documented (README/CLAUDE/llms.txt)
+      - name: Docs drift guard (rwa-cli)
+        run: cargo test -p rwa-cli --test docs_sync
+
   release-build:
     name: Release Build
     runs-on: ubuntu-latest
@@ -80,3 +84,21 @@ jobs:
 
       - name: Binary size
         run: ls -lh target/release/rwa | awk '{print "Binary size:", $5}'
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Advisory scan for a wallet-holding binary: fails on any RUSTSEC
+      # vulnerability in the dependency tree. Independent of the build/test
+      # jobs (which `make ci` mirrors) — this one needs the advisory DB and
+      # can go red on a newly-published advisory with no code change, so it is
+      # deliberately its own job, not part of the local `make ci` gate.
+      - name: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

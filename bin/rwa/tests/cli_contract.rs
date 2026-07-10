@@ -841,6 +841,47 @@ fn hours_json_emits_shape_and_tradable_set() {
     assert_eq!(offhours, vec!["SPYon"], "offhours_tradable array includes flagged symbols");
 }
 
+/// HUMAN-mode guard: `gm hours --tradable` (no `--json`) must actually LIST the
+/// flagship symbols, not just their count — this class of human-output drift
+/// (the flag was a no-op in human mode, contradicting the docs) previously had
+/// no test, since the contract suite only locked the JSON shapes.
+#[test]
+fn hours_tradable_human_lists_flagship_symbols() {
+    let home = test_home("hours-human");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "assets": [
+                    { "symbol": "SPYon", "assetName": "SPY ETF", "isTradingPaused": false,
+                      "isOffhoursTradable": true, "primaryMarket": { "price": "450.0" } }
+                ]
+            }));
+    });
+
+    let out = rwa(&home)
+        .args(["gm", "hours", "--tradable"]) // NO --json → human output
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("SPYon"),
+        "--tradable must LIST the flagship symbol in human mode, got:\n{text}"
+    );
+    assert!(text.contains("flagship"), "human output should label the flagship set: {text}");
+}
+
 /// `gm history --json` emits the HistoryJson shape with hand-derived
 /// aggregates from the mocked candles.
 #[test]
