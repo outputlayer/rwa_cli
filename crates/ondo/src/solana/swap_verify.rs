@@ -156,6 +156,27 @@ pub(crate) fn min_output_floor(quoted_out: u64, slippage_bps: Option<u32>) -> u6
     ((quoted_out as u128) * (10_000 - tolerance) / 10_000) as u64
 }
 
+/// The under-delivery floor tolerance, clamped to the user's requested
+/// slippage. `response_bps` is echoed by Jupiter in the `/order` response and
+/// is therefore attacker-influenceable (a hostile or dynamically-widened
+/// response could report a LARGER value, which would slacken — or with 10000
+/// entirely disable — the independent pre-sign under-delivery floor). The
+/// floor must never be looser than what the user consented to, so we take the
+/// TIGHTER (smaller) of the two. `requested_bps` is the locally-known
+/// `--slippage`/default and is trusted; when it's absent we fall back to the
+/// response value (the pre-clamp behaviour, only reachable if the caller never
+/// threaded a request slippage — which the trade path always does).
+pub(crate) fn floor_tolerance_bps(
+    response_bps: Option<u32>,
+    requested_bps: Option<u32>,
+) -> Option<u32> {
+    match (response_bps, requested_bps) {
+        (Some(resp), Some(req)) => Some(resp.min(req)),
+        (None, req) => req,
+        (resp, None) => resp,
+    }
+}
+
 /// Simulate `tx_base64` and verify it credibly performs the intended swap for
 /// `owner`: debiting at most `input_amount` of `input_mint`, and crediting
 /// `output_mint` by at least `min_output` (0 disables the floor). Returns `Err`
@@ -374,6 +395,26 @@ mod tests {
         // Nonsense tolerance is clamped, never underflows.
         assert_eq!(min_output_floor(40_273_156, Some(20_000)), 0);
         assert_eq!(min_output_floor(0, Some(100)), 0);
+    }
+
+    #[test]
+    fn floor_tolerance_never_looser_than_requested() {
+        // The attack: a hostile /order response reports 10000 bps to zero the
+        // floor. Clamped to the user's requested 100 → floor stays tight.
+        assert_eq!(floor_tolerance_bps(Some(10_000), Some(100)), Some(100));
+        // Response TIGHTER than requested is honoured (Jupiter may apply less).
+        assert_eq!(floor_tolerance_bps(Some(30), Some(100)), Some(30));
+        // Response equals request (the normal echo case).
+        assert_eq!(floor_tolerance_bps(Some(100), Some(100)), Some(100));
+        // Absent response → requested governs; absent requested → response
+        // (the only pre-clamp path, unreachable from the trade flow).
+        assert_eq!(floor_tolerance_bps(None, Some(50)), Some(50));
+        assert_eq!(floor_tolerance_bps(Some(50), None), Some(50));
+        // Composed with the floor: the hostile 10000 no longer disables it.
+        assert_eq!(
+            min_output_floor(40_273_156, floor_tolerance_bps(Some(10_000), Some(100))),
+            39_870_424
+        );
     }
 
     fn token_account_json(amount: u64) -> serde_json::Value {

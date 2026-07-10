@@ -32,7 +32,7 @@ pub(crate) use rpc::SolanaRpcError;
 #[cfg(test)]
 pub(crate) use rpc::SolanaRpcErrorKind;
 pub use swap_verify::{SwapSimError, verify_swap_simulation};
-pub(crate) use swap_verify::min_output_floor;
+pub(crate) use swap_verify::{floor_tolerance_bps, min_output_floor};
 pub use transfer::{
     transfer_sol, transfer_spl,
     EmptyTokenAccount, get_empty_token_accounts, close_empty_accounts,

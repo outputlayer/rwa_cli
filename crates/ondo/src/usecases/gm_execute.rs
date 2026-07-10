@@ -195,7 +195,7 @@ pub(crate) fn record_swap_outcome(ctx: SwapAuditCtx, outcome: &Result<SwapExecut
 /// delta. The trade is already executed here — nothing to refuse — so an
 /// actual fill below `quote − slippage` is surfaced loudly instead of
 /// passing silently.
-fn warn_if_fill_below_floor(order: &jupiter::OrderResponse, resp: &jupiter::ExecuteResponse) {
+fn warn_if_fill_below_floor(order: &jupiter::OrderResponse, resp: &jupiter::ExecuteResponse, max_slippage_bps: Option<u32>) {
     let (Ok(quoted), Some(actual)) = (
         order.out_amount.parse::<u64>(),
         resp.output_amount_result
@@ -204,7 +204,8 @@ fn warn_if_fill_below_floor(order: &jupiter::OrderResponse, resp: &jupiter::Exec
     ) else {
         return;
     };
-    let floor = solana::min_output_floor(quoted, order.slippage_bps);
+    let tolerance = solana::floor_tolerance_bps(order.slippage_bps, max_slippage_bps);
+    let floor = solana::min_output_floor(quoted, tolerance);
     if floor > 0 && actual < floor {
         eprintln!(
             "WARNING: fill below quoted floor — received {actual} raw units, quote {quoted} with tolerance floor {floor}. \
@@ -240,10 +241,10 @@ pub(crate) async fn execute_with_retry(
 
     for attempt in 0..=MAX_SWAP_RETRIES {
         let ord = current_order_owned.as_ref().unwrap_or(order);
-        let execute_result = jupiter::execute_order(wallet, ord, &expected).await;
+        let execute_result = jupiter::execute_order(wallet, ord, &expected, params.slippage_bps).await;
         match execute_result {
             Ok(resp) => {
-                warn_if_fill_below_floor(ord, &resp);
+                warn_if_fill_below_floor(ord, &resp, params.slippage_bps);
                 return Ok(resp);
             }
             Err(e) => {

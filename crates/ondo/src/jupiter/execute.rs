@@ -47,16 +47,20 @@ struct ExecuteRequest {
 /// `expected` describes what the caller intends to swap; before signing, the
 /// wallet decodes the Jupiter-supplied transaction and refuses to sign if it
 /// doesn't match the intent (wrong mint, wrong amount, foreign recipient).
+/// `max_slippage_bps` is the user's requested slippage (`--slippage`/default),
+/// used to clamp the pre-sign under-delivery floor so a hostile/dynamic
+/// `/order` response can't widen it past what the user consented to.
 pub async fn execute_order(
     wallet: &Wallet,
     order: &OrderResponse,
     expected: &ExpectedSwap,
+    max_slippage_bps: Option<u32>,
 ) -> Result<ExecuteResponse> {
     let _permit = EXECUTE_SEMAPHORE.acquire().await
         .map_err(|_| eyre!("Jupiter execute semaphore closed"))?;
     match order.backend {
-        OrderBackend::MetisV1Lite => execute_metis_order(wallet, order, expected).await,
-        managed => execute_managed_order(wallet, order, expected, managed.base_url()).await,
+        OrderBackend::MetisV1Lite => execute_metis_order(wallet, order, expected, max_slippage_bps).await,
+        managed => execute_managed_order(wallet, order, expected, managed.base_url(), max_slippage_bps).await,
     }
 }
 
@@ -161,8 +165,14 @@ async fn presign_simulation_gate(
     order: &OrderResponse,
     expected: &ExpectedSwap,
     allow_jit_fill: bool,
+    max_slippage_bps: Option<u32>,
 ) -> Result<()> {
-    let min_output = solana::min_output_floor(quoted_out_amount(order)?, order.slippage_bps);
+    // Clamp the floor tolerance to the user's requested slippage: the order's
+    // own `slippage_bps` is echoed by Jupiter and a hostile/dynamic response
+    // could report a value large enough to slacken or disable this independent
+    // under-delivery check.
+    let tolerance = solana::floor_tolerance_bps(order.slippage_bps, max_slippage_bps);
+    let min_output = solana::min_output_floor(quoted_out_amount(order)?, tolerance);
     let result = solana::verify_swap_simulation(
         tx_b64,
         &expected.input_mint,
@@ -181,6 +191,7 @@ async fn execute_managed_order(
     order: &OrderResponse,
     expected: &ExpectedSwap,
     base_url: &str,
+    max_slippage_bps: Option<u32>,
 ) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
@@ -190,7 +201,7 @@ async fn execute_managed_order(
     // Managed /execute: Jupiter co-signs + validates server-side and the maker
     // funds RFQ fills just-in-time, so a sim that only ERRORED on a JIT route is
     // submitted anyway (on-chain min-output still enforces honesty).
-    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill_for(order)).await?;
+    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill_for(order), max_slippage_bps).await?;
 
     let signed_tx = wallet.sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign swap transaction")?;
@@ -252,6 +263,7 @@ async fn execute_metis_order(
     wallet: &Wallet,
     order: &OrderResponse,
     expected: &ExpectedSwap,
+    max_slippage_bps: Option<u32>,
 ) -> Result<ExecuteResponse> {
     let tx_b64 = order
         .transaction
@@ -259,7 +271,7 @@ async fn execute_metis_order(
         .ok_or_else(|| eyre!("No transaction in order"))?;
     // Metis submits the signed tx directly via RPC (no Jupiter /execute), so the
     // simulation IS the last line of defence — always strict, never the JIT relax.
-    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill_for(order)).await?;
+    presign_simulation_gate(tx_b64, order, expected, allow_jit_fill_for(order), max_slippage_bps).await?;
     let signed_tx = wallet
         .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;
