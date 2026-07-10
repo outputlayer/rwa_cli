@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "rwa"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "eyre",
  "httpmock",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "rwa-cli"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "rwa-ondo"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "age",
  "base64 0.22.1",

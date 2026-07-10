@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.4] - 2026-07-10 — internal refactor (no behavior change)
+
+### Internal
+
+- **Option bundles on the money commands.** `buy`/`sell`/`send`/`buy-basket`/`sell-basket`/`close-all` take `ExecOpts {yes, dry_run, json}` + `TradeTuning {slippage, max_bps}` instead of 3 adjacent positional bools and 2 adjacent `Option<u32>`s — a transposed argument can no longer compile silently on a money path. `#[allow(too_many_arguments)]` count: 21 → 15.
+- **Three duplications collapsed to single sources**: `NN%` validation (was implemented 3× with drifting error typing → one `amounts::parse_pct`, uniformly typed `invalid_amount`); the 4 copies of the 17-field `TradeJson` literal (→ one `trade_json()` constructor documenting the buy/sell result-side asymmetry at a single site); the identical ~45-line tail of the three `send_*` variants (→ one `send_epilogue()` — "record to the ledger only AFTER a successful transfer" can no longer drift between senders).
+- JSON shapes verified byte-identical; net −65 lines.
+
 ## [0.7.3] - 2026-07-10 — real-path adaptive pacing (~3× faster live baskets), API-key auto-profile
 
 ### Performance
