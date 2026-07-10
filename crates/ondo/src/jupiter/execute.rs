@@ -105,6 +105,46 @@ fn sim_failure_kind(err: &solana::SwapSimError) -> ExecuteFailureKind {
     }
 }
 
+/// Turn a pre-sign simulation result into a submit/refuse decision — the
+/// safety-critical wiring, isolated so it can be tested without a network. `Ok`
+/// stays `Ok`. A failure decodes to its cause and is submitted anyway ONLY when
+/// safe (see [`proceed_despite_sim_failure`]); otherwise it is refused with the
+/// mapped kind. A non-`SwapSimError` failure is refused (fail-closed).
+fn interpret_sim_result(result: Result<()>, allow_jit_fill: bool) -> Result<()> {
+    let Err(e) = result else {
+        return Ok(());
+    };
+    // A SwapSimError decodes to a precise cause; anything else is an unexpected
+    // failure and is refused (fail-closed).
+    let Some(sim) = e.downcast_ref::<solana::SwapSimError>() else {
+        return Err(ExecuteFailure {
+            kind: ExecuteFailureKind::Unknown,
+            code: None,
+            message: format!("pre-sign swap simulation check failed: {e}"),
+        }
+        .into());
+    };
+    // A sim that merely ERRORED on a just-in-time-funding RFQ route is a false
+    // negative — the maker mints the fill at /execute (invisible here) and the
+    // on-chain min-output enforces honesty. Submit anyway.
+    if proceed_despite_sim_failure(sim, allow_jit_fill) {
+        eprintln!(
+            "note: pre-sign simulation couldn't confirm the fill (RFQ maker funds \
+             just-in-time); submitting — Jupiter /execute enforces min-output on-chain"
+        );
+        return Ok(());
+    }
+    // Dishonest deltas (UnsafeDelta/OutputBelowQuote), an unreachable RPC, or a
+    // non-JIT route: a hard refusal. OnChainWouldFail/OutputBelowQuote are
+    // retryable with the router excluded; the rest are not.
+    Err(ExecuteFailure {
+        kind: sim_failure_kind(sim),
+        code: None,
+        message: format!("pre-sign swap simulation check failed: {e}"),
+    }
+    .into())
+}
+
 async fn presign_simulation_gate(
     tx_b64: &str,
     order: &OrderResponse,
@@ -112,7 +152,7 @@ async fn presign_simulation_gate(
     allow_jit_fill: bool,
 ) -> Result<()> {
     let min_output = solana::min_output_floor(quoted_out_amount(order)?, order.slippage_bps);
-    if let Err(e) = solana::verify_swap_simulation(
+    let result = solana::verify_swap_simulation(
         tx_b64,
         &expected.input_mint,
         expected.input_amount,
@@ -121,39 +161,8 @@ async fn presign_simulation_gate(
         &expected.owner_pubkey,
         None,
     )
-    .await
-    {
-        // A SwapSimError decodes to a precise cause; anything else is an
-        // unexpected failure and is refused (fail-closed).
-        let Some(sim) = e.downcast_ref::<solana::SwapSimError>() else {
-            return Err(ExecuteFailure {
-                kind: ExecuteFailureKind::Unknown,
-                code: None,
-                message: format!("pre-sign swap simulation check failed: {e}"),
-            }
-            .into());
-        };
-        // A sim that merely ERRORED on a just-in-time-funding RFQ route is a
-        // false negative — the maker mints the fill at /execute (invisible here)
-        // and the on-chain min-output enforces honesty. Submit anyway.
-        if proceed_despite_sim_failure(sim, allow_jit_fill) {
-            eprintln!(
-                "note: pre-sign simulation couldn't confirm the fill (RFQ maker funds \
-                 just-in-time); submitting — Jupiter /execute enforces min-output on-chain"
-            );
-            return Ok(());
-        }
-        // Dishonest deltas (UnsafeDelta/OutputBelowQuote), an unreachable RPC, or
-        // a non-JIT route: a hard refusal. OnChainWouldFail/OutputBelowQuote are
-        // retryable with the router excluded; the rest are not.
-        return Err(ExecuteFailure {
-            kind: sim_failure_kind(sim),
-            code: None,
-            message: format!("pre-sign swap simulation check failed: {e}"),
-        }
-        .into());
-    }
-    Ok(())
+    .await;
+    interpret_sim_result(result, allow_jit_fill)
 }
 
 async fn execute_managed_order(
@@ -312,6 +321,65 @@ mod tests {
         assert_eq!(sim_failure_kind(&E::OutputBelowQuote("x".into())), ExecuteFailureKind::RouteUnfillable);
         assert_eq!(sim_failure_kind(&E::UnsafeDelta("x".into())), ExecuteFailureKind::Unknown);
         assert_eq!(sim_failure_kind(&E::RpcUnavailable("x".into())), ExecuteFailureKind::Unknown);
+    }
+
+    fn refused_kind(err: eyre::Error) -> ExecuteFailureKind {
+        err.downcast_ref::<ExecuteFailure>()
+            .expect("refusal carries an ExecuteFailure so error_kind survives")
+            .kind
+    }
+
+    #[test]
+    fn gasless_route_is_treated_as_just_in_time_funded() {
+        // RFQ makers sponsor gas → gasless == Some(true) marks the JIT path.
+        let rfq = OrderResponse { gasless: Some(true), ..OrderResponse::default() };
+        assert!(route_funds_just_in_time(&rfq));
+        // AMM routes (Metis) are not gasless → strict.
+        let amm = OrderResponse { gasless: Some(false), ..OrderResponse::default() };
+        assert!(!route_funds_just_in_time(&amm));
+        // Absent field is NOT treated as JIT (fail-safe toward strict).
+        let unknown = OrderResponse { gasless: None, ..OrderResponse::default() };
+        assert!(!route_funds_just_in_time(&unknown));
+    }
+
+    #[test]
+    fn interpret_passes_a_clean_simulation() {
+        assert!(interpret_sim_result(Ok(()), false).is_ok());
+        assert!(interpret_sim_result(Ok(()), true).is_ok());
+    }
+
+    #[test]
+    fn interpret_submits_errored_sim_only_on_jit_route() {
+        // Gasless/JIT route: an errored sim (maker funds at /execute) is submitted.
+        assert!(interpret_sim_result(Err(E::OnChainWouldFail("x".into()).into()), true).is_ok());
+        // Non-JIT route (e.g. Metis): the same errored sim is refused.
+        let refused = interpret_sim_result(Err(E::OnChainWouldFail("x".into()).into()), false).unwrap_err();
+        assert_eq!(refused_kind(refused), ExecuteFailureKind::RouteUnfillable);
+    }
+
+    #[test]
+    fn interpret_never_submits_dishonest_or_unrunnable_sim_even_on_jit() {
+        // SAFETY INVARIANT: a sim that SUCCEEDED but is dishonest, or that could
+        // not run, is NEVER submitted — even on a just-in-time-funding route.
+        assert_eq!(
+            refused_kind(interpret_sim_result(Err(E::OutputBelowQuote("x".into()).into()), true).unwrap_err()),
+            ExecuteFailureKind::RouteUnfillable
+        );
+        assert_eq!(
+            refused_kind(interpret_sim_result(Err(E::UnsafeDelta("x".into()).into()), true).unwrap_err()),
+            ExecuteFailureKind::Unknown
+        );
+        assert_eq!(
+            refused_kind(interpret_sim_result(Err(E::RpcUnavailable("x".into()).into()), true).unwrap_err()),
+            ExecuteFailureKind::Unknown
+        );
+    }
+
+    #[test]
+    fn interpret_fails_closed_on_non_sim_error() {
+        // An unexpected (non-SwapSimError) failure is refused, never submitted.
+        let refused = interpret_sim_result(Err(eyre!("rpc socket exploded")), true).unwrap_err();
+        assert_eq!(refused_kind(refused), ExecuteFailureKind::Unknown);
     }
 
     #[test]

@@ -17,6 +17,13 @@ fn resolve_derivation_path(account: Option<u32>, derivation_path: Option<String>
     }
 }
 
+/// A non-default derivation path only makes sense for a seed-phrase import; with
+/// `--file`/`--private-key` it's a likely mistake. Returns `true` when the combo
+/// is invalid (non-default path, no seed phrase).
+fn derivation_path_misused(derivation_path: &str, has_seed_phrase: bool) -> bool {
+    derivation_path != wallet::DEFAULT_DERIVATION_PATH && !has_seed_phrase
+}
+
 /// A seed imported at a non-default path can't be restored from the phrase
 /// alone (that yields account 0) — warn the user to record the path too.
 fn warn_non_default_path(derivation_path: &str) {
@@ -226,7 +233,7 @@ async fn import(
             "Wallet already exists. Delete it first if you want to import a new one."
         ));
     }
-    if derivation_path != wallet::DEFAULT_DERIVATION_PATH && seed_phrase.is_none() {
+    if derivation_path_misused(&derivation_path, seed_phrase.is_some()) {
         return Err(eyre::eyre!(
             "--account/--derivation-path only apply to --seed-phrase import"
         ));
@@ -459,7 +466,7 @@ async fn add(
     allow_plaintext: bool,
     json: bool,
 ) -> Result<()> {
-    if derivation_path != wallet::DEFAULT_DERIVATION_PATH && seed_phrase.is_none() {
+    if derivation_path_misused(&derivation_path, seed_phrase.is_some()) {
         return Err(eyre::eyre!(
             "--account/--derivation-path only apply to --seed-phrase import"
         ));
@@ -665,6 +672,32 @@ fn prompt_new_passphrase() -> Result<Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_flag_derives_the_right_wallet_end_to_end() {
+        // The full user contract: `--account N` → resolved path → derived wallet.
+        const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let path0 = resolve_derivation_path(None, None).unwrap();
+        assert_eq!(
+            Wallet::from_mnemonic_at(ABANDON, &path0).unwrap().pubkey(),
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+        );
+        // `--account 2` = Phantom/Solflare "Account 3"; independent reference vector.
+        let path2 = resolve_derivation_path(Some(2), None).unwrap();
+        assert_eq!(
+            Wallet::from_mnemonic_at(ABANDON, &path2).unwrap().pubkey(),
+            "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm"
+        );
+    }
+
+    #[test]
+    fn derivation_path_misuse_only_flags_non_default_without_seed() {
+        let non_default = "m/44'/501'/1'/0'";
+        assert!(derivation_path_misused(non_default, false), "non-default + no seed is a mistake");
+        assert!(!derivation_path_misused(non_default, true), "non-default + seed is fine");
+        assert!(!derivation_path_misused(wallet::DEFAULT_DERIVATION_PATH, false), "default is always fine");
+        assert!(!derivation_path_misused(wallet::DEFAULT_DERIVATION_PATH, true));
+    }
 
     #[test]
     fn resolve_derivation_path_defaults_and_flags() {

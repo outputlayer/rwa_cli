@@ -766,6 +766,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_derivation_path_rejects_empty_and_overflow_index() {
+        // No indices after 'm'.
+        assert!(parse_derivation_path("m/").is_err());
+        // Index with the hardening bit already set is out of range (we harden).
+        assert!(parse_derivation_path("m/44'/501'/2147483648'/0'").is_err());
+        // Largest valid unhardened index is fine.
+        assert_eq!(
+            parse_derivation_path("m/2147483647'").unwrap(),
+            vec![2_147_483_647]
+        );
+    }
+
+    #[test]
     fn account_derivation_path_builds_standard_solana_path() {
         assert_eq!(account_derivation_path(0), "m/44'/501'/0'/0'");
         assert_eq!(account_derivation_path(2), "m/44'/501'/2'/0'");
