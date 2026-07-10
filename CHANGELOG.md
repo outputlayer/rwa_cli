@@ -9,6 +9,38 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.2] - 2026-07-10 — typed input errors, informed consent prompt, keys --json
+
+### Fixed
+
+- **`send USDC all` no longer lets auto-gas silently shrink the send.** For balance-relative amounts (`all`/`100%`/`NN%`) the gas-reservation parse failed and reserved 0, so on a low-SOL wallet the pre-send refuel could divert 5–25 USDC to SOL and the recipient received *balance − gas* with no warning. Balance-relative USDC sends now skip the refuel entirely (an exact amount still reserves itself and refuels from the remainder).
+- **`keys show --json` emits JSON.** The flag was advertised in `--help` but ignored — it printed the human text. Now returns `{pubkey, path, encrypted}`.
+- **Lock contention exits 75 in human mode too.** `--json` already exited 75; the human path returned an untyped error and exited 1, contradicting the documented contract. The error is now typed `lock_contention` (transient) in both modes.
+- Exact-amount `send USDC` checks the balance locally and fails fast with typed `insufficient_funds` instead of an opaque on-chain reject; both SOL-for-gas checks in `send` are typed `insufficient_funds` as well.
+- Basket/close-all no longer contain `.expect()` calls that could panic *after* a swap landed on-chain (killing the parallel set and losing the JSON report with tx URLs); the display-total parses degrade to 0 instead.
+- `sell` of a token you don't hold names the symbol (`You hold no GOOGLon — nothing to sell`) instead of the raw mint address.
+
+### Added
+
+- **Typed `error_kind` for common input failures** (previously `null`, forcing agents to match English prose): `unknown_token` (message points at `gm search`), `invalid_amount` (message teaches the format: number, `NN%`, or `all`), `invalid_address`, `unknown_wallet`, `self_send`, `reveal_required`, and `lock_contention` (the one transient among them).
+- **The real-trade y/N prompt shows the dry-run economics** — implied `Price: ~410 USDC/token` (new line, also in dry-run), spread, fee, all-in estimate, slippage tolerance, per-share view. Previously the moment of highest stakes showed only the receive amount. The auto-gas consent prompt now honestly says "5–25 USDC (sized to current fees)" instead of promising the 5 USDC floor.
+- **`keys generate`/`keys import` speak `--json`**: `{status, pubkey, path, encrypted, mnemonic}` (mnemonic on generate only — machine-readable at the only moment it exists for plaintext wallets). `keys add --json` now carries `pubkey` and `encrypted` too.
+- **`hours` JSON carries `next_session_at`** (epoch seconds, always present) so agents schedule against a number instead of parsing `"opens in 22h 0m"` prose.
+
+### Removed
+
+- **The no-op `--parallel` flag** (buy-basket, sell-basket, close-all). Parallel has been the default since v0.5; the flag was accepted and ignored, which both lied to the user ("I enabled something") and kept leaking back into docs and agent examples. Passing it now fails with a clap usage error (exit 2) — drop the flag; use `--sequential` only as the rate-limit fallback.
+
+### Changed
+
+- llms.txt (the agent manual): freed operational guidance trapped inside a bash code fence; examples no longer teach the no-op `--parallel` (parallel is the default; `--sequential` is the fallback); documented exit 2 (clap usage error — no JSON envelope), the number policy (exact amounts are decimal strings, prices are rounded floats), and that basket/close-all exit 0 on partial failure — always inspect `failed[]`/`skipped[]`.
+
+### Internal
+
+- `make ci` — local mirror of the GitHub CI pipeline (every step under `RUSTFLAGS=-Dwarnings`), plus an optional pre-push hook (`make install-hooks`).
+- Adaptive-pacing launcher takes an injected retry-count reader (process-global removed from the tested path; the stagger test regained its deterministic upper bound).
+- Real coverage run: 77.6% lines (cargo-llvm-cov); the sub-60% files are live-execution paths validated by live-money runs. Unit-covered the sector→asset-class·region display fallback, `describe_filters`, and `compute_pnl`'s SOL-buy guard.
+
 ## [0.7.1] - 2026-07-10 — adaptive parallel-basket pacing (keyless-friendly)
 
 ### Performance

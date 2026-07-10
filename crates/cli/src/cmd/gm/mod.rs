@@ -176,9 +176,6 @@ pub enum GmAction {
         /// Show what would be sold without executing
         #[arg(long)]
         dry_run: bool,
-        /// Parallel execution is the default; this flag is a no-op kept for compatibility
-        #[arg(long, conflicts_with = "sequential")]
-        parallel: bool,
         /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
         #[arg(long)]
         sequential: bool,
@@ -212,9 +209,6 @@ pub enum GmAction {
         /// Show quotes without executing
         #[arg(long)]
         dry_run: bool,
-        /// Parallel execution is the default; this flag is a no-op kept for compatibility
-        #[arg(long, conflicts_with = "sequential")]
-        parallel: bool,
         /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
         #[arg(long)]
         sequential: bool,
@@ -238,9 +232,6 @@ pub enum GmAction {
         /// Show quotes without executing
         #[arg(long)]
         dry_run: bool,
-        /// Parallel execution is the default; this flag is a no-op kept for compatibility
-        #[arg(long, conflicts_with = "sequential")]
-        parallel: bool,
         /// Execute swaps one at a time with 3s spacing (rate-limit-friendly fallback)
         #[arg(long)]
         sequential: bool,
@@ -311,7 +302,6 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             amount,
             yes,
             dry_run,
-            parallel: _,
             sequential,
             slippage,
             max_bps,
@@ -323,11 +313,11 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
         }
         GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
-        GmAction::BuyBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
+        GmAction::BuyBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
             let max_bps = effective_max_bps(max_bps);
             basket::buy_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
-        GmAction::SellBasket { tokens, yes, dry_run, parallel: _, sequential, slippage, max_bps } => {
+        GmAction::SellBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
             let max_bps = effective_max_bps(max_bps);
             basket::sell_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
         }
