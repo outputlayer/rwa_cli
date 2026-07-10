@@ -23,6 +23,27 @@ use super::types::{CloseFailJson, GasRefuelJson};
 /// paces identically whether or not a trade actually executes.
 pub(super) const SEQUENTIAL_SPACING: Duration = Duration::from_secs(3);
 
+/// Default delay between launching each PARALLEL quote. Firing a basket's quotes
+/// all at once bursts Jupiter's per-wallet rate limit, whose 429 → retry backoff
+/// (0.8/1.6/3.2s) costs far more than a small stagger saves. A short stagger
+/// keeps the overlap (fast) while dodging the burst (stable). Tunable via
+/// `RWA_QUOTE_STAGGER_MS`; an API key (`RWA_JUPITER_API_KEY`) raises the limit so
+/// it can be lowered toward 0.
+const DEFAULT_QUOTE_STAGGER_MS: u64 = 350;
+
+/// Parse the parallel-quote stagger from a raw `RWA_QUOTE_STAGGER_MS` value,
+/// falling back to the default on absence or garbage.
+fn quote_stagger_from(raw: Option<&str>) -> Duration {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS))
+}
+
+/// The parallel-quote stagger, honouring `RWA_QUOTE_STAGGER_MS`.
+fn quote_stagger() -> Duration {
+    quote_stagger_from(std::env::var("RWA_QUOTE_STAGGER_MS").ok().as_deref())
+}
+
 /// Whether the auto-gas refuel may proceed without an interactive prompt.
 /// JSON mode is non-interactive: it auto-approves ONLY under explicit `-y`
 /// (the same rule as trade execution since v0.6.0). Returns `None` when an
@@ -165,8 +186,15 @@ where
         println!("Processing {} {} in parallel...", items.len(), parallel_noun);
     }
 
+    // Stagger the launches: firing every quote at once bursts Jupiter's
+    // per-wallet rate limit, whose 429 → retry backoff costs far more than the
+    // stagger. A small gap keeps the overlap while dodging the burst.
+    let stagger = quote_stagger();
     let mut order_set: JoinSet<(String, Result<T>)> = JoinSet::new();
-    for item in items {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 && !stagger.is_zero() {
+            tokio::time::sleep(stagger).await;
+        }
         order_set.spawn(fetch(item));
     }
 
@@ -458,6 +486,37 @@ mod tests {
     // fetching the same way it paces real execution. A mutant that fetches
     // these through the parallel JoinSet instead would finish near-instantly
     // and fail this bound.
+    #[test]
+    fn quote_stagger_parses_env_with_default_fallback() {
+        assert_eq!(quote_stagger_from(None), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+        assert_eq!(quote_stagger_from(Some("120")), Duration::from_millis(120));
+        assert_eq!(quote_stagger_from(Some("0")), Duration::from_millis(0));
+        assert_eq!(quote_stagger_from(Some("garbage")), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn parallel_fetch_staggers_launches_and_still_collects_all() {
+        let t0 = tokio::time::Instant::now();
+        let items = vec![1i32, 2i32, 3i32];
+        let (mut ready, failed) = fetch_orders_parallel(
+            items,
+            true, // json (suppress prints)
+            "orders",
+            |_: &i32| String::new(),
+            |item: i32| async move { (item.to_string(), Ok::<i32, eyre::Report>(item)) },
+        )
+        .await;
+        ready.sort();
+        assert_eq!(ready, vec![1, 2, 3], "all items still resolve despite staggering");
+        assert!(failed.is_empty());
+        // 3 launches ⇒ at least 2 stagger gaps elapse.
+        assert!(
+            t0.elapsed() >= quote_stagger() * 2,
+            "expected >= 2 stagger gaps, got {:?}",
+            t0.elapsed()
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn fetch_orders_sequential_paces_items_3s_apart() {
         let t0 = tokio::time::Instant::now();
