@@ -153,7 +153,7 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             let path = resolve_derivation_path(account, derivation_path)?;
             import(file, private_key, seed_phrase, path, allow_plaintext).await
         }
-        KeysAction::Show => show(selected).await,
+        KeysAction::Show => show(selected, json).await,
         KeysAction::Encrypt => {
             if selected.is_some() {
                 eprintln!("NOTE: --wallet/RWA_WALLET is ignored by `keys encrypt`/`decrypt`; operating on the legacy default wallet.");
@@ -283,7 +283,18 @@ async fn import(
     Ok(())
 }
 
-async fn show(selected: Option<&str>) -> Result<()> {
+/// JSON shape for `keys show --json`: the active wallet's address, its key-file
+/// path, and whether that file is encrypted. Pure so the shape is unit-testable
+/// without touching the filesystem / registry.
+fn show_json(pubkey: &str, path: &str, encrypted: bool) -> serde_json::Value {
+    serde_json::json!({
+        "pubkey": pubkey,
+        "path": path,
+        "encrypted": encrypted,
+    })
+}
+
+async fn show(selected: Option<&str>, json: bool) -> Result<()> {
     let cfg = config_dir()?;
     let reg = crate::wallets::WalletRegistry::load(&cfg)?;
     let target = reg.resolve(selected)?;
@@ -304,6 +315,10 @@ async fn show(selected: Option<&str>) -> Result<()> {
     };
     if !encrypted {
         eprintln!("DEPRECATED: this wallet is stored as plaintext. Run `rwa keys encrypt` to secure it with a passphrase.");
+    }
+    if json {
+        println!("{}", serde_json::to_string(&show_json(&w.pubkey(), &path_str, encrypted))?);
+        return Ok(());
     }
     println!("Address:  {}", w.pubkey());
     println!("Key file: {path_str} {}", if encrypted { "(encrypted)" } else { "" });
@@ -688,6 +703,19 @@ mod tests {
             Wallet::from_mnemonic_at(ABANDON, &path2).unwrap().pubkey(),
             "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm"
         );
+    }
+
+    #[test]
+    fn show_json_emits_pubkey_path_and_encrypted() {
+        // `keys show --json` advertises JSON in --help; its shape must carry the
+        // same facts the human output shows (address + key file + encryption).
+        let v = show_json("HrNd9QEGubs8TnAEmTFZ8QCQJjn2WrcXsYKpqbY4PTci", "/x/key.age", true);
+        assert_eq!(v["pubkey"], "HrNd9QEGubs8TnAEmTFZ8QCQJjn2WrcXsYKpqbY4PTci");
+        assert_eq!(v["path"], "/x/key.age");
+        assert_eq!(v["encrypted"], serde_json::json!(true));
+        // plaintext variant flips only `encrypted`
+        let v2 = show_json("PubABC", "/x/key.json", false);
+        assert_eq!(v2["encrypted"], serde_json::json!(false));
     }
 
     #[test]
