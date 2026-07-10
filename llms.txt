@@ -23,7 +23,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 
 - NEVER run `rwa` wallet-changing commands in parallel processes or with `&`
 - Fund a wallet with USDC only: trading works on gasless routes, and the CLI auto-buys SOL when it runs low (dynamic 5-25 USDC: ~50 txs + 5 ATAs at live fees, x2 buffer) (reported as `gas_refuel` in the JSON output; disable with RWA_NO_AUTO_GAS=1)
-- Multi-token calls (baskets, close-all) run in parallel by default — safe (bounded internally) and fast; `--sequential` is the rate-limit fallback. Parallel quotes are staggered (`RWA_QUOTE_STAGGER_MS`, default 350ms) and **adaptive**: once Jupiter starts throttling (retries climb), remaining launches widen to a serial pace so a keyless wallet degrades gracefully instead of retry-storming. `RWA_JUPITER_API_KEY` raises the limit for full parallel (then lower the stagger)
+- Multi-token calls (baskets, close-all) run in parallel by default — safe (bounded internally) and fast; `--sequential` is the rate-limit fallback. Parallel quotes are staggered (`RWA_QUOTE_STAGGER_MS`, default 350ms) and **adaptive**: once Jupiter starts throttling (retries climb), remaining launches widen to a serial pace so a keyless wallet degrades gracefully instead of retry-storming. a configured `RWA_JUPITER_API_KEY` auto-selects the keyed profile (stagger 0, quote concurrency 4 vs 2) — no manual tuning; `RWA_QUOTE_STAGGER_MS` still overrides
 - Use `sleep 3` between sequential commands only (not needed with built-in parallel flags)
 - Always use `--json` for machine-readable output
 - Use `-y` only for real execution, not for `--dry-run`

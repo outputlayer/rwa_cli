@@ -8,7 +8,7 @@
 
 use eyre::Result;
 use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
-use rwa_ondo::{usecases, wallet};
+use rwa_ondo::{jupiter, usecases, wallet};
 use serde::Serialize;
 use std::future::Future;
 use std::io::{self, Write};
@@ -31,17 +31,27 @@ pub(super) const SEQUENTIAL_SPACING: Duration = Duration::from_secs(3);
 /// it can be lowered toward 0.
 const DEFAULT_QUOTE_STAGGER_MS: u64 = 350;
 
-/// Parse the parallel-quote stagger from a raw `RWA_QUOTE_STAGGER_MS` value,
-/// falling back to the default on absence or garbage.
-fn quote_stagger_from(raw: Option<&str>) -> Duration {
-    raw.and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS))
+/// Parse the parallel-quote stagger: an explicit `RWA_QUOTE_STAGGER_MS` always
+/// wins; otherwise a configured `RWA_JUPITER_API_KEY` selects the keyed profile
+/// (0ms — the key raises the per-wallet limit, so the burst-dodging stagger
+/// only costs latency); keyless falls back to the default.
+fn quote_stagger_from(raw: Option<&str>, has_api_key: bool) -> Duration {
+    if let Some(ms) = raw.and_then(|v| v.trim().parse::<u64>().ok()) {
+        return Duration::from_millis(ms);
+    }
+    if has_api_key {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS)
 }
 
-/// The parallel-quote stagger, honouring `RWA_QUOTE_STAGGER_MS`.
+/// The parallel-quote stagger, honouring `RWA_QUOTE_STAGGER_MS` and the
+/// API-key auto-profile.
 fn quote_stagger() -> Duration {
-    quote_stagger_from(std::env::var("RWA_QUOTE_STAGGER_MS").ok().as_deref())
+    quote_stagger_from(
+        std::env::var("RWA_QUOTE_STAGGER_MS").ok().as_deref(),
+        jupiter::has_api_key(),
+    )
 }
 
 /// Gap before launching the next parallel quote. Normally the small `stagger`;
@@ -111,16 +121,23 @@ pub(super) async fn auto_gas(
 ///
 /// Sequential (`parallel=false`) awaits each item with a 3-second inter-item
 /// delay (Jupiter rate-limit conservatism) and prints `announce` before each.
-/// Parallel (`parallel=true`) spawns a JoinSet and lets them race; swap-layer
-/// concurrency stays bounded by the Jupiter semaphores inside `execute_*`.
+/// Parallel (`parallel=true`) spawns a JoinSet with the SAME staggered,
+/// adaptive launch pacing as the dry-run quote fetcher (`retry_count` is the
+/// injected `/order`-retry reader): each item's chain starts a quote, so
+/// bursting them all at once feeds Jupiter's per-wallet 429 exactly like a
+/// quote burst does — the retry backoff (0.8/1.6/3.2s) costs far more than
+/// the stagger. Swap-layer concurrency stays bounded by the Jupiter
+/// semaphores inside `execute_*`.
 ///
 /// `process` does fetch + execute for one item and returns the JSON entry plus
 /// its USDC delta, or a `CloseFailJson`. Returns (succeeded, failed, total).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_swap_items<T, J, F, Fut>(
     items: Vec<T>,
     parallel: bool,
     json: bool,
     parallel_noun: &str,
+    retry_count: impl Fn() -> u64,
     announce: impl Fn(&T) -> String,
     process: F,
 ) -> (Vec<J>, Vec<CloseFailJson>, f64)
@@ -138,8 +155,17 @@ where
         if !json {
             println!("Processing {} {} in parallel...", items.len(), parallel_noun);
         }
+        let stagger = quote_stagger();
+        let retries_baseline = retry_count();
         let mut joinset: JoinSet<std::result::Result<(J, f64), CloseFailJson>> = JoinSet::new();
-        for item in items {
+        for (i, item) in items.into_iter().enumerate() {
+            if i > 0 {
+                let throttled = retry_count() > retries_baseline;
+                let gap = launch_gap(throttled, stagger);
+                if !gap.is_zero() {
+                    tokio::time::sleep(gap).await;
+                }
+            }
             joinset.spawn(process(item));
         }
         while let Some(res) = joinset.join_next().await {
@@ -438,6 +464,80 @@ mod tests {
         assert_eq!(token_type_from_name("Apple Inc"), "stock");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn run_swap_items_parallel_staggers_launches_like_dry_run() {
+        // The real -y path must pace its launches exactly like the dry-run
+        // quote fetcher: bursting every fetch+execute chain at once feeds
+        // Jupiter's per-wallet 429 whose retry backoff costs far more than the
+        // stagger (this was why a real 10-token basket took ~22s while its
+        // dry-run quoted in ~4s). 3 items ⇒ at least 2 default stagger gaps.
+        let t0 = tokio::time::Instant::now();
+        let items = vec![1i32, 2, 3];
+        let (mut done, _failed, _total) = run_swap_items(
+            items,
+            true, // parallel
+            true, // json
+            "items",
+            || 0, // never throttled → pure stagger
+            |_| String::new(),
+            |item: i32| async move { Ok::<(i32, f64), CloseFailJson>((item, 0.0)) },
+        )
+        .await;
+        done.sort();
+        assert_eq!(done, vec![1, 2, 3]);
+        assert!(
+            t0.elapsed() >= Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS) * 2,
+            "expected >= 2 stagger gaps in the REAL path, got {:?}",
+            t0.elapsed()
+        );
+        assert!(
+            t0.elapsed() < SEQUENTIAL_SPACING,
+            "never-throttled run must not widen to serial pace, got {:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_swap_items_parallel_widens_after_throttle_signal() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // Same adaptive widen as the dry-run launcher: item 1 simulates Jupiter
+        // pushback via the injected local counter; remaining launches must pace
+        // at SEQUENTIAL_SPACING.
+        let retries = Arc::new(AtomicU64::new(0));
+        let reader = {
+            let retries = retries.clone();
+            move || retries.load(Ordering::Relaxed)
+        };
+        let t0 = tokio::time::Instant::now();
+        let (mut done, failed, _total) = run_swap_items(
+            vec![1i32, 2, 3],
+            true,
+            true,
+            "items",
+            reader,
+            |_| String::new(),
+            move |item: i32| {
+                let retries = retries.clone();
+                async move {
+                    if item == 1 {
+                        retries.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok::<(i32, f64), CloseFailJson>((item, 0.0))
+                }
+            },
+        )
+        .await;
+        done.sort();
+        assert_eq!(done, vec![1, 2, 3]);
+        assert!(failed.is_empty());
+        assert!(
+            t0.elapsed() >= SEQUENTIAL_SPACING,
+            "a throttle signal must widen the real-path launch pacing, got {:?}",
+            t0.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn run_swap_items_parallel_collects_successes_failures_and_sums_total() {
         let items = vec![1i32, 2, 3, -4];
@@ -446,6 +546,7 @@ mod tests {
             true, // parallel
             true, // json (suppress prints)
             "items",
+            || 0,
             |_| String::new(),
             |item: i32| async move {
                 if item < 0 {
@@ -482,6 +583,7 @@ mod tests {
             false, // sequential
             true,  // json
             "items",
+            || 0,
             |_| String::new(),
             |item: i32| async move {
                 if item == 10 {
@@ -525,10 +627,23 @@ mod tests {
 
     #[test]
     fn quote_stagger_parses_env_with_default_fallback() {
-        assert_eq!(quote_stagger_from(None), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
-        assert_eq!(quote_stagger_from(Some("120")), Duration::from_millis(120));
-        assert_eq!(quote_stagger_from(Some("0")), Duration::from_millis(0));
-        assert_eq!(quote_stagger_from(Some("garbage")), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+        // Keyless: env wins, garbage/absent → default.
+        assert_eq!(quote_stagger_from(None, false), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+        assert_eq!(quote_stagger_from(Some("120"), false), Duration::from_millis(120));
+        assert_eq!(quote_stagger_from(Some("0"), false), Duration::from_millis(0));
+        assert_eq!(quote_stagger_from(Some("garbage"), false), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));
+    }
+
+    #[test]
+    fn quote_stagger_api_key_profile_zeroes_unless_env_overrides() {
+        // Keyed auto-profile: no env → 0ms (the key raises the per-wallet
+        // limit, the stagger only costs latency). An explicit env value
+        // ALWAYS wins — even over the key profile.
+        assert_eq!(quote_stagger_from(None, true), Duration::ZERO);
+        assert_eq!(quote_stagger_from(Some("500"), true), Duration::from_millis(500));
+        // Garbage env with a key still lands on the keyed profile, not the
+        // keyless default.
+        assert_eq!(quote_stagger_from(Some("junk"), true), Duration::ZERO);
     }
 
     #[tokio::test(start_paused = true)]

@@ -52,6 +52,13 @@ fn jupiter_api_key() -> Option<String> {
         .filter(|k| !k.trim().is_empty())
 }
 
+/// Whether an API key is configured — drives the keyed performance profile
+/// (higher `/order` concurrency here; zero quote stagger in the cli launcher).
+#[must_use]
+pub fn has_api_key() -> bool {
+    jupiter_api_key().is_some()
+}
+
 /// Apply the standard Jupiter headers, plus `x-api-key` when a key is provided.
 /// The key is a parameter (not read from env here) so this is pure and testable.
 fn apply_jupiter_headers(
@@ -65,11 +72,21 @@ fn apply_jupiter_headers(
     }
 }
 
-/// Concurrency limit for `/order` (quote) requests.
+/// Concurrency limit for `/order` (quote) requests, keyed by API-key presence.
 /// Jupiter routes orders per-wallet; too many concurrent `/order` calls from the
 /// same taker wallet cause rejections (not rate-limit 429, but routing conflicts).
-/// Tested: 4 concurrent fails, 2 concurrent reliable across 20-token baskets.
-static ORDER_SEMAPHORE: Semaphore = Semaphore::const_new(2);
+/// Tested keyless: 4 concurrent fails, 2 concurrent reliable across 20-token
+/// baskets. An `RWA_JUPITER_API_KEY` raises the per-wallet limits, so the keyed
+/// profile doubles the permits — pure so it's unit-testable.
+fn order_permits(has_api_key: bool) -> usize {
+    if has_api_key { 4 } else { 2 }
+}
+
+/// The `/order` semaphore, sized once per process from the key profile.
+fn order_semaphore() -> &'static Semaphore {
+    static ORDER_SEMAPHORE: std::sync::OnceLock<Semaphore> = std::sync::OnceLock::new();
+    ORDER_SEMAPHORE.get_or_init(|| Semaphore::new(order_permits(has_api_key())))
+}
 
 /// Concurrency limit for `/execute` (signed-tx submission) requests.
 /// Execute uses pre-cached orders so wallet contention is lower.
@@ -99,6 +116,22 @@ pub fn order_retry_count() -> u64 {
 
 fn with_jupiter_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     apply_jupiter_headers(request, jupiter_api_key().as_deref())
+}
+
+#[cfg(test)]
+mod perf_profile_tests {
+    use super::order_permits;
+
+    #[test]
+    fn order_permits_double_with_an_api_key() {
+        // Keyless: 2 is the live-tested per-wallet ceiling (4 concurrent
+        // /order calls fail without a key). Keyed: the limit is account-level,
+        // so the profile doubles. A mutant flipping the branch would ship the
+        // aggressive profile to keyless users — the exact burst the adaptive
+        // pacing exists to avoid.
+        assert_eq!(order_permits(false), 2);
+        assert_eq!(order_permits(true), 4);
+    }
 }
 
 #[cfg(test)]

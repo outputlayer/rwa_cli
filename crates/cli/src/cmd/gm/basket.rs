@@ -227,6 +227,7 @@ pub async fn buy_basket(
         parallel,
         json,
         "buy orders",
+        jupiter::order_retry_count,
         |(sym, raw)| {
             format!("Buying {} {} USDC ...", sym, amounts::format_amount(raw, jupiter::USDC_DECIMALS))
         },
@@ -368,6 +369,7 @@ pub async fn sell_basket(
         parallel,
         json,
         "sell orders",
+        jupiter::order_retry_count,
         |(sym, amt)| format!("Selling {} {} ...", sym, amt),
         |(sym, amt)| process_sell_item(wallet_arc.clone(), taker.clone(), sym, amt, json, rpc.clone(), slippage, max_bps),
     )

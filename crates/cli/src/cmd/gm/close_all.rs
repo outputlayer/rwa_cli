@@ -237,6 +237,7 @@ pub async fn close_all(
             parallel,
             json,
             "positions",
+            jupiter::order_retry_count,
             |c| format!("Selling {} {} ...", c.sell_display, c.symbol),
             |c| process_close_item(wallet_arc.clone(), taker.clone(), c, json, slippage, max_bps),
         )

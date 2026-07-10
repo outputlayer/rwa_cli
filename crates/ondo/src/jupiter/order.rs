@@ -3,7 +3,7 @@
 //! Public entry is `get_order`. Without an explicit `base_url` it tries the
 //! public Jupiter backends in priority order (SwapV2 lite → Ultra → UltraLite),
 //! falling back to Metis V1 only on route-not-found errors. Each attempt is
-//! gated by `ORDER_SEMAPHORE` (concurrency 2) to avoid Jupiter's per-wallet
+//! gated by the order semaphore (concurrency 2 keyless / 4 keyed) to avoid Jupiter's per-wallet
 //! routing conflicts, and retried with exponential backoff on transient
 //! failures.
 
@@ -13,7 +13,7 @@ use crate::HTTP;
 
 use super::{
     types::{ExecuteFailure, ExecuteFailureKind, OrderBackend, OrderResponse},
-    with_jupiter_headers, METIS_LITE_API_BASE, ORDER_SEMAPHORE,
+    order_semaphore, with_jupiter_headers, METIS_LITE_API_BASE,
 };
 
 /// Maximum retries for transient errors on /order.
@@ -159,7 +159,7 @@ async fn get_order_with_retries(
     for attempt in 0..=ORDER_MAX_RETRIES {
         // Acquire semaphore only for the actual HTTP call, release before any sleep.
         let result = {
-            let _permit = ORDER_SEMAPHORE.acquire().await
+            let _permit = order_semaphore().acquire().await
                 .map_err(|_| eyre!("Jupiter order semaphore closed"))?;
             get_order_inner(
                 &order_url,

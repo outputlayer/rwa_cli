@@ -96,7 +96,7 @@ export RWA_JUPITER_API_KEY="<your-jupiter-key>"    # optional: higher Jupiter li
 | baskets / `close-all` (`--sequential`) | ~7.4 s for 3 tokens (3 s spacing) |
 | `gm reclaim` | ~1.5 s |
 
-¹ Parallel quotes are staggered (`RWA_QUOTE_STAGGER_MS`, default 350 ms) to dodge Jupiter's per-wallet 429 burst; best case is `~0.6 s + (N−1) × stagger`. Without an API key the per-wallet rate limit still bounds throughput — under heavy use latency degrades to multi-second retries. Set **`RWA_JUPITER_API_KEY`** for the real parallel unlock, then lower the stagger toward 0. Numbers are network-bound (Jupiter / Solana RPC) and vary with connectivity and rate-limit state.
+¹ Parallel quotes are staggered (`RWA_QUOTE_STAGGER_MS`, default 350 ms) to dodge Jupiter's per-wallet 429 burst; best case is `~0.6 s + (N−1) × stagger`. Without an API key the per-wallet rate limit still bounds throughput — under heavy use latency degrades to multi-second retries. Setting **`RWA_JUPITER_API_KEY`** auto-selects the keyed profile (stagger 0, higher quote concurrency) — no manual tuning needed (`RWA_QUOTE_STAGGER_MS` still overrides). Numbers are network-bound (Jupiter / Solana RPC) and vary with connectivity and rate-limit state.
 
 </details>
 
