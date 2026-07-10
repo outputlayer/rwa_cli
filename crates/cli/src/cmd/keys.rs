@@ -357,7 +357,7 @@ async fn export(selected: Option<&str>, reveal: bool, json: bool) -> Result<()> 
     }
     println!("Address:  {}", w.pubkey());
     println!("Private key (base58 — import in Phantom/Solflare):");
-    println!("  {}", &*b58);
+    println!("  {}", *b58);
     println!("Private key (JSON array — solana-keygen format):");
     println!("  {}", serde_json::to_string(&*keypair)?);
     match mnemonic {
