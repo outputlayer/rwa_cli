@@ -721,6 +721,7 @@ mod tests {
     // can't race a sibling; same env-test approach as `wallets.rs`.)
     #[serial_test::serial]
     #[tokio::test]
+    #[allow(unsafe_code)] // env::set_var is unsafe on 2024; serialized above so it can't race
     async fn generate_command_defaults_to_encrypted_and_opts_into_plaintext() {
         let base = std::env::temp_dir().join(format!("rwa_gen_cmd_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
