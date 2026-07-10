@@ -110,6 +110,13 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
     if let (Some(offhours), Some(paused)) = (offhours_tradable_count, paused_count) {
         println!("  24/7 (offhours): {} flagship tokens; paused now: {}", offhours, paused);
     }
+    // `--tradable` promises the flagship symbols, not just their count — in
+    // human mode the flag was previously a no-op (only JSON got the list).
+    // The full tradable set is `rwa gm tradable`; here we surface the small
+    // 24/7 flagship set, which is what the flag documents.
+    if let Some(flagships) = offhours_tradable_list.as_ref().filter(|f| !f.is_empty()) {
+        println!("  24/7 flagships: {}", flagships.join(", "));
+    }
     Ok(())
 }
 
