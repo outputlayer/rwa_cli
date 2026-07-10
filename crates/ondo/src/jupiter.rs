@@ -84,9 +84,10 @@ static EXECUTE_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 static ORDER_RETRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Record that a `/order` fetch is backing off to retry. Called at the retry
-/// site; also `pub` so the basket-launcher tests (a separate crate) can simulate
-/// Jupiter pushback without a live rate limit.
-pub fn note_order_retry() {
+/// site. Crate-internal: the basket launcher reads the count via the public
+/// [`order_retry_count`] (injected into its pacing), and its tests inject a
+/// local counter rather than driving this global, so this need not be `pub`.
+pub(crate) fn note_order_retry() {
     ORDER_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
 

@@ -274,7 +274,7 @@ async fn buy_basket_dry_run(
         }
     };
     let (ready_orders, failed) = if parallel {
-        fetch_orders_parallel(symbol_raw.to_vec(), json, "buy orders", describe_ok, fetch).await
+        fetch_orders_parallel(symbol_raw.to_vec(), json, "buy orders", jupiter::order_retry_count, describe_ok, fetch).await
     } else {
         fetch_orders_sequential(symbol_raw.to_vec(), json, describe_ok, fetch).await
     };
@@ -415,7 +415,7 @@ async fn sell_basket_dry_run(
         }
     };
     let (ready_orders, failed) = if parallel {
-        fetch_orders_parallel(pairs.to_vec(), json, "sell orders", describe_ok, fetch).await
+        fetch_orders_parallel(pairs.to_vec(), json, "sell orders", jupiter::order_retry_count, describe_ok, fetch).await
     } else {
         fetch_orders_sequential(pairs.to_vec(), json, describe_ok, fetch).await
     };

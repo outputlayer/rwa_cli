@@ -8,7 +8,7 @@
 
 use eyre::Result;
 use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
-use rwa_ondo::{jupiter, usecases, wallet};
+use rwa_ondo::{usecases, wallet};
 use serde::Serialize;
 use std::future::Future;
 use std::io::{self, Write};
@@ -182,6 +182,7 @@ pub(super) async fn fetch_orders_parallel<I, T, F, Fut>(
     items: Vec<I>,
     json: bool,
     parallel_noun: &str,
+    retry_count: impl Fn() -> u64,
     describe_ok: impl Fn(&T) -> String,
     fetch: F,
 ) -> (Vec<T>, Vec<CloseFailJson>)
@@ -201,16 +202,22 @@ where
     // starts pushing back (retries climb past the baseline), widen the gap to a
     // serial pace so we stop feeding the burst. Adaptive to whatever per-wallet
     // limit the user has, so a keyless public wallet gets the best of both.
+    //
+    // `retry_count` is injected: production wires `jupiter::order_retry_count`
+    // (the process-wide `/order` retry odometer that the quote-fetch retry site
+    // increments), while tests pass a local counter — so the adaptive-pacing
+    // behaviour is exercised deterministically without a process-global leaking
+    // between concurrent tests.
     // Trade-off (perf only): the counter counts any retryable /order pushback, so
     // a single non-rate-limit transient on an early item latches the wider pace
     // for the rest of this basket. Acceptable — it only slows launches, never
     // money movement (execution uses a fixed pace and ignores this counter).
     let stagger = quote_stagger();
-    let retries_baseline = jupiter::order_retry_count();
+    let retries_baseline = retry_count();
     let mut order_set: JoinSet<(String, Result<T>)> = JoinSet::new();
     for (i, item) in items.into_iter().enumerate() {
         if i > 0 {
-            let throttled = jupiter::order_retry_count() > retries_baseline;
+            let throttled = retry_count() > retries_baseline;
             let gap = launch_gap(throttled, stagger);
             if !gap.is_zero() {
                 tokio::time::sleep(gap).await;
@@ -524,20 +531,35 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn parallel_fetch_widens_gap_after_a_throttle_signal() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Inject a LOCAL retry counter (not the process-global): the fetch bumps
+        // it to simulate Jupiter pushback and the launcher paces against the same
+        // local reader, so this exercises the adaptive widen deterministically —
+        // no sibling test can perturb it.
+        let retries = Arc::new(AtomicU64::new(0));
+        let reader = {
+            let retries = retries.clone();
+            move || retries.load(Ordering::Relaxed)
+        };
         let t0 = tokio::time::Instant::now();
         let items = vec![1i32, 2i32, 3i32];
         let (mut ready, failed) = fetch_orders_parallel(
             items,
             true,
             "orders",
+            reader,
             |_: &i32| String::new(),
-            |item: i32| async move {
-                // Simulate Jupiter pushing back on the FIRST quote: bump the
-                // retry counter the launcher paces against.
-                if item == 1 {
-                    rwa_ondo::jupiter::note_order_retry();
+            move |item: i32| {
+                let retries = retries.clone();
+                async move {
+                    // Simulate Jupiter pushing back on the FIRST quote.
+                    if item == 1 {
+                        retries.fetch_add(1, Ordering::Relaxed);
+                    }
+                    (item.to_string(), Ok::<i32, eyre::Report>(item))
                 }
-                (item.to_string(), Ok::<i32, eyre::Report>(item))
             },
         )
         .await;
@@ -561,6 +583,7 @@ mod tests {
             items,
             true, // json (suppress prints)
             "orders",
+            || 0, // injected reader: never throttled → pure stagger, no widen
             |_: &i32| String::new(),
             |item: i32| async move { (item.to_string(), Ok::<i32, eyre::Report>(item)) },
         )
@@ -568,18 +591,22 @@ mod tests {
         ready.sort();
         assert_eq!(ready, vec![1, 2, 3], "all items still resolve despite staggering");
         assert!(failed.is_empty());
-        // 3 launches ⇒ at least 2 default stagger gaps elapse. Pinned to the
-        // CONST (not `quote_stagger()`, which would collapse to `>= 0` under
-        // RWA_QUOTE_STAGGER_MS=0 and pass vacuously).
-        // >= 2 default stagger gaps. Pinned to the CONST (not `quote_stagger()`,
-        // which would collapse to `>= 0` under RWA_QUOTE_STAGGER_MS=0 and pass
-        // vacuously). Only a lower bound: `ORDER_RETRIES` is a process-global a
-        // sibling test may bump, spuriously tripping the widen — which only makes
-        // elapsed larger, so it can't fail this bound (an upper bound here would
-        // be flaky under parallel test execution).
+        // 3 launches with a never-throttled reader ⇒ EXACTLY 2 default stagger
+        // gaps (i=1, i=2), never widening. The injected local reader makes this
+        // deterministic, so we can now bound BOTH sides (the old process-global
+        // forced dropping the upper bound — a sibling test could spuriously trip
+        // the widen). Lower bound pinned to the CONST, not `quote_stagger()`
+        // (which collapses to `>= 0` under RWA_QUOTE_STAGGER_MS=0 and passes
+        // vacuously). Upper bound < SEQUENTIAL_SPACING proves no widen occurred.
+        let stagger = Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS);
         assert!(
-            t0.elapsed() >= Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS) * 2,
+            t0.elapsed() >= stagger * 2,
             "expected >= 2 stagger gaps, got {:?}",
+            t0.elapsed()
+        );
+        assert!(
+            t0.elapsed() < SEQUENTIAL_SPACING,
+            "never-throttled fetch must not widen to serial pace, got {:?}",
             t0.elapsed()
         );
     }
