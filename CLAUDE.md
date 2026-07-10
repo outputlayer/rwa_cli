@@ -56,7 +56,7 @@ cargo install --path bin/rwa
 - `send` and `sell` are different actions
 - There is no `quote` command; preview uses `buy/sell --dry-run`
 - `--quote-only` (buy only) previews a quote for any size by skipping the funds check; never executes, conflicts with `-y`, and emits the `dry_run` JSON shape
-- `--max-bps <N>` (buy/sell/baskets/close-all) rejects trades whose quoted all-in cost (spread + fee) exceeds N bps; `RWA_MAX_BPS` is the env default; surfaced as `cost_too_high` (per-item `failed[]` entries in multi-trade commands)
+- `--max-bps <N>` (buy/sell/baskets/close-all) rejects trades whose quoted all-in cost (spread + fee) exceeds N bps; `RWA_MAX_BPS` is the env default; surfaced as `cost_too_high` (per-item `failed[]` entries in multi-trade commands). All-in cost nets the fee against price-impact (`fee_bps − slippage_pct·100`), so a **favorable spread offsets the fee** — a quote with a 10-bps fee but a better-than-quoted price can pass `--max-bps 5` (even `--max-bps 0`); the cap is on net cost, not the raw fee
 - `--limit-price <P> [share|token]` (buy/sell only) makes the trade conditional: the quote's implied price (USDC per token) must be ≤ P for buy / ≥ P for sell (equality passes), else the command fails with `condition_not_met` (exit 1, not transient) — in `--dry-run` too. The gated quote is the one executed; worst-case fill = limit ± slippage tolerance. Price is per RAW token by default; canonical form gives the unit as a space-separated second word (`--limit-price 748 share`) to compare per underlying share via the mint's scaled-UI multiplier (the raw threshold then floats with dividend accrual — intended; requires the multiplier: RPC failure fails closed with exit 75); joined forms (`--limit-price 748share`) still work. `token` (bare = token) accepted for explicitness. On success/dry-run the JSON echoes the value as `limit_price` (space-joined when given as two words). Conflicts with `--quote-only`. Canonical synthetic limit order: run it from cron/a script every N minutes until it fills (exit 0), e.g. `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`; DCA is plain scheduled `buy -y`; stop-loss is an external reference-price check + market `sell -y` (price guarantee is not wanted there). Note: on a low-SOL wallet a real `-y` run may auto-refuel gas (USDC→SOL) before the condition check — bounded, and disabled by `RWA_NO_AUTO_GAS=1`
 - `--slippage <BPS>` is accepted by buy/sell and all multi-trade commands (baskets, close-all)
 - `close-all` is the canonical path for selling many positions
@@ -72,6 +72,8 @@ rwa gm hours --tradable     # also lists the offhours flagship symbols
 rwa gm list
 rwa gm search --search <keyword>
 rwa gm search --tradable-only --sector <SECTOR>
+rwa gm search --type <stock|etf>          # filter by instrument type (case-insensitive)
+rwa gm search --name-keyword <WORD>       # filter by company-name keyword (repeatable)
 rwa gm search --tag <LABEL>               # any Ondo tag: asset class, region, factor (asia, dividend, "fixed income", ...)
 rwa gm tradable [SYM ...]
 
@@ -104,8 +106,8 @@ rwa gm send <TOKEN> <AMT> <TO> -y
 rwa gm reclaim
 rwa gm reclaim --token <SYM>
 
-rwa keys generate
-rwa keys generate --encrypt
+rwa keys generate                       # encrypted by default (prompts for a passphrase)
+rwa keys generate --allow-plaintext     # opt out of encryption (not recommended)
 rwa keys import --seed-phrase|--private-key|--file
 rwa keys encrypt
 rwa keys decrypt
@@ -164,6 +166,7 @@ rwa update -y
 - `keys generate` is mnemonic-first: the wallet derives from a fresh 12-word BIP39 phrase at `m/44'/501'/0'/0'` (Phantom/Solflare-compatible); the phrase is printed once. Encrypted wallets embed the phrase inside the age payload (`{key, mnemonic}` object; legacy bare arrays still load); plaintext `key.json` never stores it
 - Seed-phrase import (`keys import`/`keys add --seed-phrase`) accepts an optional derivation path: `--account <N>` (→ `m/44'/501'/N'/0'`; `N=0` default, matches Phantom/Solflare "Account N+1") or the mutually-exclusive `--derivation-path <PATH>` (full BIP44). Both apply only to seed import (rejected on `--file`/`--private-key`). A non-default path warns on stderr that the recovery phrase alone restores account 0 — the path must be recorded to restore that wallet elsewhere (the path is NOT yet stored in the payload; re-import with the same `--derivation-path`)
 - `keys export` prints the base58 keypair (Phantom import format), the solana-keygen JSON array, and the stored recovery phrase; gated behind an interactive confirmation or `--reveal` (mandatory with `--json`)
+- Config paths below are shown as `~/.config/rwa/...` (the Linux XDG config dir). The CLI actually uses the **platform config dir** (`dirs::config_dir()`): on macOS that's `~/Library/Application Support/rwa/`, on Windows `%APPDATA%\rwa\`. Substitute accordingly
 - Plaintext wallet: `~/.config/rwa/key.json`
 - Encrypted wallet: `~/.config/rwa/key.age`
 - Unix permissions should stay `0o600`

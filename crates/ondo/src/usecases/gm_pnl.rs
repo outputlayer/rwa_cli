@@ -206,4 +206,20 @@ mod tests {
         assert_eq!(t.qty_raw, 1_000_000_000, "transfers don't touch the position");
         assert_eq!(t.invested_usdc_raw, 5_000_000);
     }
+
+    #[test]
+    fn buy_of_sol_is_excluded_from_pnl() {
+        // Defensive guard (`"buy" if e.token != "SOL"`): a buy whose token is
+        // SOL — e.g. an auto-gas USDC→SOL swap that ever got recorded as a buy —
+        // must NOT become a priced position; SOL is the fee asset, not a tracked
+        // holding. Dropping the `!= "SOL"` guard would give SOL a fake cost basis.
+        let events = vec![
+            ev("buy", "SOL", "25000000", Some("5000000")),
+            ev("buy", "TSLAon", "1000000000", Some("5000000")),
+        ];
+        let s = compute_pnl(&events);
+        assert_eq!(s.tokens.len(), 1, "SOL buy must not create a position");
+        assert_eq!(s.tokens[0].token, "TSLAon");
+        assert!(!s.tokens.iter().any(|t| t.token == "SOL"), "SOL must be absent from P&L");
+    }
 }

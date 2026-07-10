@@ -4,6 +4,21 @@ use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
 
 use super::*;
 
+/// USDC to reserve (keep untouched) for the pre-send auto-gas refuel. Only an
+/// EXACT USDC amount leaves a well-defined remainder that auto-gas may convert
+/// to SOL; a balance-relative amount (`all`/`100%`/`NN%`) has no fixed
+/// remainder, so letting auto-gas divert USDC would silently shrink the send
+/// (the recipient gets less than the requested share). Returns `None` for those
+/// → the caller skips the refuel entirely. Pure so the decision is unit-tested.
+fn usdc_gas_reservation(amount: &str) -> Option<u128> {
+    // token_to_raw succeeds ONLY for an exact numeric amount; `all`/`100%`/
+    // `NN%` and garbage all fail → None → skip the refuel.
+    amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
+        .ok()
+        .and_then(|r| r.parse::<u128>().ok())
+        .filter(|&r| r > 0)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
     let w = load_wallet(selected)?;
@@ -21,16 +36,17 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool,
     // before the user drains SOL would fight their intent.
     let (gas_refuel, _balances) = if dry_run || token_upper == "SOL" {
         (None, None)
+    } else if token_upper == "USDC" {
+        // Auto-gas converts USDC → SOL, which silently shrinks a balance-relative
+        // send. Only reserve+refuel for an exact USDC amount; `all`/`100%`/`NN%`
+        // skip the refuel (and fail cleanly later if SOL can't cover the fee).
+        match usdc_gas_reservation(amount) {
+            Some(reserved) => auto_gas(&w, rpc_url, yes, json, reserved).await?,
+            None => (None, None),
+        }
     } else {
-        let reserved = if token_upper == "USDC" {
-            amounts::token_to_raw(amount, jupiter::USDC_DECIMALS)
-                .ok()
-                .and_then(|r| r.parse::<u128>().ok())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        auto_gas(&w, rpc_url, yes, json, reserved).await?
+        // GM-token send spends no USDC — auto-gas may use all of it (reserve 0).
+        auto_gas(&w, rpc_url, yes, json, 0).await?
     };
 
     match token_upper.as_str() {
@@ -108,18 +124,16 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
     }
 
     let is_all = amount.trim().eq_ignore_ascii_case("all") || amount.trim() == "100%";
+    // Fetch the balance once: serves `all`, the `NN%` resolver, and the exact
+    // overshoot check below (one RPC call instead of the previous per-branch fetch).
+    let (_, bal_raw_str) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
 
     let raw_str = if is_all {
-        let (_, raw) = solana::get_usdc_balance_raw(&pubkey, rpc_url).await?;
-        raw
+        bal_raw_str.clone()
     } else {
         amounts::resolve_amount_to_raw(amount, jupiter::USDC_DECIMALS, || {
-            let pk = pubkey.clone();
-            let rpc = rpc_url.map(String::from);
-            async move {
-                let (_, raw) = solana::get_usdc_balance_raw(&pk, rpc.as_deref()).await?;
-                Ok(raw)
-            }
+            let bal = bal_raw_str.clone();
+            async move { Ok(bal) }
         }).await?
     };
     if raw_str == "0" {
@@ -127,6 +141,20 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
     }
     let display_amount = amounts::format_amount(&raw_str, jupiter::USDC_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid USDC amount"))?;
+    // Exact amounts can exceed the balance (`all`/`NN%` cannot) — fail fast with
+    // a typed error instead of an opaque on-chain reject, matching send_sol/token.
+    let bal_raw: u64 = bal_raw_str.parse().unwrap_or(0);
+    if raw > bal_raw {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!(
+                "Insufficient USDC: {} available, need {}",
+                amounts::format_amount(&bal_raw_str, jupiter::USDC_DECIMALS),
+                display_amount
+            ),
+        )
+        .into());
+    }
 
     if !json {
         println!("Send {} USDC → {to}", display_amount);
@@ -272,4 +300,25 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
         println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usdc_gas_reservation_reserves_exact_but_skips_balance_relative() {
+        // Exact amounts leave a well-defined remainder → reserve that raw so
+        // auto-gas only spends the rest.
+        assert_eq!(usdc_gas_reservation("10"), Some(10_000_000));
+        assert_eq!(usdc_gas_reservation("5.5"), Some(5_500_000));
+        // Balance-relative amounts have no fixed remainder — reserving would be
+        // guesswork and letting auto-gas run silently shrinks the send, so skip.
+        assert_eq!(usdc_gas_reservation("all"), None, "all must skip auto-gas");
+        assert_eq!(usdc_gas_reservation("100%"), None, "100% must skip auto-gas");
+        assert_eq!(usdc_gas_reservation("50%"), None, "NN% must skip auto-gas");
+        // Zero / garbage are not exact spendable amounts → skip (send fails later).
+        assert_eq!(usdc_gas_reservation("0"), None);
+        assert_eq!(usdc_gas_reservation("abc"), None);
+    }
 }

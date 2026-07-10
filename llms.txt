@@ -97,7 +97,7 @@ GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via
 - `rwa --json update -y` — self-update to latest (verifies SHA-256, fail-closed)
 
 ### Wallet
-- `rwa keys generate --encrypt` — create encrypted wallet
+- `rwa keys generate` — create wallet (encrypted by default; `--allow-plaintext` to opt out)
 - `rwa keys import --seed-phrase "word1 word2 ..."` — import mnemonic (default path m/44'/501'/0'/0'). Add `--account <N>` (→ m/44'/501'/N'/0', Phantom "Account N+1") or `--derivation-path "<PATH>"` (mutually exclusive) to import a non-default account; a non-default path warns that the phrase alone restores account 0 — record the path
 - `rwa keys import --private-key <BASE58>` — import private key
 - `rwa keys show` — show address + key path
