@@ -53,7 +53,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 ## Things to know
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
-- **Conditional orders.** `--limit-price <P> [share|token]` (buy/sell) only executes if the quoted price (USDC/token) is ≤ P for buy, ≥ P for sell (equality passes) — otherwise it fails with `condition_not_met` (exit 1), same in `--dry-run`. Worst-case fill is limit ± slippage. Price is per raw token by default; canonical form is a space-separated unit (`--limit-price 748 share`) to gate per underlying share instead; joined forms (`--limit-price 748share`) still work (bare number or explicit `token` both mean per-token). Conflicts with `--quote-only`. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
+- **Conditional orders.** `--limit-price <P>` (buy/sell) only fills if the quoted price is ≤ P (buy) / ≥ P (sell), else `condition_not_met` (exit 1) — in `--dry-run` too; worst-case fill is limit ± slippage. Add `share` to gate per underlying share instead of per raw token. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC. Token sell amounts are raw; for dividend-accruing tokens wallets display slightly more (shares_per_token multiplier) — if an exact sell overshoots, the error shows both raw and wallet-displayed numbers; prefer `all`/`50%`.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger with a tamper-evident hash chain; `rwa gm pnl` shows average entry price, realized and unrealized P&L (built from your trades only) plus `ledger_integrity` (`ok`/`legacy`/`broken@line N`) so a corrupted ledger is visible instead of silently mispricing.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
@@ -68,7 +68,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 npx skills add outputlayer/rwa_skills -g -y
 ```
 
-Then talk in plain language: *"Buy $100 of TSLA · Show my portfolio · Send all USDC to <ADDRESS>"*.
+Then talk in plain language: *"Buy $100 of TSLA · Show my portfolio · Send all USDC to a friend's address"*.
 
 Every command supports `--json` — a stable contract with typed `error_kind` values and exit code 75 for retry-worthy transient failures (1 otherwise). Rules: prefer `--json`, use `-y` only for real execution, never run wallet-changing commands as parallel shell processes (multi-token commands parallelize internally). **`--json` without `-y` never executes** the six gated money-moving commands (buy, sell, send, buy-basket, sell-basket, close-all) — it fails closed with `error_kind: confirmation_required` (exit 1) instead of running non-interactively; add `-y` to execute or `--dry-run` to preview. `reclaim` reclaims rent to your own wallet and runs without confirmation. Manual skill install: [outputlayer/rwa_skills](https://github.com/outputlayer/rwa_skills).
 
