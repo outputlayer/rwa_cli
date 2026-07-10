@@ -93,12 +93,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Advisory scan for a wallet-holding binary: fails on any RUSTSEC
-      # vulnerability in the dependency tree. Independent of the build/test
-      # jobs (which `make ci` mirrors) — this one needs the advisory DB and
-      # can go red on a newly-published advisory with no code change, so it is
-      # deliberately its own job, not part of the local `make ci` gate.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Advisory scan for a wallet-holding binary: `--deny warnings` fails on
+      # ANY RUSTSEC advisory (vulnerability, unsound, or unmaintained) in the
+      # tree. The two ignores are UNMAINTAINED crates with NO runtime presence
+      # in the shipped binary (verified via `cargo tree -i`):
+      #   RUSTSEC-2025-0052  async-std        ← httpmock (dev-dependency, tests only)
+      #   RUSTSEC-2024-0370  proc-macro-error ← i18n-embed-fl (age's build-time proc-macro)
+      # Independent of the build/test jobs (which `make ci` mirrors) — this one
+      # needs the advisory DB and can go red on a newly-published advisory with
+      # no code change, so it is deliberately its own job, not part of `make ci`.
       - name: cargo audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0370
