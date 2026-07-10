@@ -179,6 +179,15 @@ where
                     if !json {
                         eprintln!("  ✗ join error: {}", e);
                     }
+                    // A task panic/cancel yields no item, so the symbol is
+                    // unknown — but a money op that may have executed must still
+                    // land in the report. A silent drop reads to a --json
+                    // consumer (which gates on failed[]/exit) as full success.
+                    failed.push(CloseFailJson {
+                        token: "unknown".to_string(),
+                        error: format!("task did not complete: {e}"),
+                        error_kind: None,
+                    });
                 }
             }
         }
@@ -536,6 +545,33 @@ mod tests {
             "a throttle signal must widen the real-path launch pacing, got {:?}",
             t0.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn run_swap_items_parallel_records_a_panicked_task_in_failed() {
+        // A task panic yields a JoinError with no item, so the symbol is
+        // unknown — but a money op that may have executed must still appear in
+        // the report, never vanish from both done[] and failed[] (a silent
+        // drop reads to a --json consumer as "everything succeeded").
+        let (done, failed, _total) = run_swap_items(
+            vec![1i32, 2],
+            true, // parallel
+            true, // json
+            "items",
+            || 0,
+            |_| String::new(),
+            |item: i32| async move {
+                if item == 2 {
+                    panic!("boom in task");
+                }
+                Ok::<(i32, f64), CloseFailJson>((item, 0.0))
+            },
+        )
+        .await;
+        assert_eq!(done, vec![1]);
+        assert_eq!(failed.len(), 1, "the panicked task must be reported, not dropped");
+        assert_eq!(failed[0].token, "unknown");
+        assert!(failed[0].error.contains("did not complete"), "got: {}", failed[0].error);
     }
 
     #[tokio::test]
