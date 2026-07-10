@@ -139,15 +139,7 @@ pub async fn search(
 
     println!("{} GM tokens{}\n", filtered.len(), describe_filters(search_terms, tradable_only, sectors, kind, name_keywords));
     for item in &filtered {
-        // Stocks show their sector; ETFs (usually sector-less) show
-        // asset class · region so nothing lists unclassified.
-        let classification = match (&item.sector, &item.asset_class, &item.region) {
-            (Some(s), _, _) => s.clone(),
-            (None, Some(c), Some(r)) => format!("{c} · {r}"),
-            (None, Some(c), None) => c.clone(),
-            (None, None, Some(r)) => r.clone(),
-            (None, None, None) => String::new(),
-        };
+        let classification = classification_label(item);
         let mark = if item.tradable { "✓" } else { "✗" };
         if classification.is_empty() {
             println!("  {} {:<12} {}", mark, item.symbol, item.name);
@@ -371,6 +363,20 @@ fn matches_filters(
     true
 }
 
+/// Display classification for a token row: stocks show their sector; ETFs
+/// (usually sector-less) fall back to `asset class · region` so nothing lists
+/// unclassified. Kept as a pure helper so every fallback arm is unit-testable
+/// without a network fetch.
+fn classification_label(item: &ListItemJson) -> String {
+    match (&item.sector, &item.asset_class, &item.region) {
+        (Some(s), _, _) => s.clone(),
+        (None, Some(c), Some(r)) => format!("{c} · {r}"),
+        (None, Some(c), None) => c.clone(),
+        (None, None, Some(r)) => r.clone(),
+        (None, None, None) => String::new(),
+    }
+}
+
 fn describe_filters(
     search_terms: &[String],
     tradable_only: bool,
@@ -489,6 +495,78 @@ mod tests {
         paused.trading_paused = true;
         let json = serde_json::to_value(&paused).unwrap();
         assert_eq!(json["trading_paused"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn classification_prefers_sector_for_stocks() {
+        // A stock with a sector shows the sector, ignoring asset_class/region.
+        let item = sample_item(); // sector: Industrials, class: Equities, region: US
+        assert_eq!(classification_label(&item), "Industrials");
+    }
+
+    #[test]
+    fn classification_falls_back_to_asset_class_and_region_for_sectorless_etf() {
+        // Sector-less ETF: "asset class · region" so nothing lists unclassified.
+        let etf = ListItemJson {
+            sector: None,
+            asset_class: Some("Fixed Income".to_string()),
+            region: Some("Asia".to_string()),
+            ..sample_item()
+        };
+        assert_eq!(classification_label(&etf), "Fixed Income · Asia");
+    }
+
+    #[test]
+    fn classification_uses_asset_class_alone_when_region_absent() {
+        let etf = ListItemJson {
+            sector: None,
+            asset_class: Some("Commodities".to_string()),
+            region: None,
+            ..sample_item()
+        };
+        assert_eq!(classification_label(&etf), "Commodities");
+    }
+
+    #[test]
+    fn classification_uses_region_alone_when_class_absent() {
+        let etf = ListItemJson {
+            sector: None,
+            asset_class: None,
+            region: Some("Europe".to_string()),
+            ..sample_item()
+        };
+        assert_eq!(classification_label(&etf), "Europe");
+    }
+
+    #[test]
+    fn classification_is_empty_when_fully_unclassified() {
+        let bare = ListItemJson {
+            sector: None,
+            asset_class: None,
+            region: None,
+            ..sample_item()
+        };
+        assert_eq!(classification_label(&bare), "");
+    }
+
+    #[test]
+    fn describe_filters_joins_all_active_parts() {
+        let out = describe_filters(
+            &["tesla".to_string()],
+            true,
+            &["Technology".to_string()],
+            Some("stock"),
+            &["motors".to_string()],
+        );
+        assert_eq!(
+            out,
+            " (search=tesla; tradable_only; sector=Technology; type=stock; name_keyword=motors)"
+        );
+    }
+
+    #[test]
+    fn describe_filters_is_empty_with_no_filters() {
+        assert_eq!(describe_filters(&[], false, &[], None, &[]), "");
     }
 
     #[test]
