@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.5] - 2026-07-10 — human-UX papercut batch
+
+### Changed
+
+- **Typos get a suggestion**: `Unknown GM token: APPL. Did you mean AAPLon?` — nearest symbol by edit distance ≤ 2 (own tiny Levenshtein, no new dependency); far-off garbage gets no guess, just the `gm search` hint.
+- **Human-mode errors are clean**: a typed error renders only its actionable detail (`Minimum buy amount is 5 USDC`) instead of the machine-flavored `wrap-chain: GM trade error [snake_case_kind]: …` read. The JSON contract is untouched (full chain + `error_kind` as before).
+- `history <BADSYMBOL>` resolves the symbol before calling the API — typed `unknown_token` (with the suggestion) instead of a raw upstream HTTP 400 dump.
+- `buy --help` documents the 5 USDC minimum; `sell --help` warns that amounts are RAW tokens (wallets display raw × shares_per_token — prefer `all`/`NN%`).
+- `gm list`: correct pluralization, a ✓/✗ legend in the header, wider name column, and the unfiltered full dump ends with a filter tip.
+- A passphrase prompt with no terminal now teaches the fix (set `RWA_PASSPHRASE`, run interactively, or `--allow-plaintext`) instead of `os error 6`.
+- `--limit-price` accepts plural units (`shares`/`tokens`); genuinely unknown units still get the teaching error.
+
 ## [0.7.4] - 2026-07-10 — internal refactor (no behavior change)
 
 ### Internal
