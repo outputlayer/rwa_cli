@@ -326,7 +326,9 @@ pub(crate) fn prompt_passphrase() -> Result<Zeroizing<String>> {
     }
     rpassword::prompt_password("Wallet passphrase: ")
         .map(Zeroizing::new)
-        .map_err(|e| eyre!("Failed to read passphrase: {e}"))
+        .map_err(|e| eyre!(
+            "Failed to read passphrase ({e}). No terminal to prompt? Set RWA_PASSPHRASE or run interactively."
+        ))
 }
 
 /// Normalize a path for identity comparison: canonicalize the parent directory

@@ -114,23 +114,21 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
 }
 
 pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
-    let candles = api::fetch_history(symbol, range).await?;
+    // Resolve the symbol against the token list BEFORE hitting the API:
+    // an unknown symbol gets a typed `unknown_token` (with a did-you-mean
+    // suggestion) instead of the raw upstream HTTP 400 dump — and the
+    // resolver already owns the on-suffix normalization.
+    let entry = rwa_ondo::symbol_resolve::resolve_token(symbol, token_list::get_token_list())?;
+    let sym = entry.symbol.to_string();
+
+    let candles = api::fetch_history(&sym, range).await?;
     if candles.is_empty() {
         return Err(eyre::eyre!(
             "No price history for {} (range: {})",
-            symbol,
+            sym,
             range
         ));
     }
-
-    let upper = symbol.to_uppercase();
-    let sym = if upper.ends_with("ON") {
-        // Preserve "on" suffix casing: "TSLAon" not "TSLAON"
-        let base = &upper[..upper.len() - 2];
-        format!("{base}on")
-    } else {
-        format!("{upper}on")
-    };
 
     let first = candles
         .first()

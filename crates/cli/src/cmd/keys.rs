@@ -713,7 +713,9 @@ use crate::wallets::warn_passphrase_env_once;
 fn read_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
     rpassword::prompt_password(prompt)
         .map(Zeroizing::new)
-        .map_err(|e| eyre::eyre!("Failed to read passphrase: {e}"))
+        .map_err(|e| eyre::eyre!(
+            "Failed to read passphrase ({e}). No terminal to prompt? Set RWA_PASSPHRASE, run interactively, or use --allow-plaintext."
+        ))
 }
 
 /// Validate passphrase strength. Called by prompt_new_passphrase.

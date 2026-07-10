@@ -37,13 +37,14 @@ fn parse_limit_price(raw: Option<&[String]>) -> Result<Option<(u128, LimitFrame)
     Ok(Some((v, frame)))
 }
 
-/// Case-insensitive exact match on the unit words only — anything else
-/// (e.g. `shares`) is not a unit and falls through to the "unknown unit"
-/// teaching error rather than being silently accepted.
+/// Case-insensitive match on the unit words (plural accepted — rejecting
+/// `shares` over an `s` taught nothing); anything else is not a unit and
+/// falls through to the "unknown unit" teaching error rather than being
+/// silently accepted.
 fn unit_word(s: &str) -> Option<LimitFrame> {
     match s.to_ascii_lowercase().as_str() {
-        "share" => Some(LimitFrame::Share),
-        "token" => Some(LimitFrame::Token),
+        "share" | "shares" => Some(LimitFrame::Share),
+        "token" | "tokens" => Some(LimitFrame::Token),
         _ => None,
     }
 }
@@ -474,9 +475,13 @@ mod tests {
 
     #[test]
     fn limit_price_parsing_two_values_rejections() {
-        // Misspelled unit -> teaching error names the bad unit.
-        let err = parse_limit_price(Some(&v(&["748", "shares"]))).unwrap_err();
-        assert!(err.to_string().contains("unknown unit \"shares\""), "{err}");
+        use rwa_ondo::usecases::gm::LimitFrame::{Share, Token};
+        // Plurals are accepted as aliases (rejecting `shares` over an `s`
+        // taught nothing); a genuinely unknown unit still teaches.
+        assert_eq!(parse_limit_price(Some(&v(&["748", "shares"]))).unwrap(), Some((748_000_000, Share)));
+        assert_eq!(parse_limit_price(Some(&v(&["748", "tokens"]))).unwrap(), Some((748_000_000, Token)));
+        let err = parse_limit_price(Some(&v(&["748", "sharez"]))).unwrap_err();
+        assert!(err.to_string().contains("unknown unit \"sharez\""), "{err}");
         // Two units, no number.
         assert!(parse_limit_price(Some(&v(&["share", "token"]))).is_err());
         // Two numbers, no unit.

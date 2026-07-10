@@ -50,7 +50,7 @@ pub enum GmAction {
     Buy {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
-        /// USDC amount, percentage of balance, or "all" (e.g. 100, 50%, all)
+        /// USDC amount (minimum 5), percentage of balance, or "all" (e.g. 100, 50%, all)
         amount: String,
         /// Skip confirmation prompt
         #[arg(short, long)]
@@ -80,7 +80,9 @@ pub enum GmAction {
     Sell {
         /// Token symbol (e.g. TSLA, TSLAon)
         symbol: String,
-        /// Token amount, percentage of holdings, or "all" (e.g. 5, 50%, all)
+        /// RAW token amount, percentage, or "all". Wallets display raw × shares_per_token
+        /// for dividend-accruing tokens, so "the number Phantom shows" can overshoot —
+        /// prefer "all" or "NN%"
         amount: String,
         /// Skip confirmation prompt
         #[arg(short, long)]

@@ -138,15 +138,26 @@ pub async fn search(
         return json_out(&filtered);
     }
 
-    println!("{} GM tokens{}\n", filtered.len(), describe_filters(search_terms, tradable_only, sectors, kind, name_keywords));
+    let noun = if filtered.len() == 1 { "GM token" } else { "GM tokens" };
+    println!(
+        "{} {}{}   (✓ tradable now · ✗ not in this session)\n",
+        filtered.len(),
+        noun,
+        describe_filters(search_terms, tradable_only, sectors, kind, name_keywords)
+    );
     for item in &filtered {
         let classification = classification_label(item);
         let mark = if item.tradable { "✓" } else { "✗" };
         if classification.is_empty() {
             println!("  {} {:<12} {}", mark, item.symbol, item.name);
         } else {
-            println!("  {} {:<12} {:<30} {}", mark, item.symbol, item.name, classification);
+            println!("  {} {:<12} {:<34} {}", mark, item.symbol, item.name, classification);
         }
+    }
+    // The unfiltered 438-row dump is unwieldy — teach the filters once, at
+    // the end where the user's eye lands after scrolling.
+    if search_terms.is_empty() && sectors.is_empty() && kind.is_none() && name_keywords.is_empty() && tags.is_empty() && !tradable_only {
+        println!("\nTip: filter with `rwa gm search --search <kw>`, `--sector <s>`, `--type stock|etf`, or `--tag <label>`.");
     }
     Ok(())
 }

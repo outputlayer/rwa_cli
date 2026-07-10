@@ -75,8 +75,22 @@ pub fn render_error(err: &eyre::Error, json: bool) {
         });
         println!("{obj}");
     } else {
-        eprintln!("Error: {err:#}");
+        eprintln!("Error: {}", human_error_message(err));
     }
+}
+
+/// Human-mode error text: when the chain contains a typed `GmTradeError`,
+/// print just its detail — the `GM trade error [snake_case_kind]:` prefix and
+/// the wrap-context chain read like a stack trace and belong to the JSON
+/// contract, not a terminal user. Opaque errors keep the full `{:#}` chain
+/// (there the context IS the information).
+fn human_error_message(err: &eyre::Error) -> String {
+    for cause in err.chain() {
+        if let Some(g) = cause.downcast_ref::<rwa_ondo::usecases::gm::GmTradeError>() {
+            return g.detail.clone();
+        }
+    }
+    format!("{err:#}")
 }
 
 /// Stable `error_kind` label for the JSON envelope: trade/runtime kinds via
@@ -187,6 +201,25 @@ mod exit_code_tests {
             UpdateError::new(UpdateErrorKind::ChecksumMismatch, "sha mismatch").into();
         assert_eq!(exit_code_for(&err), 1);
         assert_eq!(super::error_kind_label(&err), Some("checksum_mismatch"));
+    }
+
+    #[test]
+    fn human_error_message_strips_kind_brackets_and_wrap_chain() {
+        use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
+        // Typed error wrapped in context: the human sees ONLY the actionable
+        // detail — no "[insufficient_funds]" bracket, no "Fund wallet: …" chain.
+        let err: eyre::Report = GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            "Insufficient USDC: 73.69 USDC (need 5000)",
+        )
+        .into();
+        let err = err.wrap_err("Fund wallet: 5Cjg…Z47");
+        let msg = super::human_error_message(&err);
+        assert_eq!(msg, "Insufficient USDC: 73.69 USDC (need 5000)");
+        assert!(!msg.contains('['), "no kind brackets for humans: {msg}");
+        // Opaque errors keep the full chain — there the context IS the info.
+        let opaque = eyre::eyre!("root cause").wrap_err("outer context");
+        assert_eq!(super::human_error_message(&opaque), "outer context: root cause");
     }
 
     #[test]
