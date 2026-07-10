@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.3] - 2026-07-10 — real-path adaptive pacing (~3× faster live baskets), API-key auto-profile
+
+### Performance
+
+- **Real `-y` baskets and close-all now pace their launches like the dry-run quote fetcher.** The staggered, adaptive launcher (v0.7.0/0.7.1) only covered dry-run quoting — the real execution path spawned every fetch+execute chain at once, bursting Jupiter's per-wallet limit exactly the way the stagger was built to avoid (the source of ~22 s real 10-token baskets while their dry-run quoted in ~4 s). Live-measured after the fix (keyless wallet): **buy-basket 5 tokens = 3.4 s, sell-basket 5 = 2.8 s, zero retries**; when Jupiter did throttle one item mid-close-all, the adaptive widen degraded gracefully to a serial pace instead of a retry storm.
+- **`RWA_JUPITER_API_KEY` auto-selects the keyed performance profile**: quote stagger 0 ms (the key raises per-wallet limits, so the burst-dodging stagger only costs latency) and `/order` concurrency 4 (vs the live-tested keyless ceiling of 2). No manual tuning needed anymore; an explicit `RWA_QUOTE_STAGGER_MS` still overrides.
+
 ## [0.7.2] - 2026-07-10 — typed input errors, informed consent prompt, keys --json
 
 ### Fixed
