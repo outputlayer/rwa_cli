@@ -478,7 +478,7 @@ mod tests {
         assert!(matches_filters(&item, &[], false, &[], None, &[], &["value".to_string()]));
         assert!(!matches_filters(&item, &[], false, &[], None, &[], &["asia".to_string()]));
         // --search also reaches all tags now (e.g. searching by factor).
-        assert!(matches_filters(&item, &["dividend".to_string()], false, &[], None, &[], &[]) == false);
+        assert!(!matches_filters(&item, &["dividend".to_string()], false, &[], None, &[], &[]));
         assert!(matches_filters(&item, &["large cap".to_string()], false, &[], None, &[], &[]));
     }
 

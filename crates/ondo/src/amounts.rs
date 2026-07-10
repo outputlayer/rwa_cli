@@ -70,6 +70,21 @@ pub fn format_amount(raw: &str, decimals: u8) -> String {
     }
 }
 
+/// Parse the numeric part of an `NN%` amount (suffix already stripped) and
+/// range-check 0–100 — the ONE home for percentage validation. The buy/sell
+/// amount resolvers and close-all's `parse_sell_pct` all call it, so the
+/// grammar and error wording cannot drift between commands. `display` is the
+/// user's original token, used in error messages. Typed `invalid_amount`.
+pub fn parse_pct(pct_str: &str, display: &str) -> Result<f64> {
+    let pct: f64 = pct_str
+        .parse()
+        .map_err(|_| invalid_amount(format!("Invalid percentage: {display}")))?;
+    if !(0.0..=100.0).contains(&pct) {
+        return Err(invalid_amount(format!("Percentage must be 0–100, got {pct}")));
+    }
+    Ok(pct)
+}
+
 /// Compute `value * pct / 100` using integer math to avoid f64 precision loss.
 #[must_use]
 pub fn pct_of_u128(value: u128, pct: f64) -> u128 {
@@ -96,12 +111,7 @@ where
         return Ok(bal_raw);
     }
     if let Some(pct_str) = s.strip_suffix('%') {
-        let pct: f64 = pct_str
-            .parse()
-            .map_err(|_| invalid_amount(format!("Invalid percentage: {s}")))?;
-        if !(0.0..=100.0).contains(&pct) {
-            return Err(invalid_amount(format!("Percentage must be 0–100, got {pct}")));
-        }
+        let pct = parse_pct(pct_str, s)?;
         let bal_raw = balance_raw_fn().await?;
         let bal: u128 = bal_raw
             .parse()

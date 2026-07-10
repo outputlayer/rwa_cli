@@ -19,8 +19,76 @@ fn usdc_gas_reservation(amount: &str) -> Option<u128> {
         .filter(|&r| r > 0)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
+/// Shared tail of every `send_*` variant: the "Send X → to" line, the dry-run
+/// branch, the consent gate, the transfer itself, the ledger record, and the
+/// success/sent output. Identical across SOL/USDC/GM-token sends, so the
+/// sequence — especially "record to the ledger only AFTER a successful
+/// transfer" — cannot drift between them. The preambles (balance checks,
+/// amount resolution) legitimately differ and stay in the callers.
+#[allow(clippy::too_many_arguments)] // flat data bundle; single call shape shared by 3 senders
+async fn send_epilogue<F, Fut>(
+    pubkey: &str,
+    token_label: &str,
+    display_amount: &str,
+    raw_str: &str,
+    to: &str,
+    opts: ExecOpts,
+    gas_refuel: Option<GasRefuelJson>,
+    transfer: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<solana::TransactionResult>>,
+{
+    if !opts.json {
+        println!("Send {display_amount} {token_label} → {to}");
+    }
+
+    if opts.dry_run {
+        if opts.json {
+            return json_out(&SendJson {
+                gas_refuel: None,
+                status: "dry_run",
+                token: token_label.to_string(),
+                amount: display_amount.to_string(),
+                recipient: to.into(),
+                tx: String::new(),
+            });
+        }
+        println!("[DRY RUN] Transfer not executed.");
+        return Ok(());
+    }
+
+    if !require_execution_consent(opts.yes, opts.json, "Proceed?")? {
+        return Err(eyre::eyre!("Cancelled"));
+    }
+
+    let result = transfer().await?;
+    let sig = &result.signature;
+    rwa_ondo::ledger::record(
+        pubkey,
+        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", token_label, raw_str, None),
+    );
+
+    if opts.json {
+        return json_out(&SendJson {
+            gas_refuel,
+            status: if result.confirmed { "success" } else { "sent" },
+            token: token_label.to_string(),
+            amount: display_amount.to_string(),
+            recipient: to.into(),
+            tx: solscan_tx_url(sig),
+        });
+    }
+    println!("✓ Sent {display_amount} {token_label} → {to}");
+    println!("  {}", solscan_tx_url(sig));
+    if !result.confirmed {
+        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
+    }
+    Ok(())
+}
+
+pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
     let w = load_wallet(selected)?;
     let pubkey = w.pubkey();
 
@@ -41,29 +109,29 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool,
     // Auto-refuel SOL from USDC before a real transfer (transfers always pay
     // their own fees). Deliberately NOT for `send SOL`: buying more SOL right
     // before the user drains SOL would fight their intent.
-    let (gas_refuel, _balances) = if dry_run || token_upper == "SOL" {
+    let (gas_refuel, _balances) = if opts.dry_run || token_upper == "SOL" {
         (None, None)
     } else if token_upper == "USDC" {
         // Auto-gas converts USDC → SOL, which silently shrinks a balance-relative
         // send. Only reserve+refuel for an exact USDC amount; `all`/`100%`/`NN%`
         // skip the refuel (and fail cleanly later if SOL can't cover the fee).
         match usdc_gas_reservation(amount) {
-            Some(reserved) => auto_gas(&w, rpc_url, yes, json, reserved).await?,
+            Some(reserved) => auto_gas(&w, rpc_url, opts.yes, opts.json, reserved).await?,
             None => (None, None),
         }
     } else {
         // GM-token send spends no USDC — auto-gas may use all of it (reserve 0).
-        auto_gas(&w, rpc_url, yes, json, 0).await?
+        auto_gas(&w, rpc_url, opts.yes, opts.json, 0).await?
     };
 
     match token_upper.as_str() {
-        "SOL"  => send_sol(&w, amount, to, yes, dry_run, json, rpc_url).await,
-        "USDC" => send_usdc(&w, amount, to, yes, dry_run, json, rpc_url, gas_refuel).await,
-        _      => send_gm_token(&w, &token_upper, amount, to, yes, dry_run, json, rpc_url, gas_refuel).await,
+        "SOL"  => send_sol(&w, amount, to, opts, rpc_url).await,
+        "USDC" => send_usdc(&w, amount, to, opts, rpc_url, gas_refuel).await,
+        _      => send_gm_token(&w, &token_upper, amount, to, opts, rpc_url, gas_refuel).await,
     }
 }
 
-async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>) -> Result<()> {
+async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>) -> Result<()> {
     let pubkey = w.pubkey();
     let balance_raw = solana::get_sol_balance_raw(&pubkey, rpc_url).await?;
     let tx_fee_lamports = solana::estimate_tx_fee_lamports(rpc_url).await;
@@ -71,56 +139,13 @@ async fn send_sol(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run
     let display_amount = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
     let raw: u64 = raw_str.parse().map_err(|_| eyre::eyre!("Invalid SOL amount"))?;
 
-    if !json {
-        println!("Send {} SOL → {to}", display_amount);
-    }
-
-    if dry_run {
-        if json {
-            return json_out(&SendJson {
-                gas_refuel: None,
-                status: "dry_run",
-                token: "SOL".into(),
-                amount: display_amount.clone(),
-                recipient: to.into(),
-                tx: String::new(),
-            });
-        }
-        println!("[DRY RUN] Transfer not executed.");
-        return Ok(());
-    }
-
-    if !require_execution_consent(yes, json, "Proceed?")? {
-        return Err(eyre::eyre!("Cancelled"));
-    }
-
-    let result = solana::transfer_sol(w, to, raw, rpc_url).await?;
-    let sig = &result.signature;
-    rwa_ondo::ledger::record(
-        &pubkey,
-        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", "SOL", &raw_str, None),
-    );
-
-    if json {
-        return json_out(&SendJson {
-            gas_refuel: None,
-            status: if result.confirmed { "success" } else { "sent" },
-            token: "SOL".into(),
-            amount: display_amount.clone(),
-            recipient: to.into(),
-            tx: solscan_tx_url(sig),
-        });
-    }
-    println!("✓ Sent {} SOL → {to}", display_amount);
-    println!("  {}", solscan_tx_url(sig));
-    if !result.confirmed {
-        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
-    }
-    Ok(())
+    send_epilogue(&pubkey, "SOL", &display_amount, &raw_str, to, opts, None, || {
+        solana::transfer_sol(w, to, raw, rpc_url)
+    })
+    .await
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
+async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
     let pubkey = w.pubkey();
 
     let sol = solana::get_sol_balance(&pubkey, rpc_url).await?;
@@ -167,56 +192,13 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
         .into());
     }
 
-    if !json {
-        println!("Send {} USDC → {to}", display_amount);
-    }
-
-    if dry_run {
-        if json {
-            return json_out(&SendJson {
-                gas_refuel: None,
-                status: "dry_run",
-                token: "USDC".into(),
-                amount: display_amount.clone(),
-                recipient: to.into(),
-                tx: String::new(),
-            });
-        }
-        println!("[DRY RUN] Transfer not executed.");
-        return Ok(());
-    }
-
-    if !require_execution_consent(yes, json, "Proceed?")? {
-        return Err(eyre::eyre!("Cancelled"));
-    }
-
-    let result = solana::transfer_spl(w, to, solana::USDC_MINT, raw, 6, false, rpc_url).await?;
-    let sig = &result.signature;
-    rwa_ondo::ledger::record(
-        &pubkey,
-        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", "USDC", &raw_str, None),
-    );
-
-    if json {
-        return json_out(&SendJson {
-            gas_refuel,
-            status: if result.confirmed { "success" } else { "sent" },
-            token: "USDC".into(),
-            amount: display_amount.clone(),
-            recipient: to.into(),
-            tx: solscan_tx_url(sig),
-        });
-    }
-    println!("✓ Sent {} USDC → {to}", display_amount);
-    println!("  {}", solscan_tx_url(sig));
-    if !result.confirmed {
-        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
-    }
-    Ok(())
+    send_epilogue(&pubkey, "USDC", &display_amount, &raw_str, to, opts, gas_refuel, || {
+        solana::transfer_spl(w, to, solana::USDC_MINT, raw, 6, false, rpc_url)
+    })
+    .await
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, yes: bool, dry_run: bool, json: bool, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
+async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>, gas_refuel: Option<GasRefuelJson>) -> Result<()> {
     let pubkey = w.pubkey();
     let tokens = token_list::get_token_list();
     let (sym, gm_mint) = resolve_gm_mint(&rwa_ondo::types::Symbol::from(symbol), tokens)?;
@@ -269,52 +251,10 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
 
     let token_display = amounts::format_amount(&raw_str, jupiter::GM_SOL_DECIMALS);
 
-    if !json {
-        println!("Send {} {sym} → {to}", token_display);
-    }
-
-    if dry_run {
-        if json {
-            return json_out(&SendJson {
-                gas_refuel: None,
-                status: "dry_run",
-                token: sym.to_string(),
-                amount: token_display.clone(),
-                recipient: to.into(),
-                tx: String::new(),
-            });
-        }
-        println!("[DRY RUN] Transfer not executed.");
-        return Ok(());
-    }
-
-    if !require_execution_consent(yes, json, "Proceed?")? {
-        return Err(eyre::eyre!("Cancelled"));
-    }
-
-    let result = solana::transfer_spl(w, to, &gm_mint, raw, 9, true, rpc_url).await?;
-    let sig = &result.signature;
-    rwa_ondo::ledger::record(
-        &pubkey,
-        &rwa_ondo::ledger::LedgerEvent::now(Some(sig.clone()), "send_out", &sym, &raw_str, None),
-    );
-
-    if json {
-        return json_out(&SendJson {
-            gas_refuel,
-            status: if result.confirmed { "success" } else { "sent" },
-            token: sym.to_string(),
-            amount: token_display.clone(),
-            recipient: to.into(),
-            tx: solscan_tx_url(sig),
-        });
-    }
-    println!("✓ Sent {} {sym} → {to}", token_display);
-    println!("  {}", solscan_tx_url(sig));
-    if !result.confirmed {
-        println!("  ⚠ Confirmation timed out — tx may still land. Check Solscan.");
-    }
-    Ok(())
+    send_epilogue(&pubkey, &sym, &token_display, &raw_str, to, opts, gas_refuel, || {
+        solana::transfer_spl(w, to, &gm_mint, raw, 9, true, rpc_url)
+    })
+    .await
 }
 
 #[cfg(test)]

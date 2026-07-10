@@ -444,11 +444,7 @@ pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
     let pct_str = s
         .strip_suffix('%')
         .ok_or_else(|| eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
-    let pct: f64 = pct_str.parse().map_err(|_| eyre!("Invalid percentage: {s}"))?;
-    if !(0.0..=100.0).contains(&pct) {
-        return Err(eyre!("Percentage must be 0–100, got {pct}"));
-    }
-    Ok(pct)
+    crate::amounts::parse_pct(pct_str, s)
 }
 
 pub fn should_skip_position(

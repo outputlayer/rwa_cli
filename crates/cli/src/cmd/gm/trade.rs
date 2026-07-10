@@ -130,6 +130,46 @@ fn share_view(multiplier: Option<f64>, token_amount: &str, usdc_amount: &str) ->
     (Some(usdc / tokens / m), Some(m))
 }
 
+/// Build the `TradeJson` envelope from the plan plus per-call variants. The
+/// four call sites (buy/sell × dry-run/success) differ ONLY in the explicit
+/// arguments; the plan-derived tail (token, quote metrics, limit echo, share
+/// view) is filled once here so it cannot drift between copies. Note the
+/// buy/sell asymmetry the caller owns: an executed BUY's `amount` (tokens
+/// received) comes from the swap result, an executed SELL's `counter_amount`
+/// (USDC received) does.
+#[allow(clippy::too_many_arguments)]
+fn trade_json(
+    plan: &usecases::gm::SwapPlan,
+    status: &'static str,
+    amount: String,
+    counter_amount: String,
+    tx: String,
+    gas_refuel: Option<GasRefuelJson>,
+    actual_slippage_pct: Option<f64>,
+    limit_price: Option<&[String]>,
+    share_price: Option<f64>,
+    shares_per_token: Option<f64>,
+) -> TradeJson {
+    TradeJson {
+        gas_refuel,
+        status,
+        amount,
+        token: plan.symbol.to_string(),
+        counter_amount,
+        counter_token: "USDC",
+        tx,
+        slippage_pct: plan.slippage_pct,
+        actual_slippage_pct,
+        price_impact_pct: plan.order.price_impact,
+        fee_bps: plan.order.fee_bps,
+        gasless: plan.order.gasless,
+        router: plan.order.router.clone(),
+        limit_price: limit_price_echo(limit_price),
+        share_price,
+        shares_per_token,
+    }
+}
+
 /// Implied price in USDC per raw token (counter ÷ token amount), display-only.
 /// `None` when either side fails to parse or the token amount is zero.
 fn implied_price(token_amount: &str, usdc_amount: &str) -> Option<f64> {
@@ -195,16 +235,15 @@ fn limit_price_echo(raw: Option<&[String]>) -> Option<String> {
 pub async fn buy(
     symbol: &str,
     amount: &str,
-    yes: bool,
-    dry_run: bool,
-    json: bool,
-    rpc_url: Option<&str>,
-    slippage: Option<u32>,
+    opts: ExecOpts,
+    tuning: TradeTuning,
     quote_only: bool,
-    max_bps: Option<u32>,
     limit_price: Option<&[String]>,
+    rpc_url: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let ExecOpts { yes, dry_run, json } = opts;
+    let TradeTuning { slippage, max_bps } = tuning;
     let limit_price_parsed = parse_limit_price(limit_price)?;
     // `--quote-only` previews any size by skipping the funds pre-flight; it still
     // loads the wallet (its pubkey is the Jupiter swap taker) and never executes.
@@ -235,24 +274,11 @@ pub async fn buy(
 
     if dry_run {
         if json {
-            return json_out(&TradeJson {
-                gas_refuel: None,
-                status: "dry_run",
-                amount: plan.amount,
-                token: plan.symbol.to_string(),
-                counter_amount: plan.counter_amount,
-                counter_token: "USDC",
-                tx: String::new(),
-                slippage_pct: plan.slippage_pct,
-                actual_slippage_pct: None,
-                price_impact_pct: plan.order.price_impact,
-                fee_bps: plan.order.fee_bps,
-                gasless: plan.order.gasless,
-                router: plan.order.router.clone(),
-                limit_price: limit_price_echo(limit_price),
-                share_price,
-                shares_per_token,
-            });
+            return json_out(&trade_json(
+                &plan, "dry_run",
+                plan.amount.clone(), plan.counter_amount.clone(), String::new(),
+                None, None, limit_price, share_price, shares_per_token,
+            ));
         }
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would buy:   ~{} {}", plan.amount, plan.symbol);
@@ -288,24 +314,11 @@ pub async fn buy(
     let result = usecases::gm::execute_swap(&w, &plan, json).await?;
 
     if json {
-        return json_out(&TradeJson {
-            gas_refuel,
-            status: "success",
-            amount: result.output_amount,
-            token: plan.symbol.to_string(),
-            counter_amount: plan.counter_amount,
-            counter_token: "USDC",
-            tx: solscan_tx_url(&result.signature),
-            slippage_pct: plan.slippage_pct,
-            actual_slippage_pct: result.actual_slippage_pct,
-            price_impact_pct: plan.order.price_impact,
-            fee_bps: plan.order.fee_bps,
-            gasless: plan.order.gasless,
-            router: plan.order.router.clone(),
-            limit_price: limit_price_echo(limit_price),
-            share_price,
-            shares_per_token,
-        });
+        return json_out(&trade_json(
+            &plan, "success",
+            result.output_amount, plan.counter_amount.clone(), solscan_tx_url(&result.signature),
+            gas_refuel, result.actual_slippage_pct, limit_price, share_price, shares_per_token,
+        ));
     }
 
     println!("\nSwap successful!");
@@ -318,19 +331,17 @@ pub async fn buy(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn sell(
     symbol: &str,
     amount: &str,
-    yes: bool,
-    dry_run: bool,
-    json: bool,
-    rpc_url: Option<&str>,
-    slippage: Option<u32>,
-    max_bps: Option<u32>,
+    opts: ExecOpts,
+    tuning: TradeTuning,
     limit_price: Option<&[String]>,
+    rpc_url: Option<&str>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let ExecOpts { yes, dry_run, json } = opts;
+    let TradeTuning { slippage, max_bps } = tuning;
     let limit_price_parsed = parse_limit_price(limit_price)?;
     let w = load_wallet(selected)?;
     let symbol = Symbol::from(symbol);
@@ -347,24 +358,11 @@ pub async fn sell(
 
     if dry_run {
         if json {
-            return json_out(&TradeJson {
-                gas_refuel: None,
-                status: "dry_run",
-                amount: plan.amount,
-                token: plan.symbol.to_string(),
-                counter_amount: plan.counter_amount,
-                counter_token: "USDC",
-                tx: String::new(),
-                slippage_pct: plan.slippage_pct,
-                actual_slippage_pct: None,
-                price_impact_pct: plan.order.price_impact,
-                fee_bps: plan.order.fee_bps,
-                gasless: plan.order.gasless,
-                router: plan.order.router.clone(),
-                limit_price: limit_price_echo(limit_price),
-                share_price,
-                shares_per_token,
-            });
+            return json_out(&trade_json(
+                &plan, "dry_run",
+                plan.amount.clone(), plan.counter_amount.clone(), String::new(),
+                None, None, limit_price, share_price, shares_per_token,
+            ));
         }
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would sell:    {} {}", plan.amount, plan.symbol);
@@ -398,24 +396,11 @@ pub async fn sell(
     let result = usecases::gm::execute_swap(&w, &plan, json).await?;
 
     if json {
-        return json_out(&TradeJson {
-            gas_refuel: None,
-            status: "success",
-            amount: plan.amount,
-            token: plan.symbol.to_string(),
-            counter_amount: result.output_amount,
-            counter_token: "USDC",
-            tx: solscan_tx_url(&result.signature),
-            slippage_pct: plan.slippage_pct,
-            actual_slippage_pct: result.actual_slippage_pct,
-            price_impact_pct: plan.order.price_impact,
-            fee_bps: plan.order.fee_bps,
-            gasless: plan.order.gasless,
-            router: plan.order.router.clone(),
-            limit_price: limit_price_echo(limit_price),
-            share_price,
-            shares_per_token,
-        });
+        return json_out(&trade_json(
+            &plan, "success",
+            plan.amount.clone(), result.output_amount, solscan_tx_url(&result.signature),
+            None, result.actual_slippage_pct, limit_price, share_price, shares_per_token,
+        ));
     }
 
     println!("\nSwap successful!");

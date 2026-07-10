@@ -137,18 +137,16 @@ async fn run_close_dry_run(
     (sold, failed)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn close_all(
     amount: Option<&str>,
-    yes: bool,
-    dry_run: bool,
+    opts: ExecOpts,
     parallel: bool,
-    json: bool,
+    tuning: TradeTuning,
     rpc_url: Option<&str>,
-    slippage: Option<u32>,
-    max_bps: Option<u32>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let ExecOpts { yes, dry_run, json } = opts;
+    let TradeTuning { slippage, max_bps } = tuning;
     let sell_pct = usecases::gm::parse_sell_pct(amount)?;
 
     let tokens = token_list::get_token_list();

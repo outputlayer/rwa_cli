@@ -26,6 +26,7 @@ fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
     raw.and_then(|s| s.trim().parse::<u32>().ok())
 }
 pub(super) use types::{
+    ExecOpts, TradeTuning,
     BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
     PnlJson, PnlTokenJson, PnlTotalsJson,
@@ -248,25 +249,17 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
     match action {
         GmAction::Hours { tradable } => list::hours(json, tradable).await,
         GmAction::Buy { symbol, amount, yes, slippage, dry_run, quote_only, max_bps, limit_price } => {
-            let max_bps = effective_max_bps(max_bps);
-            trade::buy(
-                &symbol,
-                &amount,
-                yes,
-                dry_run,
-                json,
-                rpc_url,
-                Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
-                quote_only,
-                max_bps,
-                limit_price.as_deref(),
-                selected,
-            )
-            .await
+            let opts = ExecOpts { yes, dry_run, json };
+            let tuning = TradeTuning {
+                slippage: Some(slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)),
+                max_bps: effective_max_bps(max_bps),
+            };
+            trade::buy(&symbol, &amount, opts, tuning, quote_only, limit_price.as_deref(), rpc_url, selected).await
         }
         GmAction::Sell { symbol, amount, yes, slippage, dry_run, max_bps, limit_price } => {
-            let max_bps = effective_max_bps(max_bps);
-            trade::sell(&symbol, &amount, yes, dry_run, json, rpc_url, slippage, max_bps, limit_price.as_deref(), selected).await
+            let opts = ExecOpts { yes, dry_run, json };
+            let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
+            trade::sell(&symbol, &amount, opts, tuning, limit_price.as_deref(), rpc_url, selected).await
         }
         GmAction::Portfolio { wallet } => {
             portfolio::portfolio(wallet.as_deref(), json, rpc_url, selected).await
@@ -297,7 +290,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             to,
             yes,
             dry_run,
-        } => send::send(&token, &amount, &to, yes, dry_run, json, rpc_url, selected).await,
+        } => send::send(&token, &amount, &to, ExecOpts { yes, dry_run, json }, rpc_url, selected).await,
         GmAction::CloseAll {
             amount,
             yes,
@@ -306,20 +299,20 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             slippage,
             max_bps,
         } => {
-            let max_bps = effective_max_bps(max_bps);
             // Parallel is the default (bounded by the order/execute semaphores);
             // --sequential opts into one-at-a-time with 3s spacing.
-            close_all::close_all(amount.as_deref(), yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
+            let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
+            close_all::close_all(amount.as_deref(), ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
         GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
         GmAction::BuyBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
-            let max_bps = effective_max_bps(max_bps);
-            basket::buy_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
+            let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
+            basket::buy_basket(&tokens, ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
         GmAction::SellBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
-            let max_bps = effective_max_bps(max_bps);
-            basket::sell_basket(&tokens, yes, dry_run, !sequential, json, rpc_url, slippage, max_bps, selected).await
+            let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
+            basket::sell_basket(&tokens, ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
     }
 }

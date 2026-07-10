@@ -20,6 +20,28 @@ pub fn ser_opt_f64_4<S: serde::Serializer>(
     }
 }
 
+// ── Command option bundles ─────────────────────────────────
+
+/// Execution-mode flags shared by every money-moving command: consent (`-y`),
+/// preview (`--dry-run`), and output mode (`--json`). One struct instead of
+/// three adjacent positional bools, so a transposed argument can no longer
+/// compile silently on a money path.
+#[derive(Clone, Copy)]
+pub struct ExecOpts {
+    pub yes: bool,
+    pub dry_run: bool,
+    pub json: bool,
+}
+
+/// Quote tuning shared by trade/basket/close-all: slippage tolerance and the
+/// all-in cost ceiling. Bundled for the same transposition-safety reason as
+/// [`ExecOpts`] (two adjacent `Option<u32>`s are as swappable as two bools).
+#[derive(Clone, Copy)]
+pub struct TradeTuning {
+    pub slippage: Option<u32>,
+    pub max_bps: Option<u32>,
+}
+
 // ── JSON output types ──────────────────────────────────────
 
 #[derive(Serialize)]

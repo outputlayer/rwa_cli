@@ -154,18 +154,16 @@ async fn process_sell_item(
 
 // ── Buy basket ─────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 pub async fn buy_basket(
     tokens: &[String],
-    yes: bool,
-    dry_run: bool,
+    opts: ExecOpts,
     parallel: bool,
-    json: bool,
+    tuning: TradeTuning,
     rpc_url: Option<&str>,
-    slippage: Option<u32>,
-    max_bps: Option<u32>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let ExecOpts { yes, dry_run, json } = opts;
+    let TradeTuning { slippage, max_bps } = tuning;
     let pairs = parse_basket_pairs(tokens)?;
 
     let w = load_wallet(selected)?;
@@ -324,18 +322,16 @@ async fn buy_basket_dry_run(
 
 // ── Sell basket ────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 pub async fn sell_basket(
     tokens: &[String],
-    yes: bool,
-    dry_run: bool,
+    opts: ExecOpts,
     parallel: bool,
-    json: bool,
+    tuning: TradeTuning,
     rpc_url: Option<&str>,
-    slippage: Option<u32>,
-    max_bps: Option<u32>,
     selected: Option<&str>,
 ) -> Result<()> {
+    let ExecOpts { yes, dry_run, json } = opts;
+    let TradeTuning { slippage, max_bps } = tuning;
     let pairs = parse_basket_pairs(tokens)?;
 
     let w = load_wallet(selected)?;

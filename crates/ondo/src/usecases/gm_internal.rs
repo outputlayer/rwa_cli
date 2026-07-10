@@ -348,12 +348,7 @@ pub(crate) fn resolve_sell_amount(
         ));
     }
     if let Some(pct_str) = s.strip_suffix('%') {
-        let pct: f64 = pct_str
-            .parse()
-            .map_err(|_| eyre!("Invalid percentage: {amount_str}"))?;
-        if !(0.0..=100.0).contains(&pct) {
-            return Err(eyre!("Percentage must be 0–100, got {pct}"));
-        }
+        let pct = amounts::parse_pct(pct_str, amount_str)?;
         let raw: u128 = balance_raw
             .parse()
             .map_err(|_| eyre!("Invalid on-chain amount: {balance_raw}"))?;
