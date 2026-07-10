@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.1] - 2026-07-10 — adaptive parallel-basket pacing (keyless-friendly)
+
+### Performance
+
+- **Parallel basket/close-all quotes now adapt to Jupiter's per-wallet rate limit** instead of only staggering. Firing quotes with a fixed stagger is fast when the endpoint is generous but, once Jupiter starts throttling the wallet, the retry backoff (0.8/1.6/3.2 s) piles up and the parallel path can end up *slower* than `--sequential`. The launcher now watches a process-wide `/order` retry counter: while it stays flat, launches keep the small stagger (`RWA_QUOTE_STAGGER_MS`, default 350 ms); the moment retries climb past the baseline, remaining launches widen to the serial `SEQUENTIAL_SPACING` (3 s) so the CLI stops feeding the burst. This self-tunes to whatever limit a **keyless** wallet has — fast when possible, graceful serial degradation when throttled — so a public user gets good parallel throughput without needing `RWA_JUPITER_API_KEY` (which still raises the ceiling for full parallel).
+
 ## [0.7.0] - 2026-07-10 — just-in-time RFQ fills, non-default account import, faster parallel baskets
 
 ### Fixed

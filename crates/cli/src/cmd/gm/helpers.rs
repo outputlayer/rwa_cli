@@ -8,7 +8,7 @@
 
 use eyre::Result;
 use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
-use rwa_ondo::{usecases, wallet};
+use rwa_ondo::{jupiter, usecases, wallet};
 use serde::Serialize;
 use std::future::Future;
 use std::io::{self, Write};
@@ -42,6 +42,15 @@ fn quote_stagger_from(raw: Option<&str>) -> Duration {
 /// The parallel-quote stagger, honouring `RWA_QUOTE_STAGGER_MS`.
 fn quote_stagger() -> Duration {
     quote_stagger_from(std::env::var("RWA_QUOTE_STAGGER_MS").ok().as_deref())
+}
+
+/// Gap before launching the next parallel quote. Normally the small `stagger`;
+/// once Jupiter has started pushing back (retries seen), widen to the
+/// rate-limit-safe `SEQUENTIAL_SPACING` so we stop feeding the burst — a
+/// keyless-friendly adaptive back-off (fast when the endpoint is generous,
+/// graceful serial pace when it throttles).
+fn launch_gap(throttled: bool, stagger: Duration) -> Duration {
+    if throttled { SEQUENTIAL_SPACING } else { stagger }
 }
 
 /// Whether the auto-gas refuel may proceed without an interactive prompt.
@@ -187,13 +196,21 @@ where
     }
 
     // Stagger the launches: firing every quote at once bursts Jupiter's
-    // per-wallet rate limit, whose 429 → retry backoff costs far more than the
-    // stagger. A small gap keeps the overlap while dodging the burst.
+    // per-wallet rate limit, whose retry backoff costs far more than the stagger.
+    // A small gap keeps the overlap while dodging the burst — AND once Jupiter
+    // starts pushing back (retries climb past the baseline), widen the gap to a
+    // serial pace so we stop feeding the burst. Adaptive to whatever per-wallet
+    // limit the user has, so a keyless public wallet gets the best of both.
     let stagger = quote_stagger();
+    let retries_baseline = jupiter::order_retry_count();
     let mut order_set: JoinSet<(String, Result<T>)> = JoinSet::new();
     for (i, item) in items.into_iter().enumerate() {
-        if i > 0 && !stagger.is_zero() {
-            tokio::time::sleep(stagger).await;
+        if i > 0 {
+            let throttled = jupiter::order_retry_count() > retries_baseline;
+            let gap = launch_gap(throttled, stagger);
+            if !gap.is_zero() {
+                tokio::time::sleep(gap).await;
+            }
         }
         order_set.spawn(fetch(item));
     }
@@ -486,6 +503,13 @@ mod tests {
     // fetching the same way it paces real execution. A mutant that fetches
     // these through the parallel JoinSet instead would finish near-instantly
     // and fail this bound.
+    #[test]
+    fn launch_gap_widens_to_sequential_spacing_when_throttled() {
+        let stagger = Duration::from_millis(350);
+        assert_eq!(launch_gap(false, stagger), stagger, "healthy → small stagger");
+        assert_eq!(launch_gap(true, stagger), SEQUENTIAL_SPACING, "throttled → serial pace");
+    }
+
     #[test]
     fn quote_stagger_parses_env_with_default_fallback() {
         assert_eq!(quote_stagger_from(None), Duration::from_millis(DEFAULT_QUOTE_STAGGER_MS));

@@ -183,6 +183,7 @@ async fn get_order_with_retries(
                     && within_retry_budget(started, attempt + 1)
                 {
                     let backoff = order_backoff(attempt);
+                    super::note_order_retry();
                     eprintln!(
                         "still fetching quote ({backend_label}, retry {}/{ORDER_MAX_RETRIES}, waiting {:.1}s)…",
                         attempt + 1,
@@ -919,5 +920,33 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No swap route found"));
+    }
+
+    // A retryable /order failure (429) drives the retry loop, which bumps the
+    // process-wide retry counter the basket launcher paces against. start_paused
+    // so the backoff sleeps advance virtual time instead of blocking ~9s.
+    #[tokio::test(start_paused = true)]
+    async fn retryable_order_failure_bumps_the_retry_counter() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/order");
+            then.status(429).body("rate limited");
+        }).await;
+
+        let before = crate::jupiter::order_retry_count();
+        let _ = get_order(
+            Some(&server.base_url()),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "1000000",
+            "FakeWallet111111111111111111111111111111",
+            None,
+        )
+        .await;
+        assert!(
+            crate::jupiter::order_retry_count() > before,
+            "a retryable /order failure must record at least one retry"
+        );
     }
 }
