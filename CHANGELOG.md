@@ -9,6 +9,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.0] - 2026-07-10 — just-in-time RFQ fills, non-default account import, faster parallel baskets
+
+### Fixed
+
+- **Thin RFQ-only tokens (PFEon, LLYon, …) are buyable again, and liquid tokens fill via the tighter RFQ route.** The sign-time simulation guard ran *before* Jupiter `/execute`, against current chain state — but RFQ market makers fund the fill **just-in-time** at execution (they mint/position inventory in the same block, confirmed on-chain). Their inventory is empty at simulation time, so the sim ERRORED and the CLI refused a swap that would actually land — a false negative that made these tokens look unbuyable and needlessly rerouted liquid ones to the Metis AMM (worse price). Now, on a managed `/execute` route that funds just-in-time (detected via `gasless`), a simulation that merely ERRORED (`OnChainWouldFail`) is submitted anyway — Jupiter validates server-side, the maker co-signs, and the on-chain min-output (`otherAmountThreshold`) enforces honesty (surfaced as a stderr `note:`). **Safety is unchanged**: a simulation that SUCCEEDED but showed dishonest deltas (`UnsafeDelta`/`OutputBelowQuote`), one that couldn't run (`RpcUnavailable`), a non-JIT route, and the entire Metis direct-submit path are all still hard-refused. Verified live end-to-end across `buy`/`sell`/`buy-basket`/`sell-basket`/`close-all`.
+
+### Added
+
+- **Import a seed phrase at a non-default account.** `keys import` / `keys add --seed-phrase` accept `--account <N>` (→ `m/44'/501'/N'/0'`, Phantom/Solflare "Account N+1") or the mutually-exclusive `--derivation-path <PATH>` (full BIP44, matching `jup-ag/cli`). Default is unchanged (account 0); the flags apply only to seed import. The derived address is echoed and, on a non-default path, a stderr note reminds you the recovery phrase alone restores account 0 — record the path.
+- **`RWA_DEBUG=1`** restores verbose diagnostics that are otherwise condensed: the full pre-sign simulation program-log (default: a one-line cause) and the per-backend `/order` quote-failure list.
+
+### Performance
+
+- **Parallel basket quotes are staggered** (`RWA_QUOTE_STAGGER_MS`, default 350 ms between launches). Firing a basket's quotes all at once bursts Jupiter's per-wallet rate limit, whose 429 → retry backoff (0.8/1.6/3.2 s) made the parallel *median* slower than sequential. Staggered, a 3-token basket quotes in **~1.3 s** on a healthy wallet (vs ~7.4 s `--sequential`); best-case latency is `~0.6 s + (N−1) × stagger`. Without an API key, Jupiter's per-wallet limit still bounds throughput and heavy use degrades to multi-second retries — set **`RWA_JUPITER_API_KEY`** for the real parallel unlock, then lower the stagger toward 0. Measured: single quote ~0.6 s, reads 30–200 ms.
+
+### Changed
+
+- **Terminal `route_unfillable` output is concise.** The pre-sign simulation failure and the multi-backend "No swap route found" list no longer dump the full program-log / per-backend `{requestId}` payloads by default (one-line cause; full detail under `RWA_DEBUG=1`). `error_kind` is unchanged.
+
+### Internal
+
+- Added an entropy invariant test pinning full-CSPRNG seed generation (guards against the weak-RNG wallet-drain class), and real unit coverage for the new sign-gate decision (submit/refuse across every `SwapSimError`, including the never-submit-a-dishonest-sim invariant), derivation-path parsing, and the `--account` end-to-end contract against independent reference vectors.
+
 ## [0.6.1] - 2026-07-06
 
 ### Added

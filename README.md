@@ -87,11 +87,15 @@ export RWA_JUPITER_API_KEY="<your-jupiter-key>"    # optional: higher Jupiter li
 | Command | Time |
 |---------|------|
 | `keys show`, `--help` | ~10 ms |
-| `gm hours`, `history`, `portfolio` | 0.5–1 s |
-| `gm buy` / `sell` (single) | 1–6 s |
-| baskets / `close-all` (parallel, default) | 1.5–8 s for 2–10 tokens |
-| baskets / `close-all` (`--sequential`) | ~N×5 s + 3 s spacing |
+| `gm hours` (cached), `list`, `tradable` | 30–200 ms |
+| `gm portfolio`, `pnl` | 0.2–1 s |
+| single quote (`buy`/`sell --dry-run`) | ~0.6 s |
+| `gm buy` / `sell` (single, executed) | 1–6 s |
+| baskets / `close-all` (parallel, default) | ~1.3 s for 3 tokens on a healthy wallet¹ |
+| baskets / `close-all` (`--sequential`) | ~7.4 s for 3 tokens (3 s spacing) |
 | `gm reclaim` | ~1.5 s |
+
+¹ Parallel quotes are staggered (`RWA_QUOTE_STAGGER_MS`, default 350 ms) to dodge Jupiter's per-wallet 429 burst; best case is `~0.6 s + (N−1) × stagger`. Without an API key the per-wallet rate limit still bounds throughput — under heavy use latency degrades to multi-second retries. Set **`RWA_JUPITER_API_KEY`** for the real parallel unlock, then lower the stagger toward 0. Numbers are network-bound (Jupiter / Solana RPC) and vary with connectivity and rate-limit state.
 
 </details>
 
@@ -120,7 +124,7 @@ crates/ondo/    → protocol layer
   spl.rs        → shared SPL primitives (program ids, ATA derivation)
 ```
 
-~19k lines of pure Rust (no C deps, no `unsafe`), 400+ tests including adversarial sign-time verification and spawned-binary JSON-contract tests.
+~19k lines of pure Rust (no C deps, no `unsafe`), 500+ tests including adversarial sign-time verification and spawned-binary JSON-contract tests.
 
 </details>
 
