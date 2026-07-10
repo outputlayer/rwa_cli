@@ -121,14 +121,19 @@ pub async fn run() -> Result<()> {
         .open(lock_path()?)?;
 
     if lock_file.try_lock_exclusive().is_err() {
-        let msg = "Another rwa process is running. Jupiter rejects concurrent requests from the same wallet — wait for it to finish.";
+        // Typed `lock_contention` (a transient kind) so BOTH modes exit 75:
+        // the JSON envelope carries the kind, and the human path flows through
+        // `exit_code_for` instead of defaulting to exit 1.
+        let err: eyre::Error = rwa_ondo::usecases::gm::GmTradeError::new(
+            rwa_ondo::usecases::gm::GmTradeErrorKind::LockContention,
+            "Another rwa process is running. Jupiter rejects concurrent requests from the same wallet — wait for it to finish.",
+        )
+        .into();
         if json {
-            render_error(&eyre!(msg), true);
-            // Lock contention is transient by definition — retry when the
-            // other process finishes.
+            render_error(&err, true);
             std::process::exit(75);
         }
-        return Err(eyre!(msg));
+        return Err(err);
     }
 
     // Lock is held until lock_file is dropped (end of process)
@@ -182,5 +187,31 @@ mod exit_code_tests {
             UpdateError::new(UpdateErrorKind::ChecksumMismatch, "sha mismatch").into();
         assert_eq!(exit_code_for(&err), 1);
         assert_eq!(super::error_kind_label(&err), Some("checksum_mismatch"));
+    }
+
+    #[test]
+    fn lock_contention_exits_75_in_human_mode_too() {
+        // CLAUDE.md promises 75 for lock contention; before typing this error
+        // the human-mode path returned a bare eyre and defaulted to exit 1
+        // (the json branch hard-exited 75) — the two modes disagreed.
+        let err: eyre::Report = rwa_ondo::usecases::gm::GmTradeError::new(
+            rwa_ondo::usecases::gm::GmTradeErrorKind::LockContention,
+            "Another rwa process is running",
+        )
+        .into();
+        assert_eq!(exit_code_for(&err), 75);
+        assert_eq!(super::error_kind_label(&err), Some("lock_contention"));
+    }
+
+    #[test]
+    fn typed_input_errors_exit_1_with_kind() {
+        // unknown_wallet / invalid_amount etc are permanent input failures.
+        let err: eyre::Report = rwa_ondo::usecases::gm::GmTradeError::new(
+            rwa_ondo::usecases::gm::GmTradeErrorKind::UnknownWallet,
+            "Wallet 'x' not found",
+        )
+        .into();
+        assert_eq!(exit_code_for(&err), 1);
+        assert_eq!(super::error_kind_label(&err), Some("unknown_wallet"));
     }
 }

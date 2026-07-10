@@ -85,8 +85,10 @@ pub(super) async fn auto_gas(
     }
     let (refuel, snapshot) = usecases::gm::ensure_gas(w, rpc_url, json, reserved_usdc_raw, |sol| {
         gas_auto_consent(yes, json).unwrap_or_else(|| {
+            // Honest range: sizing is dynamic AFTER consent, clamped to
+            // [5, 25] USDC — never promise the floor when the ceiling may hit.
             confirm(&format!(
-                "SOL is low ({sol:.6}) — buy 5 USDC of SOL for fees first?"
+                "SOL is low ({sol:.6}) — buy 5–25 USDC of SOL (sized to current fees) first?"
             ))
         })
     })

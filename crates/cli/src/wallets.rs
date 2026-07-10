@@ -163,10 +163,15 @@ impl WalletRegistry {
         if let Some(name) = selected {
             return match self.find(name) {
                 Some(e) => Ok(WalletTarget::Path(PathBuf::from(&e.path))),
-                None => Err(eyre!(
-                    "Wallet '{name}' not found. Available: {}",
-                    self.available_names()
-                )),
+                // Typed → agents get `error_kind: "unknown_wallet"` (exit 1).
+                None => Err(rwa_ondo::usecases::gm::GmTradeError::new(
+                    rwa_ondo::usecases::gm::GmTradeErrorKind::UnknownWallet,
+                    format!(
+                        "Wallet '{name}' not found. Available: {}",
+                        self.available_names()
+                    ),
+                )
+                .into()),
             };
         }
         if let Some(active) = self.active.as_deref() {

@@ -24,9 +24,16 @@ pub async fn send(token: &str, amount: &str, to: &str, yes: bool, dry_run: bool,
     let w = load_wallet(selected)?;
     let pubkey = w.pubkey();
 
-    solana::validate_address(to)?;
+    // Typed so agents can branch on error_kind instead of matching prose.
+    solana::validate_address(to).map_err(|e| {
+        eyre::Report::from(GmTradeError::new(GmTradeErrorKind::InvalidAddress, e.to_string()))
+    })?;
     if to == pubkey {
-        return Err(eyre::eyre!("Cannot send to yourself"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::SelfSend,
+            "Cannot send to yourself",
+        )
+        .into());
     }
 
     let token_upper = token.to_uppercase();

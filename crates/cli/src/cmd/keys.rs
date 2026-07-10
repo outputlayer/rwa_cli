@@ -336,9 +336,13 @@ async fn export(selected: Option<&str>, reveal: bool, json: bool) -> Result<()> 
 
     if !reveal {
         if json {
-            return Err(eyre::eyre!(
-                "keys export prints SECRET key material; pass --reveal to confirm (required with --json)"
-            ));
+            // Typed → agents get `error_kind: "reveal_required"` and can retry
+            // with --reveal instead of parsing prose.
+            return Err(rwa_ondo::usecases::gm::GmTradeError::new(
+                rwa_ondo::usecases::gm::GmTradeErrorKind::RevealRequired,
+                "keys export prints SECRET key material; pass --reveal to confirm (required with --json)",
+            )
+            .into());
         }
         let ok = {
             use std::io::Write as _;

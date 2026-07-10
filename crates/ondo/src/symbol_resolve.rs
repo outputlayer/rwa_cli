@@ -1,6 +1,7 @@
-use eyre::{Result, eyre};
+use eyre::Result;
 
 use crate::token_list::GmTokenEntry;
+use crate::usecases::gm::{GmTradeError, GmTradeErrorKind};
 
 /// Resolve a GM token by symbol or Solana address (case-insensitive).
 /// Accepts "TSLA", "TSLAon" formats, or a Solana base58 mint address.
@@ -22,7 +23,15 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
     tokens
         .iter()
         .find(|t| t.symbol.to_uppercase() == lookup)
-        .ok_or_else(|| eyre!("Unknown GM token: {symbol}"))
+        .ok_or_else(|| {
+            // Typed so agents get `error_kind: "unknown_token"` instead of null;
+            // point humans at the discovery command.
+            GmTradeError::new(
+                GmTradeErrorKind::UnknownToken,
+                format!("Unknown GM token: {symbol}. Browse symbols with `rwa gm search --search <keyword>`"),
+            )
+            .into()
+        })
 }
 
 #[cfg(test)]

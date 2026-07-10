@@ -39,6 +39,20 @@ pub enum GmTradeErrorKind {
     /// `--json` without `-y`: non-interactive mode fails closed instead of
     /// silently executing a real trade/transfer.
     ConfirmationRequired,
+    /// Symbol not in the GM token list (typo or non-GM asset).
+    UnknownToken,
+    /// Amount failed to parse (bad format, too many decimals, bad percentage).
+    InvalidAmount,
+    /// Recipient is not a valid Solana address.
+    InvalidAddress,
+    /// `--wallet`/`RWA_WALLET` named a wallet absent from the registry.
+    UnknownWallet,
+    /// `send` recipient equals the sender.
+    SelfSend,
+    /// `keys export --json` without `--reveal`.
+    RevealRequired,
+    /// Another rwa process holds the exclusive lock — transient by definition.
+    LockContention,
 }
 
 #[derive(Debug)]
@@ -77,6 +91,13 @@ impl GmTradeErrorKind {
             Self::ConditionNotMet => "condition_not_met",
             Self::TradingPaused => "trading_paused",
             Self::ConfirmationRequired => "confirmation_required",
+            Self::UnknownToken => "unknown_token",
+            Self::InvalidAmount => "invalid_amount",
+            Self::InvalidAddress => "invalid_address",
+            Self::UnknownWallet => "unknown_wallet",
+            Self::SelfSend => "self_send",
+            Self::RevealRequired => "reveal_required",
+            Self::LockContention => "lock_contention",
         }
     }
 }
@@ -125,7 +146,7 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
 pub fn is_transient_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "rpc_unavailable" | "execute_unavailable" | "confirmation_timeout"
+        "rpc_unavailable" | "execute_unavailable" | "confirmation_timeout" | "lock_contention"
     )
 }
 
@@ -319,11 +340,18 @@ pub async fn prepare_sell(
         solana::get_balance(&taker, &gm_mint, rpc_url),
     );
     tradable_res?;
-    let bal = bal_res?;
+    // Name the SYMBOL, not the raw mint: `NoTokenAccount` alone prints
+    // "No token account found for mint Gwh9…ondo", which means nothing to a
+    // human. classify_error still finds the typed cause in the chain.
+    let bal = bal_res.map_err(|e| {
+        e.wrap_err(format!(
+            "You hold no {symbol} — nothing to sell (see `rwa gm portfolio`)"
+        ))
+    })?;
     if bal.balance <= 0.0 {
         return Err(GmTradeError::new(
             GmTradeErrorKind::NoPosition,
-            "Balance is 0 — nothing to trade",
+            format!("You hold no {symbol} — nothing to sell (see `rwa gm portfolio`)"),
         )
         .into());
     }
@@ -988,5 +1016,58 @@ mod tests {
         .into();
         assert_eq!(classify_error(&err), Some("confirmation_required"));
         assert!(!is_transient_kind("confirmation_required"));
+    }
+
+    #[test]
+    fn input_and_environment_kinds_classify_with_stable_labels() {
+        // The audit-added kinds: common user-input failures that previously
+        // surfaced as `error_kind: null`, forcing agents to match English prose.
+        let cases: &[(GmTradeErrorKind, &str)] = &[
+            (GmTradeErrorKind::UnknownToken, "unknown_token"),
+            (GmTradeErrorKind::InvalidAmount, "invalid_amount"),
+            (GmTradeErrorKind::InvalidAddress, "invalid_address"),
+            (GmTradeErrorKind::UnknownWallet, "unknown_wallet"),
+            (GmTradeErrorKind::SelfSend, "self_send"),
+            (GmTradeErrorKind::RevealRequired, "reveal_required"),
+            (GmTradeErrorKind::LockContention, "lock_contention"),
+        ];
+        for &(kind, label) in cases {
+            assert_eq!(kind.to_string(), label);
+            let err: eyre::Error = GmTradeError::new(kind, "x").into();
+            assert_eq!(classify_error(&err), Some(label), "classify {label}");
+        }
+        // Lock contention is the one transient among them (retry when the
+        // other process exits → exit 75 in BOTH human and json modes); the
+        // rest are permanent bad-input failures (exit 1).
+        assert!(is_transient_kind("lock_contention"));
+        for label in [
+            "unknown_token",
+            "invalid_amount",
+            "invalid_address",
+            "unknown_wallet",
+            "self_send",
+            "reveal_required",
+        ] {
+            assert!(!is_transient_kind(label), "{label} must not be transient");
+        }
+    }
+
+    #[test]
+    fn amount_parse_failures_are_typed_invalid_amount() {
+        // End-to-end through the real parser: garbage, excess decimals, and a
+        // bad percentage must all classify — not just the enum in isolation.
+        for input in ["abc", "1.2.3", "5.1234567"] {
+            let err = crate::amounts::token_to_raw(input, 6).unwrap_err();
+            assert_eq!(classify_error(&err), Some("invalid_amount"), "input {input}");
+        }
+    }
+
+    #[test]
+    fn unknown_symbol_is_typed_unknown_token() {
+        let tokens = crate::token_list::get_token_list();
+        let err = crate::symbol_resolve::resolve_token("NOTATOKEN", tokens).unwrap_err();
+        assert_eq!(classify_error(&err), Some("unknown_token"));
+        // The message still teaches the discovery path for humans.
+        assert!(err.to_string().contains("gm search"), "should point at search: {err}");
     }
 }

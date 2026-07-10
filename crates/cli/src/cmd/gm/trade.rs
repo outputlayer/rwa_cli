@@ -130,6 +130,48 @@ fn share_view(multiplier: Option<f64>, token_amount: &str, usdc_amount: &str) ->
     (Some(usdc / tokens / m), Some(m))
 }
 
+/// Implied price in USDC per raw token (counter ÷ token amount), display-only.
+/// `None` when either side fails to parse or the token amount is zero.
+fn implied_price(token_amount: &str, usdc_amount: &str) -> Option<f64> {
+    let tokens = token_amount.parse::<f64>().ok()?;
+    let usdc = usdc_amount.parse::<f64>().ok()?;
+    (tokens > 0.0).then(|| usdc / tokens)
+}
+
+/// Trade-economics block shared by the dry-run preview and the pre-consent
+/// summary: implied price, quoted spread, fee, all-in estimate, slippage
+/// tolerance, per-share view. The y/N moment must show no LESS than the
+/// dry-run — the human decides with the same facts either way.
+fn print_economics(
+    plan: &usecases::gm::SwapPlan,
+    share_price: Option<f64>,
+    shares_per_token: Option<f64>,
+    slippage: Option<u32>,
+) {
+    if let Some(p) = implied_price(&plan.amount, &plan.counter_amount) {
+        println!("  Price:        ~{p:.2} USDC/token");
+    }
+    // Signed-cost convention: positive = costs you, negative = in your favor,
+    // so Spread + Fee = Est. all-in. `slippage_pct` is favorable-positive, so
+    // its cost contribution is `-s`.
+    if let Some(s) = plan.slippage_pct {
+        println!("  Spread/cost:  {:.4}% ({:.1} bps)", -s, -s * 100.0);
+    }
+    if let Some(fee) = plan.order.fee_bps {
+        println!("  Jupiter fee:  {fee} bps");
+    }
+    if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
+        println!("  Est. all-in:  ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
+    }
+    println!(
+        "  Slippage tol: {} bps (worst-case fill bound)",
+        slippage.unwrap_or(usecases::gm::DEFAULT_SLIPPAGE_BPS)
+    );
+    if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
+        println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
+    }
+}
+
 /// Render the already-parsed limit (raw 10^-6 units + frame) as a display
 /// number and unit label — independent of which input form the user typed.
 fn limit_display(parsed: (u128, LimitFrame)) -> (String, &'static str) {
@@ -215,27 +257,24 @@ pub async fn buy(
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would buy:   ~{} {}", plan.amount, plan.symbol);
         println!("  Would spend:  {} USDC", plan.counter_amount);
-        // Signed-cost convention: positive = costs you, negative = in your favor,
-        // so Spread + Fee = Est. all-in. `slippage_pct` is favorable-positive, so
-        // its cost contribution is `-s`.
-        if let Some(s) = plan.slippage_pct {
-            println!("  Spread/cost:  {:.4}% ({:.1} bps)", -s, -s * 100.0);
-        }
-        if let Some(fee) = plan.order.fee_bps {
-            println!("  Jupiter fee:  {fee} bps");
-        }
-        if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
-            println!("  Est. all-in:  ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
-        }
+        print_economics(&plan, share_price, shares_per_token, slippage);
         if let Some(parsed) = limit_price_parsed {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
             let (num, unit) = limit_display(parsed);
             println!("  Limit price:  <= {num} {unit} (condition met)");
         }
-        if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
-            println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
-        }
         return Ok(());
+    }
+
+    // The real-money y/N moment shows the same economics as the dry-run —
+    // previously it showed only the receive amount, the least-informed prompt
+    // in the whole CLI at the point of highest stakes.
+    if !json && !yes {
+        print_economics(&plan, share_price, shares_per_token, slippage);
+        if let Some(parsed) = limit_price_parsed {
+            let (num, unit) = limit_display(parsed);
+            println!("  Limit price:  <= {num} {unit} (condition met)");
+        }
     }
 
     if !require_execution_consent(yes, json, "Proceed?")? {
@@ -330,26 +369,22 @@ pub async fn sell(
         println!("\n[DRY RUN] Trade not executed.");
         println!("  Would sell:    {} {}", plan.amount, plan.symbol);
         println!("  Would receive: ~{} USDC", plan.counter_amount);
-        // Signed-cost convention: positive = costs you, negative = in your favor,
-        // so Spread + Fee = Est. all-in. `slippage_pct` is favorable-positive.
-        if let Some(s) = plan.slippage_pct {
-            println!("  Spread/cost:   {:.4}% ({:.1} bps)", -s, -s * 100.0);
-        }
-        if let Some(fee) = plan.order.fee_bps {
-            println!("  Jupiter fee:   {fee} bps");
-        }
-        if let (Some(s), Some(fee)) = (plan.slippage_pct, plan.order.fee_bps) {
-            println!("  Est. all-in:   ~{:.1} bps  (− = in your favor)", fee as f64 - s * 100.0);
-        }
+        print_economics(&plan, share_price, shares_per_token, slippage);
         if let Some(parsed) = limit_price_parsed {
             // Reaching this print means check_limit_gate already passed inside prepare_*.
             let (num, unit) = limit_display(parsed);
-            println!("  Limit price:   >= {num} {unit} (condition met)");
-        }
-        if let (Some(sp), Some(m)) = (share_price, shares_per_token) {
-            println!("  Per share:    ~{sp:.2} USDC  (1 token = {m:.4} shares)");
+            println!("  Limit price:  >= {num} {unit} (condition met)");
         }
         return Ok(());
+    }
+
+    // Same-facts rule as buy: the y/N prompt shows the dry-run economics.
+    if !json && !yes {
+        print_economics(&plan, share_price, shares_per_token, slippage);
+        if let Some(parsed) = limit_price_parsed {
+            let (num, unit) = limit_display(parsed);
+            println!("  Limit price:  >= {num} {unit} (condition met)");
+        }
     }
 
     if !require_execution_consent(yes, json, "Proceed?")? {
@@ -395,7 +430,19 @@ pub async fn sell(
 
 #[cfg(test)]
 mod tests {
-    use super::{limit_display, limit_price_echo, parse_limit_price, share_view};
+    use super::{implied_price, limit_display, limit_price_echo, parse_limit_price, share_view};
+
+    #[test]
+    fn implied_price_divides_usdc_by_tokens() {
+        // 5 USDC for 0.0121 TSLA ≈ 413.2 USDC/token — the number the human
+        // needs at the consent prompt without doing mental division.
+        let p = implied_price("0.0121", "5").unwrap();
+        assert!((p - 413.22).abs() < 0.01, "got {p}");
+        // Zero/garbage token amounts must not divide.
+        assert_eq!(implied_price("0", "5"), None);
+        assert_eq!(implied_price("abc", "5"), None);
+        assert_eq!(implied_price("1", "junk"), None);
+    }
 
     /// Build a `Vec<String>` from string literals for `parse_limit_price`.
     fn v(items: &[&str]) -> Vec<String> {

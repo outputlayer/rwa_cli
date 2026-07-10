@@ -1,13 +1,21 @@
 use eyre::{eyre, Result};
 
+use crate::usecases::gm::{GmTradeError, GmTradeErrorKind};
+
+/// Typed user-input amount error → agents see `error_kind: "invalid_amount"`
+/// instead of null and can branch without matching English prose.
+fn invalid_amount(detail: impl Into<String>) -> eyre::Error {
+    GmTradeError::new(GmTradeErrorKind::InvalidAmount, detail).into()
+}
+
 /// Convert a human-readable token amount to on-chain units with specified decimals.
 pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
     let amount = amount.trim();
     if amount.is_empty() {
-        return Err(eyre!("Amount must be positive"));
+        return Err(invalid_amount("Amount must be positive"));
     }
     if amount.starts_with('-') || amount.starts_with('+') {
-        return Err(eyre!("Amount must be positive"));
+        return Err(invalid_amount("Amount must be positive"));
     }
 
     let d = decimals as usize;
@@ -15,17 +23,17 @@ pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
     let (integer, frac) = match parts.len() {
         1 => (parts[0], ""),
         2 => (parts[0], parts[1]),
-        _ => return Err(eyre!("Invalid amount format")),
+        _ => return Err(invalid_amount("Invalid amount: expected a number, `NN%`, or `all` (e.g. 100, 50%, all)")),
     };
     let integer = if integer.is_empty() { "0" } else { integer };
     if !integer.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
-        return Err(eyre!("Invalid amount format"));
+        return Err(invalid_amount("Invalid amount: expected a number, `NN%`, or `all` (e.g. 100, 50%, all)"));
     }
     if frac.len() > d {
-        return Err(eyre!(
+        return Err(invalid_amount(format!(
             "Too many decimal places: got {}, max allowed is {d}",
             frac.len()
-        ));
+        )));
     }
 
     let frac_padded = format!("{:0<width$}", frac, width = d);
@@ -90,9 +98,9 @@ where
     if let Some(pct_str) = s.strip_suffix('%') {
         let pct: f64 = pct_str
             .parse()
-            .map_err(|_| eyre!("Invalid percentage: {s}"))?;
+            .map_err(|_| invalid_amount(format!("Invalid percentage: {s}")))?;
         if !(0.0..=100.0).contains(&pct) {
-            return Err(eyre!("Percentage must be 0–100, got {pct}"));
+            return Err(invalid_amount(format!("Percentage must be 0–100, got {pct}")));
         }
         let bal_raw = balance_raw_fn().await?;
         let bal: u128 = bal_raw
