@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Run the full CI-parity gate before pushing, so `main` never goes red on a
+# warning that plain local `cargo test`/`cargo clippy` (without -Dwarnings) miss.
+# Enable with `make install-hooks`. Bypass a single push with `git push --no-verify`.
+set -e
+echo "pre-push: running 'make ci' (CI-parity)…"
+exec make ci

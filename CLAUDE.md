@@ -5,6 +5,8 @@ Rust CLI for trading tokenized stocks & ETFs (Ondo Global Markets) on Solana via
 ## Build / Test / Lint
 
 ```bash
+make ci                            # RUN BEFORE EVERY PUSH — exact mirror of .github/workflows/ci.yml
+make install-hooks                 # optional: pre-push hook that runs `make ci` automatically
 cargo build
 cargo build --release
 cargo clippy --all-targets
@@ -14,6 +16,8 @@ bash scripts/bench-latency.sh      # real command latency p50/p95 (network-bound
 cargo run -- gm hours
 cargo install --path bin/rwa
 ```
+
+**CI runs every step with `RUSTFLAGS=-Dwarnings`** (clippy lints, `unsafe_code`, `dead_code`, … are hard errors), and plain local `cargo test`/`cargo clippy` (no `-Dwarnings`, plus clippy's incremental cache) can be green while CI is red. `make ci` reproduces CI exactly — always run it before pushing.
 
 ## Install / Release model
 

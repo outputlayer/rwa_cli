@@ -131,8 +131,11 @@ crates/ondo/    → protocol layer
 ## Development
 
 ```bash
-cargo build && cargo test --workspace && cargo clippy --all-targets
+make ci                # run before pushing — exact mirror of the GitHub CI (RUSTFLAGS=-Dwarnings)
+make install-hooks     # optional: pre-push hook that runs `make ci` automatically
 ```
+
+CI treats warnings as errors (`-Dwarnings`), so `make ci` — not a plain `cargo test`/`clippy` — is what keeps `main` green.
 
 ## License
 
