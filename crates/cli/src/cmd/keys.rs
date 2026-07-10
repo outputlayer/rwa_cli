@@ -144,14 +144,14 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             if encrypt {
                 eprintln!("WARNING: --encrypt is deprecated; encryption is now the default. Use --allow-plaintext to opt out.");
             }
-            generate(allow_plaintext).await
+            generate(allow_plaintext, json).await
         }
         KeysAction::Import { file, private_key, seed_phrase, account, derivation_path, allow_plaintext, encrypt } => {
             if encrypt {
                 eprintln!("WARNING: --encrypt is deprecated; encryption is now the default. Use --allow-plaintext to opt out.");
             }
             let path = resolve_derivation_path(account, derivation_path)?;
-            import(file, private_key, seed_phrase, path, allow_plaintext).await
+            import(file, private_key, seed_phrase, path, allow_plaintext, json).await
         }
         KeysAction::Show => show(selected, json).await,
         KeysAction::Encrypt => {
@@ -177,7 +177,7 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
     }
 }
 
-async fn generate(allow_plaintext: bool) -> Result<()> {
+async fn generate(allow_plaintext: bool, json: bool) -> Result<()> {
     let json_path = wallet::default_key_path()?;
     let age_path = wallet::encrypted_key_path()?;
     if json_path.exists() || age_path.exists() {
@@ -191,6 +191,12 @@ async fn generate(allow_plaintext: bool) -> Result<()> {
     if allow_plaintext {
         eprintln!("WARNING: Saving wallet as plaintext key.json. Consider using encryption for better security.");
         let saved = w.save_default()?;
+        if json {
+            // The mnemonic is included: for plaintext wallets this is the ONLY
+            // time it exists anywhere — an agent must be able to capture it.
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), false, Some(&phrase)));
+            return Ok(());
+        }
         println!("New wallet generated!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
@@ -200,10 +206,15 @@ async fn generate(allow_plaintext: bool) -> Result<()> {
         let passphrase = prompt_new_passphrase()?;
         let saved = wallet::encrypted_key_path()?;
         w.save_encrypted_with_mnemonic(&saved, &passphrase, Some(&phrase))?;
+        if json {
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), true, Some(&phrase)));
+            return Ok(());
+        }
         println!("New wallet generated (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
         print_recovery_phrase(&phrase, true);
+        println!("\nFund this address with SOL and USDC to start trading.");
     }
     Ok(())
 }
@@ -225,6 +236,7 @@ async fn import(
     seed_phrase: Option<String>,
     derivation_path: String,
     allow_plaintext: bool,
+    json: bool,
 ) -> Result<()> {
     let json_path = wallet::default_key_path()?;
     let age_path = wallet::encrypted_key_path()?;
@@ -267,6 +279,11 @@ async fn import(
     if allow_plaintext {
         eprintln!("WARNING: Saving wallet as plaintext key.json. Consider using encryption for better security.");
         let saved = w.save_default()?;
+        if json {
+            // No mnemonic echoed back — the user supplied the secret themselves.
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), false, None));
+            return Ok(());
+        }
         println!("Wallet imported!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
@@ -276,11 +293,37 @@ async fn import(
         // A seed-phrase import keeps the phrase inside the encrypted payload
         // so `keys export` can reveal it later.
         w.save_encrypted_with_mnemonic(&saved, &passphrase, imported_phrase.as_deref())?;
+        if json {
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), true, None));
+            return Ok(());
+        }
         println!("Wallet imported (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
     }
     Ok(())
+}
+
+/// JSON shape for `keys generate`/`keys import` --json: the created wallet's
+/// address, key-file path, storage form, and (generate only) the recovery
+/// phrase — the same facts the human output prints, machine-readable so an
+/// agent can provision a wallet without scraping prose. Pure for unit tests.
+fn wallet_created_json(
+    pubkey: &str,
+    path: &str,
+    encrypted: bool,
+    mnemonic: Option<&str>,
+) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "status": "ok",
+        "pubkey": pubkey,
+        "path": path,
+        "encrypted": encrypted,
+    });
+    if let Some(m) = mnemonic {
+        v["mnemonic"] = serde_json::Value::String(m.to_string());
+    }
+    v
 }
 
 /// JSON shape for `keys show --json`: the active wallet's address, its key-file
@@ -534,6 +577,11 @@ async fn add(
         }
     };
 
+    // pubkey when knowable without a passphrase: import mode has the wallet in
+    // hand; register-mode plaintext is parsed for validation anyway; a
+    // registered age file stays `null` (decrypting just to display would
+    // demand the passphrase at registration time).
+    let mut added_pubkey: Option<String> = None;
     match imported {
         // Import mode: write a new key file at `abs` (encrypted by default), then register it.
         Some(w) => {
@@ -553,6 +601,7 @@ async fn add(
                 let passphrase = prompt_new_passphrase()?;
                 w.save_encrypted_with_mnemonic(&abs, &passphrase, imported_phrase.as_deref())?;
             }
+            added_pubkey = Some(w.pubkey());
         }
         // Register mode: an existing file must be present and valid.
         None => {
@@ -561,7 +610,7 @@ async fn add(
             }
             // Validate before registering: parse plaintext fully; for age just confirm header.
             if !wallet::is_age_encrypted(&abs)? {
-                Wallet::from_file(&abs)?;
+                added_pubkey = Some(Wallet::from_file(&abs)?.pubkey());
             }
         }
     }
@@ -572,7 +621,14 @@ async fn add(
     if json {
         println!(
             "{}",
-            serde_json::json!({ "status": "ok", "name": name, "path": abs.to_string_lossy(), "active": is_active })
+            serde_json::json!({
+                "status": "ok",
+                "name": name,
+                "path": abs.to_string_lossy(),
+                "active": is_active,
+                "pubkey": added_pubkey,
+                "encrypted": wallet::is_age_encrypted(&abs)?,
+            })
         );
     } else {
         println!("Registered wallet '{name}' -> {}", abs.display());
@@ -707,6 +763,22 @@ mod tests {
             Wallet::from_mnemonic_at(ABANDON, &path2).unwrap().pubkey(),
             "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm"
         );
+    }
+
+    #[test]
+    fn wallet_created_json_carries_pubkey_path_encrypted_and_optional_mnemonic() {
+        // generate --json: agents must get the recovery phrase machine-readably
+        // (it is shown exactly once for plaintext wallets).
+        let v = wallet_created_json("Pub123", "/x/key.age", true, Some("word1 word2"));
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["pubkey"], "Pub123");
+        assert_eq!(v["path"], "/x/key.age");
+        assert_eq!(v["encrypted"], serde_json::json!(true));
+        assert_eq!(v["mnemonic"], "word1 word2");
+        // import --json: the user supplied the secret — no mnemonic echoed back.
+        let v2 = wallet_created_json("Pub456", "/x/key.json", false, None);
+        assert_eq!(v2["encrypted"], serde_json::json!(false));
+        assert!(v2.get("mnemonic").is_none(), "no mnemonic key when absent: {v2}");
     }
 
     #[test]

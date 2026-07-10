@@ -65,8 +65,11 @@ async fn process_buy_item(
 
     match usecases::gm::execute_buy_from_order(&wallet, order, json).await {
         Ok(exec) => {
-            // raw was already validated as u128 upstream when computing total_raw
-            let raw_u128: u128 = raw.parse().expect("raw validated as u128 upstream");
+            // raw was validated as u128 upstream; the value only feeds the
+            // display total, so degrade to 0 rather than panic — a panic HERE
+            // fires after an on-chain trade succeeded, killing the JoinSet and
+            // losing the whole JSON report (tx URLs included).
+            let raw_u128: u128 = raw.parse().unwrap_or(0);
             let raw_u: f64 = raw_u128 as f64 / 10f64.powi(jupiter::USDC_DECIMALS as i32);
             let tx = solscan_tx_url(&exec.signature);
             if !json {
@@ -119,8 +122,10 @@ async fn process_sell_item(
 
     match usecases::gm::execute_sell_from_order(&wallet, order, json).await {
         Ok(exec) => {
-            // output_amount is produced by amounts::format_amount and is always a valid f64
-            let usdc_out: f64 = exec.output_amount.parse().expect("format_amount produces valid f64");
+            // output_amount comes from amounts::format_amount (valid f64); it
+            // only feeds the display total — degrade to 0 rather than panic
+            // after a swap that already landed on-chain.
+            let usdc_out: f64 = exec.output_amount.parse().unwrap_or(0.0);
             let tx = solscan_tx_url(&exec.signature);
             if !json {
                 print!("  ✓ {} {} → {} USDC", sym, display_amt, exec.output_amount);

@@ -22,8 +22,10 @@ pub(crate) const MIN_USDC_AMOUNT: f64 = 5.0;
 pub(crate) const MIN_SOL_FOR_FEES: f64 = 0.002;
 
 /// The buy minimum in raw USDC units — single source for `buy` and `buy-basket`.
+/// Multiplies BEFORE truncating so a fractional future minimum (e.g. 5.5)
+/// converts exactly instead of silently flooring to 5.
 pub(crate) fn min_usdc_raw() -> u128 {
-    10u128.pow(jupiter::USDC_DECIMALS as u32) * MIN_USDC_AMOUNT as u128
+    (MIN_USDC_AMOUNT * 10f64.powi(jupiter::USDC_DECIMALS as i32)) as u128
 }
 
 pub fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> Result<(Symbol, Mint)> {

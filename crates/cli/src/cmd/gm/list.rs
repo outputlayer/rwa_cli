@@ -77,6 +77,7 @@ pub async fn hours(json: bool, show_tradable: bool) -> Result<()> {
             session_hours: session.hours(),
             now: time_str,
             countdown,
+            next_session_at: next_session.timestamp(),
             tradable_count,
             tradable: tradable_list,
             paused_count,

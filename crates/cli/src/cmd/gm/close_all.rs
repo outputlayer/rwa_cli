@@ -66,11 +66,10 @@ async fn process_close_item(
 
     match usecases::gm::execute_sell_from_order(&wallet, order, json).await {
         Ok(exec) => {
-            // output_amount is produced by amounts::format_amount and is always a valid f64
-            let usdc_f: f64 = exec
-                .output_amount
-                .parse()
-                .expect("format_amount produces valid f64");
+            // output_amount comes from amounts::format_amount (valid f64); it
+            // only feeds the display total — degrade to 0 rather than panic
+            // after a swap that already landed on-chain.
+            let usdc_f: f64 = exec.output_amount.parse().unwrap_or(0.0);
             let tx = solscan_tx_url(&exec.signature);
             if !json {
                 println!(

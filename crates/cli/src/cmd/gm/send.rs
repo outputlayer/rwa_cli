@@ -127,7 +127,11 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
     // USDC uses standard SPL Token — recipient may need ATA creation
     let min_sol = solana::estimate_gas_needed(true, false, rpc_url).await;
     if sol < min_sol {
-        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"),
+        )
+        .into());
     }
 
     let is_all = amount.trim().eq_ignore_ascii_case("all") || amount.trim() == "100%";
@@ -155,7 +159,7 @@ async fn send_usdc(w: &wallet::Wallet, amount: &str, to: &str, yes: bool, dry_ru
         return Err(GmTradeError::new(
             GmTradeErrorKind::InsufficientFunds,
             format!(
-                "Insufficient USDC: {} available, need {}",
+                "Insufficient USDC: {} USDC (need {})",
                 amounts::format_amount(&bal_raw_str, jupiter::USDC_DECIMALS),
                 display_amount
             ),
@@ -221,7 +225,11 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
     // GM tokens use Token-2022 — recipient may need ATA creation
     let min_sol = solana::estimate_gas_needed(true, true, rpc_url).await;
     if sol < min_sol {
-        return Err(eyre::eyre!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"));
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InsufficientFunds,
+            format!("Insufficient SOL for gas (have {sol:.4}, need ≥{min_sol:.4})"),
+        )
+        .into());
     }
 
     // Fetched eagerly (not just for `all`/`NN%`) so an exact amount can be

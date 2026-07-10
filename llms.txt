@@ -59,11 +59,9 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm close-all --sequential -y` — one-at-a-time with 3s spacing (only if rate-limited)
 - `rwa --json gm close-all 50% -y` — sell a percentage of every position
 - `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
-- `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens (parallel by default)
-- `rwa --json gm buy-basket <SYM AMT ...> --parallel -y` — buy multiple tokens in parallel
+- `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens (parallel by default; `--sequential` if rate-limited)
 - `rwa --json gm sell-basket <SYM AMT ...> --dry-run` — preview basket sell quotes
-- `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens (parallel by default)
-- `rwa --json gm sell-basket <SYM AMT ...> --parallel -y` — sell multiple tokens in parallel
+- `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens (parallel by default; `--sequential` if rate-limited)
 
 ### Portfolio & history
 - `rwa --json gm portfolio` — own wallet holdings
@@ -97,7 +95,7 @@ GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via
 - `rwa --json update -y` — self-update to latest (verifies SHA-256, fail-closed)
 
 ### Wallet
-- `rwa keys generate` — create wallet (encrypted by default; `--allow-plaintext` to opt out)
+- `rwa keys generate` — create wallet (encrypted by default; `--allow-plaintext` to opt out). With `--json` returns `{status, pubkey, path, encrypted, mnemonic}` — capture `mnemonic`: for plaintext wallets it is shown only this once. `keys import`/`keys add --json` return the same shape without `mnemonic` (`add` also carries `name`/`active`; registering an existing .age file leaves `pubkey` null)
 - `rwa keys import --seed-phrase "word1 word2 ..."` — import mnemonic (default path m/44'/501'/0'/0'). Add `--account <N>` (→ m/44'/501'/N'/0', Phantom "Account N+1") or `--derivation-path "<PATH>"` (mutually exclusive) to import a non-default account; a non-default path warns that the phrase alone restores account 0 — record the path
 - `rwa keys import --private-key <BASE58>` — import private key
 - `rwa keys show` — show address + key path
@@ -135,27 +133,29 @@ Check tradable + buy basket in 2 commands (most efficient):
 # 1. Get all tradable healthcare stocks in one call
 rwa --json gm search --tradable-only --sector Healthcare --type stock
 
+# 2. Buy all tradable tokens at once — one command, parallel by default
+rwa --json gm buy-basket JNJ 25 LLY 25 PFE 25 ABBV 25 -y
+```
+
 Jupiter API note:
 - The CLI tries public Jupiter routes in this order: `lite-api.jup.ag/swap/v2` first, then `ultra-api.jup.ag`, then `lite-api.jup.ag/ultra/v1`, with `lite-api.jup.ag/swap/v1` as the final fallback.
 - Route availability can differ by session, holiday calendar, and MM liquidity.
 - Quote-fetch retries back off up to 3.2s per attempt within a ~20s budget per quote-fetch pass; a `still fetching quote (...)` heartbeat prints to stderr on each retry, so a slow quote is visible rather than a silent hang. Do not treat the heartbeat as an error.
 
-# 2. Buy all tradable tokens at once — one command, parallel
-rwa --json gm buy-basket JNJ 25 LLY 25 PFE 25 ABBV 25 --parallel -y
-```
-
-Syntax for buy-basket and sell-basket: interleaved `SYMBOL AMOUNT` pairs. Each token gets its own amount:
+Syntax for buy-basket and sell-basket: interleaved `SYMBOL AMOUNT` pairs. Each token gets its own amount. Parallel is the default; `--sequential` is the rate-limit fallback:
 
 ```bash
-rwa --json gm buy-basket TSLA 100 AAPL 50 NVDA 25 --parallel -y   # different amounts
-rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all --parallel -y     # partial sells
+rwa --json gm buy-basket TSLA 100 AAPL 50 NVDA 25 -y            # different amounts
+rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all -y              # partial sells
+rwa --json gm buy-basket TSLA 100 AAPL 50 --sequential -y       # if rate-limited
 ```
+
+IMPORTANT for baskets and close-all: a partially failed run still exits 0 with `status: "success"` — the command completed; per-item outcomes live in `failed[]` (and close-all's `skipped[]`). ALWAYS inspect those arrays; do not gate on the exit code alone.
 
 Full exit:
 
 ```bash
-rwa --json gm close-all --parallel -y   # parallel: all swaps at once (~22s)
-# or: rwa --json gm close-all -y         # sequential if needed
+rwa --json gm close-all -y              # parallel by default (~22s); --sequential if rate-limited
 rwa --json gm reclaim
 rwa --json gm send USDC all <ADDR> -y
 rwa --json gm send SOL all <ADDR> -y
@@ -173,7 +173,10 @@ Parallel is safe for different tokens. jupiterz routes through multiple MMs inte
 
 ## Error handling
 
-With `--json`, failures return `{"status":"error","error":"..."}` on stdout and exit code `1`.
+With `--json`, failures return `{"status":"error","error":"...","error_kind":...}` on stdout and exit code `1` (or `75` if transient).
+
+- Exit code `2` = clap usage error (unknown/conflicting flags, missing args): NO JSON is emitted — human usage text goes to stderr. Fix the invocation; never retry as-is.
+- Number policy: exact money fields (`amount`, `counter_amount`, `qty`, ledger units) are DECIMAL STRINGS — parse them as decimals, never floats. Informational prices/percentages (`share_price`, `slippage_pct`, `change_pct_24h`) are rounded JSON numbers.
 
 - `confirmation_required` → `--json` was used without `-y` on a real (non-`--dry-run`) invocation of one of the six gated commands (buy, sell, send, buy-basket, sell-basket, close-all); add `-y` to execute or `--dry-run` to preview. `reclaim` reclaims rent to your own wallet and is never gated. Not transient — never retry as-is.
 - `not_tradable` → skip token or check `list --search <SYM>`

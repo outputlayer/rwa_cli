@@ -29,6 +29,10 @@ pub struct HoursJson {
     pub session_hours: &'static str,
     pub now: String,
     pub countdown: String,
+    /// Unix epoch seconds when the next session starts (= when the current one
+    /// ends). Machine-readable companion to the English `countdown`/`now`
+    /// prose, so agents schedule against a number instead of parsing text.
+    pub next_session_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tradable_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,6 +436,7 @@ mod tests {
             session_hours: "9:30 AM - 3:59 PM ET",
             now: "Monday 10:00 AM ET".into(),
             countdown: "next session in 5h 59m".into(),
+            next_session_at: 1_752_264_000,
             tradable_count: Some(440),
             tradable: None,
             paused_count: None,
@@ -443,6 +448,8 @@ mod tests {
         assert!(json.get("offhours_tradable_count").is_none());
         assert!(json.get("offhours_tradable").is_none());
         assert_eq!(json.get("tradable_count"), Some(&serde_json::json!(440)));
+        // Always-present machine-readable timestamp (agents schedule on this).
+        assert_eq!(json.get("next_session_at"), Some(&serde_json::json!(1_752_264_000)));
     }
 
     #[test]
@@ -453,6 +460,7 @@ mod tests {
             session_hours: "Weekend / NYSE holidays",
             now: "Saturday 10:00 AM ET".into(),
             countdown: "opens in 22h 0m".into(),
+            next_session_at: 1_752_436_800,
             tradable_count: Some(6),
             tradable: Some(vec!["TSLAon".to_string()]),
             paused_count: Some(121),
