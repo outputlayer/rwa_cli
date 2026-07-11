@@ -766,6 +766,13 @@ fn keys_encrypt_decrypt_json_emit_json_on_success() {
     let v = stdout_json(&enc);
     assert_eq!(v["status"], "ok", "encrypt --json must be JSON, got: {}", String::from_utf8_lossy(&enc.stdout));
     assert_eq!(v["encrypted"], serde_json::Value::Bool(true));
+    // encrypt warns (on stderr, not corrupting the JSON stdout) that the
+    // recovery phrase is not carried into the encrypted wallet.
+    let enc_err = String::from_utf8_lossy(&enc.stderr);
+    assert!(
+        enc_err.contains("recovery phrase is NOT stored"),
+        "encrypt must warn the phrase isn't preserved: {enc_err}"
+    );
 
     // decrypt --json → JSON, AND reads RWA_PASSPHRASE (no TTY available here).
     let dec = rwa(&home)

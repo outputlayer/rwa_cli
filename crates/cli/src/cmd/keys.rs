@@ -443,6 +443,15 @@ async fn encrypt_wallet(json: bool) -> Result<()> {
         return Err(eyre::eyre!("No wallet found. Run `rwa keys generate` first."));
     }
     let w = Wallet::from_file(&json_path)?;
+    // `keys encrypt` operates on the plaintext key.json, which never stored the
+    // recovery phrase — so the resulting encrypted wallet has NO embedded
+    // mnemonic (unlike one created by `keys generate`/seed import). Warn, since
+    // `keys export` will then reveal the private key but not the phrase.
+    eprintln!(
+        "NOTE: the recovery phrase is NOT stored in this encrypted wallet — a plaintext \
+         key.json never held it, so encrypting can't add it back. Keep the 12-word phrase \
+         you saved at creation; `keys export --reveal` will show the private key but not the phrase."
+    );
     let passphrase = prompt_new_passphrase()?;
     let age_path = w.save_default_encrypted(&passphrase)?;
     std::fs::remove_file(&json_path)
