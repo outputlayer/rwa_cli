@@ -147,14 +147,17 @@ pub async fn search(
 
     let noun = if filtered.len() == 1 { "GM token" } else { "GM tokens" };
     println!(
-        "{} {}{}   (✓ tradable now · ✗ not in this session)\n",
+        "{} {}{}   (✓ tradable now · ⏸ paused for a dividend event · ✗ not in this session)\n",
         filtered.len(),
         noun,
-        describe_filters(search_terms, tradable_only, sectors, kind, name_keywords)
+        describe_filters(search_terms, tradable_only, sectors, kind, name_keywords, tags)
     );
     for item in &filtered {
         let classification = classification_label(item);
-        let mark = if item.tradable { "✓" } else { "✗" };
+        // Distinguish a dividend-paused token (⏸) from one that's simply not in
+        // this session (✗): a paused token IS in session, just halted — showing
+        // the same ✗ + "not in this session" legend for both was misleading.
+        let mark = if item.trading_paused { "⏸" } else if item.tradable { "✓" } else { "✗" };
         if classification.is_empty() {
             println!("  {} {:<12} {}", mark, item.symbol, item.name);
         } else {
@@ -242,13 +245,14 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
         });
     }
 
-    println!("Session: {}", context.session.label());
+    println!("Session: {}   (✓ tradable · ⏸ paused for a dividend event · ✗ not in this session)", context.session.label());
     for item in &items {
         if !item.found {
             println!("  ? {:<12} not found", item.input);
             continue;
         }
-        let status = if item.tradable { "✓" } else { "✗" };
+        // ⏸ paused (dividend halt) is distinct from ✗ not-in-session.
+        let status = if item.trading_paused { "⏸" } else if item.tradable { "✓" } else { "✗" };
         println!(
             "  {} {:<12} {}",
             status,
@@ -396,12 +400,14 @@ fn classification_label(item: &ListItemJson) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn describe_filters(
     search_terms: &[String],
     tradable_only: bool,
     sectors: &[String],
     kind: Option<&str>,
     name_keywords: &[String],
+    tags: &[String],
 ) -> String {
     let mut parts = Vec::new();
     if !search_terms.is_empty() {
@@ -412,6 +418,9 @@ fn describe_filters(
     }
     if !sectors.is_empty() {
         parts.push(format!("sector={}", sectors.join(", ")));
+    }
+    if !tags.is_empty() {
+        parts.push(format!("tag={}", tags.join(", ")));
     }
     if let Some(kind) = kind {
         parts.push(format!("type={kind}"));
@@ -576,16 +585,17 @@ mod tests {
             &["Technology".to_string()],
             Some("stock"),
             &["motors".to_string()],
+            &["dividend".to_string()],
         );
         assert_eq!(
             out,
-            " (search=tesla; tradable_only; sector=Technology; type=stock; name_keyword=motors)"
+            " (search=tesla; tradable_only; sector=Technology; tag=dividend; type=stock; name_keyword=motors)"
         );
     }
 
     #[test]
     fn describe_filters_is_empty_with_no_filters() {
-        assert_eq!(describe_filters(&[], false, &[], None, &[]), "");
+        assert_eq!(describe_filters(&[], false, &[], None, &[], &[]), "");
     }
 
     #[test]

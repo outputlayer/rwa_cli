@@ -41,7 +41,8 @@ pub(super) use types::{
 pub enum GmAction {
     /// Current session and what trades right now (24/7 applies to flagship tokens only)
     Hours {
-        /// Show full list of tradable tokens (omitted by default in --json)
+        /// Also list tradable symbols: the 24/7 flagship set (human), and the full
+        /// session-tradable array in --json (`rwa gm tradable` is the full human list)
         #[arg(long)]
         tradable: bool,
     },

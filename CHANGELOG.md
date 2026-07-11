@@ -9,6 +9,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.6] - 2026-07-11 — money-safety hardening, contract guards, dependency patch
+
+### Fixed
+
+- **Security (defense-in-depth): the pre-sign under-delivery floor is now clamped to the user's requested slippage.** It previously took its tolerance from `order.slippage_bps`, which Jupiter echoes in the `/order` response — a hostile or dynamically-widened response reporting `slippageBps: 10000` would set the floor to 0 and disable the independent under-delivery check (strongest on the Metis direct-submit path, which has no Jupiter co-sign). The floor now uses the *tighter* of the response value and the locally-known `--slippage`/default, so it can never be looser than the user consented to. No behavior change on honest quotes (Jupiter echoes the requested bps).
+- `gm hours --tradable` lists the flagship symbols in **human** mode too (it previously populated the list only in `--json`; the human output showed just a count, making the flag look like a no-op).
+- A panicked parallel basket/close-all task now lands in `failed[]` instead of vanishing from the `--json` report (a silent drop read as full success while the money op may have executed).
+- **`keys encrypt --json` / `keys decrypt --json` now emit JSON on success** (they printed human prose despite advertising `--json`; the error paths already emitted JSON, which hid the success-path leak from tests). Added a contract test covering the success path.
+- **`keys decrypt` honours `RWA_PASSPHRASE`** — it used a TTY-only prompt and ignored the env var, so it was the one encrypted-wallet operation that couldn't be scripted (contradicting the documented `RWA_PASSPHRASE` scripted-access support).
+- **Dividend-paused tokens are no longer mislabeled in human `list`/`search`/`tradable`.** A paused token rendered with the same `✗` as an out-of-session token under a legend reading "not in this session" — factually wrong (it IS in session, just halted). Paused tokens now show `⏸` with a "paused for a dividend event" legend, distinct from `✗`.
+- **`gm search --tag <label>` now appears in the human results header** (`(tag=…)`), like every other filter — it was silently dropped from the header while still filtering correctly.
+- `gm hours --tradable` help text corrected: it lists the 24/7 flagship set (human) / the full session-tradable array (`--json`); the full human list is `rwa gm tradable`.
+- Docs: the `--json`-without-`-y` contract is clarified — it fails closed ("never executes"), but an otherwise-valid trade yields `confirmation_required` while a precondition failure surfaces its own kind first (and `close-all` on an empty wallet returns success). Agents should not assume `confirmation_required` is universal.
+
+### Changed
+
+- **Dependencies: patched every RUSTSEC advisory** the new audit job flagged (crossbeam-epoch, quinn-proto, rustls-webpki, rand bumped to patched releases; anyhow dropped from the tree). None were reachable in this CLI's usage, but a wallet binary shouldn't ship flagged crates. The two residual advisories are unmaintained build/dev-only crates (async-std ← httpmock dev-dep, proc-macro-error ← age's build-time proc-macro) with no runtime presence.
+
+### Internal
+
+- **New CI drift guards** (the class of bug where behavior silently diverges from docs): every `GmTradeErrorKind` label must be documented in llms.txt/README/CLAUDE.md (`error_kinds_are_documented`, source list kept exhaustive by a compile-time tripwire); a human-mode contract test for `gm hours --tradable` (the suite previously locked only `--json` shapes). Wired the `docs_sync` suite into `make ci` and CI — it had been running in neither.
+- **New `Security Audit` CI job** — `cargo audit --deny warnings` (RUSTSEC advisory scan for the wallet binary), deliberately separate from `make ci` (it needs the advisory DB and can go red on a newly-published advisory with no code change).
+- Fixed a wall-clock-dependent flake in the `buy_basket_dry_run_enforces_max_bps` contract test (a 500 `/session` fixture failed closed with `market_closed` during a real "Closed" session instead of reaching the cost gate); it now uses a deterministic all-sessions-tradable fixture.
+- Bug-hunt provenance: the keys `--json`/passphrase, human paused-label, `--tag` header, and hours help-text fixes above were found by an exhaustive flag×mode probe of the running binary — the same "behavior diverges from docs, invisible to JSON-only tests" class as the `hours --tradable` bug; a human-mode contract test now guards it.
+
 ## [0.7.5] - 2026-07-10 — human-UX papercut batch
 
 ### Changed

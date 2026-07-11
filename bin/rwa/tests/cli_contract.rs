@@ -319,9 +319,16 @@ fn buy_basket_dry_run_enforces_max_bps() {
                 }] }
             }));
     });
+    // Deterministic session fixture (AAL tradable in EVERY session) instead of a
+    // 500: a 500 relies on the fail-open path, which only applies OUTSIDE the
+    // Closed session — so when this test ran during a real "Closed" wall-clock it
+    // failed closed with `market_closed` instead of reaching the cost gate. The
+    // fixture makes the cost_too_high assertion wall-clock-independent.
     server.mock(|when, then| {
         when.method(GET).path("/session");
-        then.status(500);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
     });
     // Quote: spread −0.5% (50 bps) + fee 50 bps = 100 bps all-in, over the 10 bps cap.
     server.mock(|when, then| {
@@ -733,6 +740,43 @@ fn keys_add_import_encrypted_by_default() {
     assert!(show.status.success(), "show cold failed: {}", String::from_utf8_lossy(&show.stderr));
     let show_out = String::from_utf8_lossy(&show.stdout);
     assert!(show_out.contains(&warm_pk), "encrypted wallet must resolve to the same address as the plaintext one:\n{show_out}");
+}
+
+/// `keys encrypt --json` and `keys decrypt --json` must emit JSON on SUCCESS,
+/// not human prose (both advertise --json in --help). The bug was invisible
+/// because the ERROR paths already emit JSON (via render_error) and no test
+/// touched the success path. Also proves `keys decrypt` honours RWA_PASSPHRASE
+/// (it read a TTY-only prompt before, so it couldn't be scripted at all).
+#[test]
+fn keys_encrypt_decrypt_json_emit_json_on_success() {
+    let home = test_home("encrypt-json");
+    let pass = "TestPass2026!secure";
+
+    // Start from a plaintext wallet.
+    let g = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(g.status.success(), "generate failed: {}", String::from_utf8_lossy(&g.stderr));
+
+    // encrypt --json → JSON, not "Wallet encrypted." prose.
+    let enc = rwa(&home)
+        .env("RWA_PASSPHRASE", pass)
+        .args(["--json", "keys", "encrypt"])
+        .output()
+        .unwrap();
+    assert!(enc.status.success(), "encrypt failed: {}", String::from_utf8_lossy(&enc.stderr));
+    let v = stdout_json(&enc);
+    assert_eq!(v["status"], "ok", "encrypt --json must be JSON, got: {}", String::from_utf8_lossy(&enc.stdout));
+    assert_eq!(v["encrypted"], serde_json::Value::Bool(true));
+
+    // decrypt --json → JSON, AND reads RWA_PASSPHRASE (no TTY available here).
+    let dec = rwa(&home)
+        .env("RWA_PASSPHRASE", pass)
+        .args(["--json", "keys", "decrypt"])
+        .output()
+        .unwrap();
+    assert!(dec.status.success(), "decrypt (scripted via RWA_PASSPHRASE) failed: {}", String::from_utf8_lossy(&dec.stderr));
+    let v = stdout_json(&dec);
+    assert_eq!(v["status"], "ok", "decrypt --json must be JSON, got: {}", String::from_utf8_lossy(&dec.stdout));
+    assert_eq!(v["encrypted"], serde_json::Value::Bool(false));
 }
 
 #[test]

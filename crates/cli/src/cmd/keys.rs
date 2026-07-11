@@ -158,13 +158,13 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             if selected.is_some() {
                 eprintln!("NOTE: --wallet/RWA_WALLET is ignored by `keys encrypt`/`decrypt`; operating on the legacy default wallet.");
             }
-            encrypt_wallet().await
+            encrypt_wallet(json).await
         }
         KeysAction::Decrypt => {
             if selected.is_some() {
                 eprintln!("NOTE: --wallet/RWA_WALLET is ignored by `keys encrypt`/`decrypt`; operating on the legacy default wallet.");
             }
-            decrypt_wallet().await
+            decrypt_wallet(json).await
         }
         KeysAction::Add { name, path, seed_phrase, account, derivation_path, private_key, allow_plaintext } => {
             let deriv = resolve_derivation_path(account, derivation_path)?;
@@ -434,7 +434,7 @@ async fn export(selected: Option<&str>, reveal: bool, json: bool) -> Result<()> 
     Ok(())
 }
 
-async fn encrypt_wallet() -> Result<()> {
+async fn encrypt_wallet(json: bool) -> Result<()> {
     let json_path = wallet::default_key_path()?;
     if !json_path.exists() {
         if wallet::is_wallet_encrypted() {
@@ -464,13 +464,20 @@ async fn encrypt_wallet() -> Result<()> {
             age_path.display()
         ),
     }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "action": "encrypted", "path": age_path.to_string_lossy(), "encrypted": true })
+        );
+        return Ok(());
+    }
     println!("Wallet encrypted.");
     println!("Key file: {}", age_path.display());
     println!("key.json has been removed.");
     Ok(())
 }
 
-async fn decrypt_wallet() -> Result<()> {
+async fn decrypt_wallet(json: bool) -> Result<()> {
     let age_path = wallet::encrypted_key_path()?;
     if !age_path.exists() {
         if wallet::default_key_path()?.exists() {
@@ -478,7 +485,10 @@ async fn decrypt_wallet() -> Result<()> {
         }
         return Err(eyre::eyre!("No wallet found."));
     }
-    let passphrase = read_passphrase("Enter wallet passphrase: ")?;
+    // Use the shared prompt so `RWA_PASSPHRASE` works for scripted decryption
+    // (CLAUDE.md: "RWA_PASSPHRASE can be used for scripted access") — the
+    // local `read_passphrase` only prompts a TTY and ignored the env var.
+    let passphrase = crate::wallets::prompt_passphrase()?;
     let w = Wallet::from_encrypted_file(&age_path, &passphrase)?;
     let json_path = w.save_default()?;
     std::fs::remove_file(&age_path)
@@ -498,6 +508,13 @@ async fn decrypt_wallet() -> Result<()> {
              If you use named wallets, run `rwa keys add <name> --path {}` to re-register it.",
             json_path.display()
         ),
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "action": "decrypted", "path": json_path.to_string_lossy(), "encrypted": false })
+        );
+        return Ok(());
     }
     println!("Wallet decrypted.");
     println!("Key file: {}", json_path.display());
