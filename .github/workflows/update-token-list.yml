@@ -20,9 +20,9 @@ jobs:
     name: Regenerate & open PR
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.x"
 
@@ -41,10 +41,10 @@ jobs:
 
       # Validate the regenerated list before proposing it: integrity tests
       # (count, sort, uniqueness, base58→32 bytes, canary mints) must pass.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         if: steps.diff.outputs.changed == 'true'
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: steps.diff.outputs.changed == 'true'
 
       - name: Validate token list
@@ -53,7 +53,7 @@ jobs:
 
       - name: Open pull request
         if: steps.diff.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
         with:
           branch: chore/update-token-list
           commit-message: "chore(tokens): refresh GM token list from Ondo + Jupiter"
