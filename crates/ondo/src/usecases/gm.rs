@@ -34,7 +34,8 @@ pub enum GmTradeErrorKind {
     NoPosition,
     /// `--limit-price` condition not met by the quoted implied price.
     ConditionNotMet,
-    /// Ondo has paused trading for this asset (typically an ex-dividend window).
+    /// Ondo has paused trading for this asset (a dividend window, or the market
+    /// being closed for it — weekends flag most non-24/7 tokens as paused).
     TradingPaused,
     /// `--json` without `-y`: non-interactive mode fails closed instead of
     /// silently executing a real trade/transfer.

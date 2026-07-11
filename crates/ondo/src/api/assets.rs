@@ -20,6 +20,7 @@ pub struct OndoAsset {
     pub tags: Vec<OndoAssetTag>,
     pub primary_market: Option<PrimaryMarket>,
     /// Ondo pauses trading around dividend events (ex-dividend windows; ETFs
+    /// longer) AND flags most non-24/7 tokens as paused when the market is closed;
     /// can pause longer until the distribution amount is known).
     #[serde(default)]
     pub is_trading_paused: bool,

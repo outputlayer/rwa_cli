@@ -109,7 +109,8 @@ pub(crate) async fn get_order_checked(
 /// market-closed block anymore — a token that can't trade off-hours gets a
 /// typed `market_closed`, everything else follows the per-session limits.
 pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Result<()> {
-    // Ondo pauses individual assets around dividend events. Fail open on
+    // Ondo pauses assets around dividend events AND flags most non-24/7
+    // tokens as paused when the market is closed (weekends). Fail open on
     // fetch errors (mirrors the session-limits behavior below); the assets
     // response is disk-cached for 60s, so this is usually a free lookup.
     match api::fetch_assets().await {
@@ -118,7 +119,7 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
                 return Err(GmTradeError::new(
                     GmTradeErrorKind::TradingPaused,
                     format!(
-                        "{symbol} trading is paused by Ondo (typically an ex-dividend window; ETFs can pause longer until the distribution is known). Retry later — run `rwa gm tradable {symbol}` to re-check."
+                        "{symbol} trading is paused by Ondo — either a dividend window (ex-dividend; ETFs longer) or the market being closed for this asset (weekends flag most non-24/7 tokens as paused). Run `rwa gm hours` for when trading resumes and `rwa gm tradable {symbol}` to re-check."
                     ),
                 )
                 .into());

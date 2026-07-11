@@ -35,7 +35,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ## Commands
 
 ### Market info
-- `rwa --json gm hours` — current session + tradable count, plus optional `offhours_tradable_count`/`paused_count` (24/7 flagship set size, dividend-paused count; absent if asset metadata fetch fails)
+- `rwa --json gm hours` — current session + tradable count, plus optional `offhours_tradable_count`/`paused_count` (24/7 flagship set size, and `paused_count` = tokens Ondo flags paused now — dividend windows PLUS, on weekends, most non-24/7 tokens; absent if asset metadata fetch fails)
 - `rwa --json gm hours --tradable` — all tokens tradable right now, plus `offhours_tradable` (the flagship symbols)
 - `rwa --json gm list` — all tokens with tradable status
 - `rwa --json gm search --search <keyword>` — filter by symbol, name, or sector
@@ -191,7 +191,7 @@ With `--json`, failures return `{"status":"error","error":"...","error_kind":...
 - `lock_contention` → another rwa process holds the exclusive lock; transient (exit 75) — wait and retry. Note: the lock covers EVERY rwa invocation including read-only ones, so serialize ALL rwa calls, not just wallet-changing ones
 - Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock_contention); exit 1 = permanent
 - `market_closed` → token does not trade off-hours; tell user when regular trading reopens (Sunday 8 PM ET) or suggest an off-hours flagship token
-- `trading_paused` → Ondo paused this asset around a dividend event (ex-dividend window; longer for ETFs); on buy/sell it's a hard error, in close-all the item lands in `skipped[]` with this reason, in buy-basket/sell-basket it lands in `failed[]` with `error_kind: "trading_paused"`, and `list`/`search`/`tradable` may carry `"trading_paused":true`; wait and retry later, don't treat as `not_tradable`
+- `trading_paused` → Ondo has `is_trading_paused` set for this asset. TWO causes: (a) a dividend window (ex-dividend; longer for ETFs — resolves in hours/days), or (b) the market is closed for it (weekends/holidays flag most non-24/7 tokens paused; the paused check runs before the session check, so a weekend non-flagship reports `trading_paused` rather than `market_closed`). On buy/sell it's a hard error; close-all → `skipped[]`, baskets → `failed[]` with this kind; `list`/`search`/`tradable` may carry `"trading_paused":true`. Check `gm hours` (`next_session_at`) for when it resumes — don't hammer-retry a weekend pause; don't treat as `not_tradable`
 - `No swap route` / `HTTP 400` → likely no liquidity or accidental parallel execution
 - `slippage_too_high` → reduce size or skip token
 - `confirmation_timeout` → tx may still land; check Solscan before retrying

@@ -147,16 +147,16 @@ pub async fn search(
 
     let noun = if filtered.len() == 1 { "GM token" } else { "GM tokens" };
     println!(
-        "{} {}{}   (✓ tradable now · ⏸ paused for a dividend event · ✗ not in this session)\n",
+        "{} {}{}   (✓ tradable now · ⏸ trading paused: dividend window or market closed · ✗ not in this session)\n",
         filtered.len(),
         noun,
         describe_filters(search_terms, tradable_only, sectors, kind, name_keywords, tags)
     );
     for item in &filtered {
         let classification = classification_label(item);
-        // Distinguish a dividend-paused token (⏸) from one that's simply not in
-        // this session (✗): a paused token IS in session, just halted — showing
-        // the same ✗ + "not in this session" legend for both was misleading.
+        // ⏸ = Ondo `is_trading_paused` (a dividend window, or — on weekends —
+        // a blanket close of most non-24/7 tokens); distinct from ✗ not-in-
+        // session. Faithful to what buy/sell reports (trading_paused).
         let mark = if item.trading_paused { "⏸" } else if item.tradable { "✓" } else { "✗" };
         if classification.is_empty() {
             println!("  {} {:<12} {}", mark, item.symbol, item.name);
@@ -245,13 +245,13 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
         });
     }
 
-    println!("Session: {}   (✓ tradable · ⏸ paused for a dividend event · ✗ not in this session)", context.session.label());
+    println!("Session: {}   (✓ tradable · ⏸ trading paused: dividend window or market closed · ✗ not in this session)", context.session.label());
     for item in &items {
         if !item.found {
             println!("  ? {:<12} not found", item.input);
             continue;
         }
-        // ⏸ paused (dividend halt) is distinct from ✗ not-in-session.
+        // ⏸ = Ondo trading_paused (dividend window or market-closed halt).
         let status = if item.trading_paused { "⏸" } else if item.tradable { "✓" } else { "✗" };
         println!(
             "  {} {:<12} {}",
