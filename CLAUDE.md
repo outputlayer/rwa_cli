@@ -17,7 +17,9 @@ cargo run -- gm hours
 cargo install --path bin/rwa
 ```
 
-**CI runs every step with `RUSTFLAGS=-Dwarnings`** (clippy lints, `unsafe_code`, `dead_code`, … are hard errors), and plain local `cargo test`/`cargo clippy` (no `-Dwarnings`, plus clippy's incremental cache) can be green while CI is red. `make ci` reproduces CI exactly — always run it before pushing.
+**CI runs every step with `RUSTFLAGS=-Dwarnings`** (clippy lints, `unsafe_code`, `dead_code`, … are hard errors), and plain local `cargo test`/`cargo clippy` (no `-Dwarnings`, plus clippy's incremental cache) can be green while CI is red. `make ci` reproduces CI exactly — always run it before pushing. Release steps are in `RELEASING.md`.
+
+**What CI (and `make ci`) CANNOT verify — live-only paths.** The real on-chain money paths never run in CI (no wallet, no live Jupiter/RPC): `usecases/gm_execute.rs` (the `/execute` submit + retry loop), `jupiter/execute.rs` submit, `solana/transfer.rs` (`send`), and `usecases/gm_gas.rs` (auto-refuel). These are exactly the sub-60%-coverage files, and they're validated by **live-money runs**, not tests (a real `--dry-run` then a small `-y` trade, e.g. on a flagship token). If you change any of them, a green `make ci` is necessary but NOT sufficient — do a live dry-run + small real trade before merging, and keep sends to a known test address. Everything else (quote math, slippage/limit/cost gates, the sign-time delta checks against a mocked RPC, amount parsing, ledger/pnl, JSON shapes via the spawned-binary `cli_contract` suite) IS covered by tests.
 
 ## Install / Release model
 
