@@ -9,6 +9,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.7] - 2026-07-12 — supply-chain hardening, keys/paused wording fixes
+
+### Fixed
+
+- **`keys encrypt` now warns that the recovery phrase is not preserved.** It encrypts the plaintext `key.json`, which never stored the mnemonic, so `keys decrypt` → `keys encrypt` silently drops it (the wallet stays recoverable from the private key, just not from a phrase). Only `keys generate` and seed import embed the phrase.
+- **Paused tokens are no longer labeled as a "dividend event."** Ondo sets `is_trading_paused` for two reasons — a dividend window OR the market being closed for the asset (on weekends ~all non-24/7 tokens are flagged; live: 121 paused on a Friday afternoon → 433 of 438 on the weekend). The `⏸` legend and the `trading_paused` message now name both causes and point at `gm hours` for when trading resumes; docs note that the paused check runs before the session check, so a weekend non-flagship surfaces `trading_paused` rather than `market_closed`.
+
+### Security / supply chain
+
+- **All GitHub Actions pinned to full commit SHAs** (tags kept as comments; dependabot maintained) across every workflow. A compromised mutable action tag can no longer inject code into the release job that signs and publishes the binary.
+- **Build-provenance attestation** on published release archives (`actions/attest-build-provenance`, OIDC/Sigstore-backed) — verifiable authenticity beyond the same-origin `SHA256SUMS.txt`, via `gh attestation verify <asset> --repo outputlayer/rwa_cli`.
+- **`cargo build --release --locked`** in the release workflow — a published binary is always built against the committed `Cargo.lock`.
+
+### Docs
+
+- Added `RELEASING.md` (the release pipeline, previously undocumented) and a CLAUDE.md "what CI cannot verify" note naming the live-only on-chain money paths (`gm_execute`, `jupiter/execute` submit, `transfer`, `gm_gas`) and the expectation of a live dry-run + small real trade before merging changes to them.
+
 ## [0.7.6] - 2026-07-11 — money-safety hardening, contract guards, dependency patch
 
 ### Fixed
