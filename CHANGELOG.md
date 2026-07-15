@@ -9,7 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.8] - 2026-07-16 — buy-basket --total weighted allocation
 
 ### Added
 
