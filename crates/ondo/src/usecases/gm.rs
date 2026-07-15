@@ -5,7 +5,7 @@ use crate::types::{Mint, Symbol};
 
 // Re-export from sibling modules so callers can continue using `usecases::gm::*`.
 pub use super::gm_execute::{execute_sell_from_order, execute_buy_from_order};
-pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy};
+pub use super::gm_order::{fetch_sell_order, fetch_sell_order_by_symbol, fetch_buy_order, preflight_basket_buy, split_total_by_weights};
 pub use super::gm_gas::{ensure_gas, BalanceSnapshot, GasRefuel, REFUEL_USDC_RAW, SOL_LOW_WATER_LAMPORTS};
 pub use super::gm_pnl::{compute_pnl, PnlSummary, TokenPnl};
 pub use super::gm_positions::{
