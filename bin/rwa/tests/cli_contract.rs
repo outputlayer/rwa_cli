@@ -376,6 +376,164 @@ fn buy_basket_dry_run_enforces_max_bps() {
     }
 }
 
+/// `buy-basket --total` validation is local and typed: bad weights fail with
+/// `invalid_amount` / `amount_below_minimum` envelopes before any wallet load
+/// or network access (no mocks configured on purpose — a network touch or a
+/// missing-wallet error would fail these asserts).
+#[test]
+fn buy_basket_total_validation_envelopes() {
+    let home = test_home("basket-total-validation");
+
+    // Weights must sum to exactly 100.
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "50%", "NVDA", "40%", "--total", "1000", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "sum != 100 must exit non-zero");
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["error_kind"], "invalid_amount");
+    assert!(v["error"].as_str().unwrap().contains("90"), "names the actual sum: {v}");
+
+    // A computed item below the 5 USDC per-item floor.
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "96%", "SPY", "4%", "--total", "100", "--dry-run"])
+        .output()
+        .unwrap();
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "amount_below_minimum");
+    assert!(v["error"].as_str().unwrap().contains("SPY"), "names the item: {v}");
+
+    // Percent amounts without --total point the user at the flag.
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "50%", "NVDA", "50%", "--dry-run"])
+        .output()
+        .unwrap();
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "invalid_amount");
+    assert!(v["error"].as_str().unwrap().contains("--total"), "{v}");
+
+    // Absolute amounts mixed with --total are rejected.
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "500", "NVDA", "50%", "--total", "1000", "--dry-run"])
+        .output()
+        .unwrap();
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "invalid_amount");
+}
+
+/// `buy-basket --total --dry-run` echoes the allocation object: `total` as
+/// entered plus a symbol→weight map, alongside the usual dry_run shape.
+#[test]
+fn buy_basket_total_dry_run_echoes_allocation() {
+    let home = test_home("basket-total-dry-run");
+    let server = MockServer::start();
+
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones) resolved as "not found" == not paused.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
+    // preflight_basket_buy: SOL via getBalance, USDC via getTokenAccountsByOwner.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!(
+                { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+            ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 }, "value": [{
+                    "pubkey": "SomePubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "owner": WALLET,
+                                    "tokenAmount": {
+                                        "amount": "1000000000",
+                                        "decimals": 6,
+                                        "uiAmount": 1000.0,
+                                        "uiAmountString": "1000"
+                                    }
+                                },
+                                "type": "account"
+                            },
+                            "program": "spl-token",
+                            "space": 165
+                        },
+                        "executable": false,
+                        "lamports": 2039280,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "rentEpoch": 0
+                    }
+                }] }
+            }));
+    });
+    // Deterministic session fixture (AAL tradable in EVERY session) instead of a
+    // 500: a 500 relies on the fail-open path, which only applies OUTSIDE the
+    // Closed session — so when this test ran during a real "Closed" wall-clock it
+    // failed closed with `market_closed` instead of reaching the cost gate. The
+    // fixture makes the cost_too_high assertion wall-clock-independent.
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-1",
+                "inAmount": "10000000",
+                "outAmount": "1000000000",
+                "inUsdValue": 10.0,
+                "outUsdValue": 9.99,
+                "feeBps": 5,
+                "router": "iris",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success(), "keys generate failed: {}", String::from_utf8_lossy(&keygen.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "AAL", "100%", "--total", "10", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    let v = stdout_json(&out);
+    // always_tradable_limits() makes this wall-clock independent (see the
+    // comment on buy_basket_dry_run_enforces_max_bps).
+    assert_eq!(v["status"], "dry_run", "unexpected: {v}");
+    assert_eq!(v["allocation"]["total"], "10");
+    assert_eq!(v["allocation"]["weights"]["AAL"], "100");
+    let bought = v["bought"].as_array().unwrap();
+    assert_eq!(bought.len(), 1, "{v}");
+    // bought[].token echoes the canonical symbol (unlike failed[].token, which
+    // echoes the user's raw input — see the comment above on the
+    // buy_basket_dry_run_enforces_max_bps failed[] assertion, and the
+    // "AALon" convention used by every other trade-shape test in this file).
+    assert_eq!(bought[0]["token"], "AALon");
+}
+
 /// `gm buy --quote-only --json` emits the `dry_run` TradeJson shape without
 /// touching the RPC (no funds check). Sessions are wall-clock dependent, so
 /// when the market is closed the same invocation must emit the error envelope
