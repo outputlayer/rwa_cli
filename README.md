@@ -35,6 +35,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm buy/sell ... --limit-price <P> [share\|token]` | Conditional trade: fills only at ≤ P (buy) / ≥ P (sell); e.g. `--limit-price 748 share` (bare = token) |
 | `rwa gm close-all [<PCT>] [-y]` | Sell every position (or a % of each) |
 | `rwa gm buy-basket <SYM AMT ...> [-y]` | Buy multiple tokens at once |
+| `rwa gm buy-basket <SYM PCT% ...> --total <USDC> [-y]` | Split a USDC total across percent weights |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm pnl` | Avg entry price + realized/unrealized P&L (from your CLI trades) |

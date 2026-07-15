@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`buy-basket --total <USDC>`** — weighted allocation: split one USDC total across percent-weight pairs (`TSLA 50% NVDA 30% SPY 20% --total 1000`). Weights must sum to exactly 100; each item floors to raw USDC (dust to the largest weight, so the spent sum equals the total exactly) and must clear the 5 USDC per-item minimum. All validation is local and typed (`invalid_amount` / `amount_below_minimum`) and runs before any wallet or network access. JSON adds an optional `allocation: {total, weights}` echo on `buy-basket` results.
+
 ## [0.7.7] - 2026-07-12 — supply-chain hardening, keys/paused wording fixes
 
 ### Fixed
