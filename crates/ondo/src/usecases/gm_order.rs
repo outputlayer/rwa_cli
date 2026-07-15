@@ -139,6 +139,23 @@ fn check_basket_buy_minimums(items: &[(String, u128)]) -> Result<()> {
     Ok(())
 }
 
+/// Parse a positive token amount into raw on-chain units, folding
+/// `token_to_raw`'s own diagnostic (e.g. "Too many decimal places: got 7, max
+/// allowed is 6") into the `InvalidAmount` detail instead of discarding it.
+/// `base_msg` supplies the call-site context (which flag/symbol failed).
+fn parse_positive_raw(raw: &str, decimals: u8, base_msg: impl Fn() -> String) -> Result<u128> {
+    let parsed = amounts::token_to_raw(raw, decimals).map_err(|e| -> eyre::Error {
+        let detail = e
+            .downcast_ref::<GmTradeError>()
+            .map(|g| g.detail.as_str())
+            .unwrap_or("invalid amount");
+        GmTradeError::new(GmTradeErrorKind::InvalidAmount, format!("{}: {detail}", base_msg())).into()
+    })?;
+    parsed
+        .parse::<u128>()
+        .map_err(|_| GmTradeError::new(GmTradeErrorKind::InvalidAmount, base_msg()).into())
+}
+
 /// Split a `--total` USDC amount across percent-weight basket pairs.
 ///
 /// Every pair amount must be a percentage (`NN%`, up to 6 decimal places, > 0)
@@ -155,28 +172,37 @@ pub fn split_total_by_weights(
     // token_to_raw produces for the individual weights.
     const WEIGHT_SCALE: u128 = 100_000_000;
 
-    let total_raw: u128 = amounts::token_to_raw(total, jupiter::USDC_DECIMALS)
-        .ok()
-        .and_then(|r| r.parse().ok())
-        .ok_or_else(|| {
-            GmTradeError::new(
-                GmTradeErrorKind::InvalidAmount,
-                format!("Invalid --total '{total}': use a positive USDC amount with up to 6 decimal places"),
-            )
-        })?;
+    let total_raw: u128 = parse_positive_raw(total, jupiter::USDC_DECIMALS, || {
+        format!("Invalid --total '{total}': use a positive USDC amount with up to 6 decimal places")
+    })?;
+    // `total_raw * weight` below must not overflow u128 — reject unrealistic
+    // totals up front rather than let the multiply panic/wrap.
+    if total_raw > u128::MAX / WEIGHT_SCALE {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InvalidAmount,
+            format!("Invalid --total '{total}': amount is unrealistically large"),
+        )
+        .into());
+    }
 
+    let tokens = token_list::get_token_list();
     let mut weights: Vec<u128> = Vec::with_capacity(pairs.len());
     let mut seen: Vec<String> = Vec::with_capacity(pairs.len());
     for (sym, amt) in pairs {
-        let upper = sym.to_uppercase();
-        if seen.contains(&upper) {
+        // Dup key is the resolved mint when the symbol resolves (so aliases
+        // like TSLA/TSLAon collide), else the uppercased raw symbol — an
+        // unknown symbol must NOT error here, it fails later per-item as today.
+        let dup_key = resolve_gm_mint(&Symbol::from(sym.as_str()), tokens)
+            .map(|(_, mint)| mint.to_string())
+            .unwrap_or_else(|_| sym.to_uppercase());
+        if seen.contains(&dup_key) {
             return Err(GmTradeError::new(
                 GmTradeErrorKind::InvalidAmount,
                 format!("Duplicate symbol '{sym}': each token may appear once when splitting --total"),
             )
             .into());
         }
-        seen.push(upper);
+        seen.push(dup_key);
         let Some(pct) = amt.trim().strip_suffix('%') else {
             return Err(GmTradeError::new(
                 GmTradeErrorKind::InvalidAmount,
@@ -184,15 +210,9 @@ pub fn split_total_by_weights(
             )
             .into());
         };
-        let micro: u128 = amounts::token_to_raw(pct.trim(), 6)
-            .ok()
-            .and_then(|r| r.parse().ok())
-            .ok_or_else(|| {
-                GmTradeError::new(
-                    GmTradeErrorKind::InvalidAmount,
-                    format!("Invalid percentage '{amt}' for {sym}: use a positive percent with up to 6 decimal places"),
-                )
-            })?;
+        let micro: u128 = parse_positive_raw(pct.trim(), 6, || {
+            format!("Invalid percentage '{amt}' for {sym}: use a positive percent with up to 6 decimal places")
+        })?;
         weights.push(micro);
     }
 
@@ -545,5 +565,64 @@ mod tests {
             let err = split_total_by_weights(bad, &wpairs(&[("TSLA", "100%")])).unwrap_err();
             assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"), "input {bad}");
         }
+    }
+
+    #[test]
+    fn split_total_rejects_absurdly_large_total_without_panicking() {
+        // total_raw * weight (u128) must not overflow — a total this large
+        // used to panic (debug) / wrap (release) instead of erroring cleanly.
+        let err = split_total_by_weights(
+            "340282366920938463463374607",
+            &wpairs(&[("TSLA", "100%")]),
+        )
+        .unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--total"), "{err}");
+    }
+
+    #[test]
+    fn split_total_rejects_symbol_aliases_as_duplicates() {
+        // TSLA and TSLAon resolve to the same mint — splitting --total across
+        // both is ambiguous (product convention: both names one token).
+        let err = split_total_by_weights("1000", &wpairs(&[("TSLA", "50%"), ("TSLAon", "50%")]))
+            .unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("Duplicate"), "{err}");
+    }
+
+    #[test]
+    fn split_total_allows_distinct_unknown_symbols() {
+        // Unknown symbols must NOT error in the dup check itself — they fail
+        // later per-item, same as today. Two distinct fake symbols with valid
+        // weights should still split successfully.
+        let out = split_total_by_weights(
+            "1000",
+            &wpairs(&[("ZZZFAKE1", "50%"), ("ZZZFAKE2", "50%")]),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                ("ZZZFAKE1".to_string(), 500_000_000u128),
+                ("ZZZFAKE2".to_string(), 500_000_000u128),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_total_preserves_token_to_raw_decimal_diagnostic() {
+        // The underlying token_to_raw detail (decimal-place count) must
+        // survive into the InvalidAmount message, not just a generic blurb.
+        let err = split_total_by_weights("10.1234567", &wpairs(&[("TSLA", "100%")])).unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
+        let msg = err.to_string();
+        assert!(msg.contains("Too many decimal places"), "{msg}");
+        assert!(msg.contains("got 7"), "{msg}");
+
+        let err = split_total_by_weights("1000", &wpairs(&[("TSLA", "12.3456789%"), ("NVDA", "50%")]))
+            .unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
+        let msg = err.to_string();
+        assert!(msg.contains("Too many decimal places"), "{msg}");
     }
 }

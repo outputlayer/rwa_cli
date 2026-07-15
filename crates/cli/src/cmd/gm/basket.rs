@@ -34,6 +34,12 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
     Ok(pairs)
 }
 
+/// Strip the trailing `%` (and any surrounding whitespace) from a `--total`
+/// weight for the JSON `allocation.weights` echo, e.g. `"50 %"` -> `"50"`.
+fn echo_weight(amt: &str) -> String {
+    amt.trim().trim_end_matches('%').trim().to_string()
+}
+
 /// Resolve basket pairs into per-item raw USDC: split `--total` across
 /// percent weights, or parse absolute amounts (the historical path). Pure —
 /// runs before wallet load so bad input never touches the network.
@@ -199,7 +205,7 @@ pub async fn buy_basket(
         total: t.to_string(),
         weights: pairs
             .iter()
-            .map(|(sym, amt)| (sym.clone(), amt.trim().trim_end_matches('%').to_string()))
+            .map(|(sym, amt)| (sym.clone(), echo_weight(amt)))
             .collect(),
     });
 
@@ -617,6 +623,15 @@ mod tests {
         assert_eq!(json["allocation"]["total"], "1000");
         assert_eq!(json["allocation"]["weights"]["TSLA"], "50");
         assert_eq!(json["allocation"]["weights"]["NVDA"], "50");
+    }
+
+    // A weight with a space before the '%' (e.g. "50 %") must echo as "50",
+    // not "50 " — trim_end_matches('%') alone leaves the inner space behind.
+    #[test]
+    fn allocation_weight_echo_trims_trailing_space_around_percent_sign() {
+        assert_eq!(echo_weight("50 %"), "50");
+        assert_eq!(echo_weight("50%"), "50");
+        assert_eq!(echo_weight(" 12.5 % "), "12.5");
     }
 
     // buy-basket: slippage_pct is omitted from JSON when None.
