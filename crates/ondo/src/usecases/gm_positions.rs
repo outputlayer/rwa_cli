@@ -322,7 +322,7 @@ mod tests {
             ui_balance: None,
             raw_amount: "1000000000".into(),
         };
-        let s = compute_portfolio(&std::slice::from_ref(&tb), &[spy_asset()]);
+        let s = compute_portfolio(std::slice::from_ref(&tb), &[spy_asset()]);
         assert_eq!(s.positions[0].shares_per_token, None);
         // multiplier == 1 → omitted (nothing interesting to show).
         tb.ui_balance = Some(1.0);

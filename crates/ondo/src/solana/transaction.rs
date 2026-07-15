@@ -515,6 +515,7 @@ mod tests {
     ///   1. a real ed25519 signature by our wallet over the message,
     ///   2. the mocked blockhash embedded in the message,
     ///   3. the CU limit tightened to unitsConsumed × 1.1 (50_000 → 55_000).
+    ///
     /// `MockMatcherFunction` is a plain fn pointer, hence the constants above.
     fn sent_tx_satisfies_pipeline_contract(req: &httpmock::prelude::HttpMockRequest) -> bool {
         use base64::Engine;
