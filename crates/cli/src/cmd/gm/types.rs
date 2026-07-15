@@ -359,11 +359,23 @@ pub struct ReclaimJson {
     pub signatures: Vec<String>,
 }
 
+/// Weighted-allocation echo for `buy-basket --total`.
+#[derive(Serialize)]
+pub struct AllocationJson {
+    /// `--total` as entered (USDC).
+    pub total: String,
+    /// Symbol → weight percent as entered, without the `%` sign.
+    pub weights: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Serialize)]
 pub struct BuyBasketResultJson {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gas_refuel: Option<GasRefuelJson>,
+    /// Present only for `--total` runs: the requested weighted allocation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocation: Option<AllocationJson>,
     pub bought: Vec<BuyBasketItemJson>,
     pub failed: Vec<CloseFailJson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

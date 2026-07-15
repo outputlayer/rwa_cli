@@ -27,7 +27,7 @@ fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
 }
 pub(super) use types::{
     ExecOpts, TradeTuning,
-    BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
+    AllocationJson, BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
     PnlJson, PnlTokenJson, PnlTotalsJson,
     PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,

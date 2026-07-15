@@ -195,6 +195,13 @@ pub async fn buy_basket(
     let pairs = parse_basket_pairs(tokens)?;
     let items = resolve_buy_items(&pairs, total)?;
     let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
+    let allocation = total.map(|t| AllocationJson {
+        total: t.to_string(),
+        weights: pairs
+            .iter()
+            .map(|(sym, amt)| (sym.clone(), amt.trim().trim_end_matches('%').to_string()))
+            .collect(),
+    });
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
@@ -238,7 +245,7 @@ pub async fn buy_basket(
         .collect();
 
     if dry_run {
-        return buy_basket_dry_run(&taker, &symbol_raw, parallel, json, slippage, max_bps).await;
+        return buy_basket_dry_run(&taker, &symbol_raw, allocation, parallel, json, slippage, max_bps).await;
     }
 
     let wallet_arc = Arc::new(w);
@@ -260,6 +267,7 @@ pub async fn buy_basket(
         return json_out(&BuyBasketResultJson {
             gas_refuel,
             status: "success",
+            allocation,
             bought,
             failed,
             skipped: vec![],
@@ -278,6 +286,7 @@ pub async fn buy_basket(
 async fn buy_basket_dry_run(
     taker: &str,
     symbol_raw: &[(String, String)],
+    allocation: Option<AllocationJson>,
     parallel: bool,
     json: bool,
     slippage: Option<u32>,
@@ -319,6 +328,7 @@ async fn buy_basket_dry_run(
         return json_out(&BuyBasketResultJson {
             gas_refuel: None,
             status: "dry_run",
+            allocation,
             bought: preview,
             failed,
             skipped: vec![],
@@ -533,6 +543,7 @@ mod tests {
         let result = BuyBasketResultJson {
             gas_refuel: None,
             status: "success",
+            allocation: None,
             bought: vec![BuyBasketItemJson {
                 token: "JNJon".to_string(),
                 received: "0.061".to_string(),
@@ -566,6 +577,7 @@ mod tests {
         let result = BuyBasketResultJson {
             gas_refuel: None,
             status: "dry_run",
+            allocation: None,
             bought: vec![BuyBasketItemJson {
                 token: "ABTon".to_string(),
                 received: "0.142422983".to_string(),
@@ -583,6 +595,28 @@ mod tests {
         assert_eq!(json["bought"][0]["tx"], "");
         // skipped is omitted when empty (skip_serializing_if)
         assert!(json.get("skipped").is_none());
+        assert!(json.get("allocation").is_none(), "absent without --total");
+    }
+
+    // --total runs echo the allocation; plain runs omit the field entirely.
+    #[test]
+    fn buy_basket_json_allocation_echo() {
+        let mut weights = std::collections::BTreeMap::new();
+        weights.insert("TSLA".to_string(), "50".to_string());
+        weights.insert("NVDA".to_string(), "50".to_string());
+        let result = BuyBasketResultJson {
+            gas_refuel: None,
+            status: "dry_run",
+            allocation: Some(AllocationJson { total: "1000".to_string(), weights }),
+            bought: vec![],
+            failed: vec![],
+            skipped: vec![],
+            total_usdc_spent: "0".to_string(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["allocation"]["total"], "1000");
+        assert_eq!(json["allocation"]["weights"]["TSLA"], "50");
+        assert_eq!(json["allocation"]["weights"]["NVDA"], "50");
     }
 
     // buy-basket: slippage_pct is omitted from JSON when None.
