@@ -207,6 +207,10 @@ pub enum GmAction {
         /// Alternating symbol/amount pairs: AAPL 4 TSLA 3 NVDA 5
         #[arg(required = true, num_args = 2..)]
         tokens: Vec<String>,
+        /// Split this USDC total across the pairs by percent weights
+        /// (e.g. TSLA 50% NVDA 30% SPY 20% --total 1000; weights must sum to 100)
+        #[arg(long)]
+        total: Option<String>,
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
@@ -309,9 +313,9 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
         }
         GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
-        GmAction::BuyBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
+        GmAction::BuyBasket { tokens, total, yes, dry_run, sequential, slippage, max_bps } => {
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
-            basket::buy_basket(&tokens, ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
+            basket::buy_basket(&tokens, total.as_deref(), ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
         GmAction::SellBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };

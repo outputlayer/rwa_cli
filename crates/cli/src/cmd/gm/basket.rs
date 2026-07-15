@@ -34,6 +34,33 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
     Ok(pairs)
 }
 
+/// Resolve basket pairs into per-item raw USDC: split `--total` across
+/// percent weights, or parse absolute amounts (the historical path). Pure —
+/// runs before wallet load so bad input never touches the network.
+fn resolve_buy_items(
+    pairs: &[(String, String)],
+    total: Option<&str>,
+) -> eyre::Result<Vec<(String, u128)>> {
+    if let Some(total) = total {
+        return usecases::gm::split_total_by_weights(total, pairs);
+    }
+    let mut items = Vec::with_capacity(pairs.len());
+    for (sym, amt) in pairs {
+        if amt.trim().ends_with('%') {
+            return Err(usecases::gm::GmTradeError::new(
+                usecases::gm::GmTradeErrorKind::InvalidAmount,
+                format!("Percentage amounts in buy-basket require --total (e.g. {sym} {amt} --total 1000)"),
+            )
+            .into());
+        }
+        let raw = amounts::token_to_raw(amt, jupiter::USDC_DECIMALS)
+            .map_err(|e| eyre!("Invalid amount '{amt}' for {sym}: {e}"))?;
+        let raw_u: u128 = raw.parse().map_err(|_| eyre!("Invalid USDC amount for {sym}"))?;
+        items.push((sym.clone(), raw_u));
+    }
+    Ok(items)
+}
+
 // ── Per-item processors ─────────────────────────────────────
 //
 // One processor per operation. Each does fetch + execute and returns either
@@ -156,6 +183,7 @@ async fn process_sell_item(
 
 pub async fn buy_basket(
     tokens: &[String],
+    total: Option<&str>,
     opts: ExecOpts,
     parallel: bool,
     tuning: TradeTuning,
@@ -165,22 +193,12 @@ pub async fn buy_basket(
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
     let pairs = parse_basket_pairs(tokens)?;
+    let items = resolve_buy_items(&pairs, total)?;
+    let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
 
-    // Compute total USDC needed and validate each amount is parseable as USDC
-    let mut raw_amounts: Vec<String> = Vec::with_capacity(pairs.len());
-    let mut items: Vec<(String, u128)> = Vec::with_capacity(pairs.len());
-    let mut total_raw: u128 = 0;
-    for (sym, amt) in &pairs {
-        let raw = amounts::token_to_raw(amt, jupiter::USDC_DECIMALS)
-            .map_err(|e| eyre!("Invalid amount '{amt}' for {sym}: {e}"))?;
-        let raw_u: u128 = raw.parse().map_err(|_| eyre!("Invalid USDC amount for {sym}"))?;
-        total_raw = total_raw.saturating_add(raw_u);
-        items.push((sym.clone(), raw_u));
-        raw_amounts.push(raw);
-    }
     // Auto-refuel SOL from USDC before a real basket buy; the reserve keeps
     // the refuel from eating the basket's own USDC.
     let (gas_refuel, balances) = if dry_run {
@@ -194,8 +212,13 @@ pub async fn buy_basket(
         let mode = if parallel { " (parallel)" } else { "" };
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
         println!("Buying {} tokens = {} USDC total{}", pairs.len(), total_display, mode);
-        for (sym, amt) in &pairs {
-            println!("  {sym}: {amt} USDC");
+        for ((sym, raw), (_, amt)) in items.iter().zip(&pairs) {
+            if total.is_some() {
+                let usdc = amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS);
+                println!("  {sym}: {usdc} USDC ({amt})");
+            } else {
+                println!("  {sym}: {amt} USDC");
+            }
         }
         println!();
     }
@@ -209,10 +232,9 @@ pub async fn buy_basket(
         }
     }
 
-    let symbol_raw: Vec<(String, String)> = pairs
+    let symbol_raw: Vec<(String, String)> = items
         .iter()
-        .zip(raw_amounts.iter())
-        .map(|((sym, _), raw)| (sym.clone(), raw.clone()))
+        .map(|(sym, raw)| (sym.clone(), raw.to_string()))
         .collect();
 
     if dry_run {
@@ -630,5 +652,39 @@ mod tests {
         assert_eq!(json["sold"][0]["tx"], "");
         assert!(json.get("skipped").is_none());
         assert!(json["sold"][0].get("slippage_pct").is_none());
+    }
+
+    // resolve_buy_items: --total splits percent weights via the ondo helper.
+    #[test]
+    fn resolve_buy_items_splits_total() {
+        let pairs = vec![
+            ("TSLA".to_string(), "50%".to_string()),
+            ("NVDA".to_string(), "50%".to_string()),
+        ];
+        let items = resolve_buy_items(&pairs, Some("100")).unwrap();
+        assert_eq!(items[0], ("TSLA".to_string(), 50_000_000u128));
+        assert_eq!(items[1], ("NVDA".to_string(), 50_000_000u128));
+    }
+
+    // resolve_buy_items: percent amounts WITHOUT --total are a typed error
+    // pointing at the flag (previously an opaque parse error).
+    #[test]
+    fn resolve_buy_items_percent_without_total_is_typed_err() {
+        let pairs = vec![("TSLA".to_string(), "50%".to_string())];
+        let err = resolve_buy_items(&pairs, None).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--total"), "{err}");
+    }
+
+    // resolve_buy_items: absolute amounts without --total keep working.
+    #[test]
+    fn resolve_buy_items_absolute_amounts_unchanged() {
+        let pairs = vec![
+            ("AAPL".to_string(), "4".to_string()),
+            ("TSLA".to_string(), "3.50".to_string()),
+        ];
+        let items = resolve_buy_items(&pairs, None).unwrap();
+        assert_eq!(items[0].1, 4_000_000u128);
+        assert_eq!(items[1].1, 3_500_000u128);
     }
 }
