@@ -45,6 +45,10 @@ fn rwa(home: &Path) -> Command {
     ] {
         c.env_remove(var);
     }
+    // Structural isolation: no contract test may ever query the developer's
+    // real OS keychain. A specific test can opt back in with
+    // `.env("RWA_KEYRING_DISABLE", "0")`.
+    c.env("RWA_KEYRING_DISABLE", "1");
     c
 }
 

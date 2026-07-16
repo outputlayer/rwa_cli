@@ -62,7 +62,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Wallet encryption
 age = "0.10"
 rpassword = "7"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "crypto-rust", "tokio"] }
 
 # Dev / test only
 httpmock = "0.7"
