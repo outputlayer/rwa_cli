@@ -46,6 +46,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm reclaim` | Close empty token accounts, reclaim SOL rent |
 | `rwa keys generate/import/export/show` | Wallet: create, import, back up |
 | `rwa keys encrypt/decrypt` | Toggle passphrase encryption of the key file |
+| `rwa keys store-passphrase/forget-passphrase` | Save/remove the passphrase in the OS keychain (TTY-only) |
 | `rwa keys add/list/use/remove` | Multiple named wallets |
 | `rwa update [-y]` | Self-update |
 

@@ -41,9 +41,6 @@ pub(crate) fn operational_passphrase(wallet_name: &str) -> Result<Zeroizing<Stri
 
 /// Passphrase for ADMIN commands: a live TTY prompt or nothing. Env and
 /// keychain are deliberately not consulted — see the spec's security invariant.
-// Not yet wired to a caller — Task 3 rewires the admin-class commands
-// (export/decrypt/policy) onto this. Remove the attribute when that lands.
-#[expect(dead_code)]
 pub(crate) fn admin_passphrase(what: &str) -> Result<Zeroizing<String>> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
@@ -84,9 +81,6 @@ fn keyring_get(wallet: &str) -> Option<Zeroizing<String>> {
 
 /// Store the passphrase for `wallet`. Errors loudly when the keychain is
 /// disabled/unavailable — storage is an explicit user request, not best-effort.
-// Not yet wired to a caller — Task 4 (`keys` subcommands for keychain
-// enrollment) uses this. Remove the attribute when that lands.
-#[expect(dead_code)]
 pub(crate) fn keyring_set(wallet: &str, pass: &str) -> Result<()> {
     if keyring_disabled() {
         return Err(eyre!("OS keychain is disabled (RWA_KEYRING_DISABLE=1) — cannot store the passphrase"));
@@ -97,8 +91,6 @@ pub(crate) fn keyring_set(wallet: &str, pass: &str) -> Result<()> {
 }
 
 /// Remove the stored passphrase. Ok(false) when nothing was stored (idempotent).
-// Not yet wired to a caller — Task 4 uses this. Remove the attribute when that lands.
-#[expect(dead_code)]
 pub(crate) fn keyring_delete(wallet: &str) -> Result<bool> {
     if keyring_disabled() {
         return Err(eyre!("OS keychain is disabled (RWA_KEYRING_DISABLE=1) — cannot remove the passphrase"));

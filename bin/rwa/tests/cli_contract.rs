@@ -1503,6 +1503,51 @@ fn headless_encrypted_wallet_fails_fast_without_passphrase_source() {
     );
 }
 
+/// `keys store-passphrase --json` in a spawned (TTY-less) process must fail
+/// closed with the typed admin-class envelope — env passphrase is NOT accepted.
+#[test]
+fn store_passphrase_headless_is_interactive_required() {
+    let home = test_home("store-pass-headless");
+    let generated = rwa(&home)
+        .args(["keys", "generate"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "keys", "store-passphrase"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure") // deliberately set — must be ignored
+        .env("RWA_KEYRING_DISABLE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
+}
+
+/// `keys forget-passphrase --json` with the keychain disabled fails loudly
+/// (explicit user request must not silently no-op).
+#[test]
+fn forget_passphrase_disabled_keychain_errors() {
+    let home = test_home("forget-pass-disabled");
+    let generated = rwa(&home)
+        .args(["keys", "generate", "--allow-plaintext"])
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "keys", "forget-passphrase"])
+        .env("RWA_KEYRING_DISABLE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error");
+    assert!(v["error"].as_str().unwrap().to_lowercase().contains("keychain"), "{v}");
+}
+
 // ── pnl ──────────────────────────────────────────────────────────────────────
 
 /// `gm pnl --json` computes average cost, realized and unrealized P&L from a

@@ -89,6 +89,12 @@ pub enum KeysAction {
     /// Decrypt the wallet (key.age → key.json, then removes key.age)
     Decrypt,
 
+    /// Store the wallet passphrase in the OS keychain (verified first) so
+    /// operational commands run headless without RWA_PASSPHRASE
+    StorePassphrase,
+    /// Remove the stored passphrase from the OS keychain
+    ForgetPassphrase,
+
     /// Register a key file by path, or import a key from a seed phrase /
     /// private key, write it to <PATH> (encrypted by default), and register it
     Add {
@@ -166,6 +172,8 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
             }
             decrypt_wallet(json).await
         }
+        KeysAction::StorePassphrase => store_passphrase(selected, json).await,
+        KeysAction::ForgetPassphrase => forget_passphrase(selected, json).await,
         KeysAction::Add { name, path, seed_phrase, account, derivation_path, private_key, allow_plaintext } => {
             let deriv = resolve_derivation_path(account, derivation_path)?;
             add(&name, &path, seed_phrase, deriv, private_key, allow_plaintext, json).await
@@ -528,6 +536,66 @@ async fn decrypt_wallet(json: bool) -> Result<()> {
     println!("Wallet decrypted.");
     println!("Key file: {}", json_path.display());
     println!("key.age has been removed.");
+    Ok(())
+}
+
+/// Resolve the (name, target) pair the same way `load_selected` does.
+fn resolve_wallet_account(selected: Option<&str>) -> Result<(String, crate::wallets::WalletTarget)> {
+    let cfg = config_dir()?;
+    let reg = crate::wallets::WalletRegistry::load(&cfg)?;
+    let account = selected
+        .map(str::to_string)
+        .or_else(|| reg.active.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let target = reg.resolve(selected)?;
+    Ok((account, target))
+}
+
+/// Store the active/selected wallet's passphrase in the OS keychain. Only
+/// makes sense for encrypted wallets; verifies the passphrase by actually
+/// decrypting before touching the keychain, so a typo never gets stored.
+async fn store_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
+    let (account, target) = resolve_wallet_account(selected)?;
+    // Only encrypted wallets have a passphrase to store.
+    let encrypted = match &target {
+        crate::wallets::WalletTarget::Path(p) => wallet::is_age_encrypted(p)?,
+        crate::wallets::WalletTarget::LegacyDefault => wallet::is_wallet_encrypted(),
+    };
+    if !encrypted {
+        return Err(eyre::eyre!(
+            "Wallet '{account}' is not encrypted — nothing to store. Encrypt it first: rwa keys encrypt"
+        ));
+    }
+    // Typed by a human, never env/keychain: storing is an admin act.
+    let pass = crate::passphrase::admin_passphrase("keys store-passphrase")?;
+    // Verify by actually decrypting before touching the keychain.
+    crate::wallets::load_target_full(&target, || Ok(pass.clone()))
+        .map_err(|e| eyre::eyre!("Passphrase rejected — nothing stored: {e}"))?;
+    crate::passphrase::keyring_set(&account, &pass)?;
+    if json {
+        println!("{}", serde_json::json!({ "status": "ok", "action": "stored", "wallet": account }));
+        return Ok(());
+    }
+    println!("Passphrase for wallet '{account}' stored in the OS keychain.");
+    println!("Operational commands now run headless; keys export/decrypt still require typing it.");
+    Ok(())
+}
+
+/// Remove the wallet's stored passphrase from the OS keychain, if any.
+async fn forget_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
+    let (account, _) = resolve_wallet_account(selected)?;
+    let existed = crate::passphrase::keyring_delete(&account)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "action": "forgotten", "wallet": account, "existed": existed })
+        );
+        return Ok(());
+    }
+    match existed {
+        true => println!("Stored passphrase for '{account}' removed from the OS keychain."),
+        false => println!("No stored passphrase for '{account}' — nothing to remove."),
+    }
     Ok(())
 }
 
