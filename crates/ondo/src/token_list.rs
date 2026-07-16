@@ -23,7 +23,7 @@ pub fn get_token_list() -> &'static [GmTokenEntry] {
     &TOKEN_LIST
 }
 
-/// Static fallback list of Ondo GM tokens (438 tokens).
+/// Static fallback list of Ondo GM tokens (439 tokens).
 /// Tuple: (symbol, solana_mint_address)
 static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("AALon", "9wYZetvT8J2ptfsRca5gzLBGvcUug38mp9yT3xaondo"),
@@ -374,6 +374,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("SHOPon", "ivdDracs2s7jCP698dJXKSEQdVrNj9hasJL1Uq1ondo"),
     ("SHYon", "EEy57xbaLcUrN1HXj2vz8VWxeWFK1eZQZo4aWbrondo"),
     ("SILon", "uiSLmtLdqxtbQq5gkwYBvBrZpnSNXZn8h6sjLsDondo"),
+    ("SKHYon", "Huyb2fyDDjSuDKCRWsN9ci2rmcgPo6NFiLbx9ZDondo"),
     ("SLBon", "i7ZS13SF6BCKbzvLujp2UqLNMgM1XVnZ7A7wC6tondo"),
     ("SLVon", "iy11ytbSGcUnrjE6Lfv78TFqxKyUESfku1FugS9ondo"),
     ("SMCIon", "jLca79XzcewRuBZyaJxVxuKpUHcEix1X4CP1RP9ondo"),
