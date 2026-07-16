@@ -52,6 +52,10 @@ pub enum GmTradeErrorKind {
     SelfSend,
     /// `keys export --json` without `--reveal`.
     RevealRequired,
+    /// An admin operation (policy edit, key export, decrypt) needs the
+    /// passphrase typed at a live terminal — env/keychain are deliberately
+    /// not consulted, so non-interactive runs fail closed.
+    InteractiveRequired,
     /// Another rwa process holds the exclusive lock — transient by definition.
     LockContention,
 }
@@ -83,7 +87,7 @@ impl GmTradeErrorKind {
     /// appears in llms.txt / README / CLAUDE.md). Adding a variant already
     /// breaks `label()`'s exhaustive match at compile time — when you fix that,
     /// add the variant here and document it, or the guard fails.
-    pub const ALL: [GmTradeErrorKind; 17] = [
+    pub const ALL: [GmTradeErrorKind; 18] = [
         Self::MarketClosed,
         Self::NotTradable,
         Self::SlippageTooHigh,
@@ -100,6 +104,7 @@ impl GmTradeErrorKind {
         Self::UnknownWallet,
         Self::SelfSend,
         Self::RevealRequired,
+        Self::InteractiveRequired,
         Self::LockContention,
     ];
 
@@ -123,6 +128,7 @@ impl GmTradeErrorKind {
             Self::UnknownWallet => "unknown_wallet",
             Self::SelfSend => "self_send",
             Self::RevealRequired => "reveal_required",
+            Self::InteractiveRequired => "interactive_required",
             Self::LockContention => "lock_contention",
         }
     }
@@ -1094,6 +1100,16 @@ mod tests {
     }
 
     #[test]
+    fn interactive_required_is_typed_and_labeled() {
+        let err: eyre::Error = GmTradeError::new(
+            GmTradeErrorKind::InteractiveRequired,
+            "keys decrypt requires typing the passphrase at a terminal",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("interactive_required"));
+    }
+
+    #[test]
     fn all_error_kinds_listed_with_unique_labels() {
         // Compile-time tripwire: adding a variant breaks this exhaustive match
         // (and `label()`'s), a reminder to add it to `ALL` and document it —
@@ -1116,6 +1132,7 @@ mod tests {
                 | GmTradeErrorKind::UnknownWallet
                 | GmTradeErrorKind::SelfSend
                 | GmTradeErrorKind::RevealRequired
+                | GmTradeErrorKind::InteractiveRequired
                 | GmTradeErrorKind::LockContention => {}
             }
         }

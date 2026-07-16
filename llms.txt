@@ -190,6 +190,7 @@ With `--json`, failures return `{"status":"error","error":"...","error_kind":...
 - `invalid_address` / `self_send` → send recipient is not a valid Solana address / is the sender itself; fix the address
 - `unknown_wallet` → `--wallet`/`RWA_WALLET` named an unregistered wallet; the message lists available names (`keys list`)
 - `reveal_required` → `keys export --json` needs explicit `--reveal` (it prints SECRET material); retry with `--reveal` only if the user asked for the key
+- `interactive_required` → admin command (keys export --reveal / keys decrypt) run without a TTY; user must type the passphrase interactively; env/keychain are not consulted for these operations
 - `lock_contention` → another rwa process holds the exclusive lock; transient (exit 75) — wait and retry. Note: the lock covers EVERY rwa invocation including read-only ones, so serialize ALL rwa calls, not just wallet-changing ones
 - Exit code 75 = transient (retry sensible: rpc_unavailable / execute_unavailable / confirmation_timeout / lock_contention); exit 1 = permanent
 - `market_closed` → token does not trade off-hours; tell user when regular trading reopens (Sunday 8 PM ET) or suggest an off-hours flagship token
