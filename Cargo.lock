@@ -3131,6 +3131,7 @@ dependencies = [
  "eyre",
  "httpmock",
  "rwa-cli",
+ "rwa-ondo",
  "serde_json",
  "tokio",
 ]

@@ -1,8 +1,29 @@
 use eyre::Result;
 use rwa_ondo::{amounts, jupiter, solana, token_list, wallet};
 use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind};
+use rwa_ondo::wallet::SendPolicy;
 
 use super::*;
+
+#[derive(Debug, PartialEq)]
+enum RecipientVerdict {
+    Allowed,
+    NotListed,
+}
+
+/// Pure policy check: active only when a non-empty policy exists.
+fn recipient_gate(policy: Option<&SendPolicy>, to: &str) -> RecipientVerdict {
+    match policy {
+        Some(p) if !p.allowed_recipients.is_empty() && !p.permits(to) => RecipientVerdict::NotListed,
+        _ => RecipientVerdict::Allowed,
+    }
+}
+
+/// Anti-clipboard-swap confirmation: the human types the address's last 6 chars.
+fn suffix_matches(address: &str, typed: &str) -> bool {
+    let suffix: String = address.chars().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+    typed.trim() == suffix
+}
 
 /// USDC to reserve (keep untouched) for the pre-send auto-gas refuel. Only an
 /// EXACT USDC amount leaves a well-defined remainder that auto-gas may convert
@@ -89,7 +110,7 @@ where
 }
 
 pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
-    let w = load_wallet(selected)?;
+    let (w, policy) = load_wallet_with_policy(selected)?;
     let pubkey = w.pubkey();
 
     // Typed so agents can branch on error_kind instead of matching prose.
@@ -102,6 +123,35 @@ pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: 
             "Cannot send to yourself",
         )
         .into());
+    }
+
+    // Allowed-recipient policy gate: opt-in (absent/empty policy = no-op),
+    // runs BEFORE any network access (including --dry-run). Non-interactive
+    // callers (-y, --json, or no TTY) are refused outright; a live human at a
+    // TTY gets a suffix-confirmation escape hatch instead.
+    if recipient_gate(policy.as_ref(), to) == RecipientVerdict::NotListed {
+        use std::io::IsTerminal;
+        let interactive = !opts.yes && !opts.json && std::io::stdin().is_terminal();
+        if !interactive {
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::RecipientNotAllowed,
+                format!(
+                    "Recipient {to} is not in this wallet's allowed list. \
+                     A human can add it: rwa keys policy allow {to}"
+                ),
+            )
+            .into());
+        }
+        // Live human at a TTY: confirm by typing the address suffix (defends
+        // against clipboard-swapped addresses; y/N is too easy to reflex).
+        use std::io::Write as _;
+        print!("Recipient is NOT in your allowed list.\nType the LAST 6 characters of {to} to proceed: ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok();
+        if !suffix_matches(to, &line) {
+            return Err(eyre::eyre!("Cancelled — suffix mismatch."));
+        }
     }
 
     let token_upper = token.to_uppercase();
@@ -260,6 +310,34 @@ async fn send_gm_token(w: &wallet::Wallet, symbol: &str, amount: &str, to: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rwa_ondo::wallet::SendPolicy;
+
+    fn policy_with(addr: &str) -> SendPolicy {
+        let mut p = SendPolicy::default();
+        p.allow(addr, None, "2026-07-16T00:00:00Z").unwrap();
+        p
+    }
+
+    #[test]
+    fn gate_inactive_without_policy_or_with_empty_list() {
+        assert_eq!(recipient_gate(None, "AnyAddr"), RecipientVerdict::Allowed);
+        assert_eq!(recipient_gate(Some(&SendPolicy::default()), "AnyAddr"), RecipientVerdict::Allowed);
+    }
+
+    #[test]
+    fn gate_permits_listed_and_flags_unlisted() {
+        let p = policy_with("GoodAddr");
+        assert_eq!(recipient_gate(Some(&p), "GoodAddr"), RecipientVerdict::Allowed);
+        assert_eq!(recipient_gate(Some(&p), "EvilAddr"), RecipientVerdict::NotListed);
+    }
+
+    #[test]
+    fn suffix_match_is_case_sensitive_last_six() {
+        assert!(suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "qmHnW1"));
+        assert!(suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", " qmHnW1 ")); // typed input is trimmed
+        assert!(!suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "QMHNW1"));
+        assert!(!suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "wrong6"));
+    }
 
     #[test]
     fn usdc_gas_reservation_reserves_exact_but_skips_balance_relative() {

@@ -353,6 +353,38 @@ pub fn load_target_full(
     }
 }
 
+/// Like `load_selected`, but also returns the wallet's [`wallet::SendPolicy`]
+/// when the encrypted payload carries one. Plaintext wallets (and encrypted
+/// wallets with no policy embedded) yield `None` — the send-recipient gate
+/// treats `None` as opt-in inactive, identical to pre-feature behavior.
+pub fn load_selected_with_policy(selected: Option<&str>) -> Result<(Wallet, Option<wallet::SendPolicy>)> {
+    let config = dirs::config_dir()
+        .ok_or_else(|| eyre!("Cannot determine config directory"))?;
+    let reg = WalletRegistry::load(&config)?;
+    let account = keychain_account(&reg, selected);
+    let target = reg.resolve(selected)?;
+    let from_keychain = std::cell::Cell::new(false);
+    let result = load_target_payload(&target, || {
+        crate::passphrase::operational_passphrase(&account).map(|(pass, keychain)| {
+            from_keychain.set(keychain);
+            pass
+        })
+    });
+    result
+        .map(|decrypted| (decrypted.wallet, decrypted.policy))
+        .map_err(|e| {
+            if from_keychain.get() {
+                e.wrap_err(
+                    "Hint: this passphrase came from the OS keychain — if it's stale, run \
+                     `rwa keys forget-passphrase` and re-store it with `rwa keys store-passphrase`, \
+                     or set RWA_PASSPHRASE",
+                )
+            } else {
+                e
+            }
+        })
+}
+
 /// Like `load_target_full`, but returns the full [`wallet::DecryptedWallet`]
 /// (wallet + mnemonic + [`wallet::SendPolicy`]) instead of dropping the
 /// policy. Plaintext wallets never carry a mnemonic or a policy, so both are

@@ -24,3 +24,4 @@ eyre.workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 serde_json.workspace = true
+rwa-ondo.workspace = true

@@ -1234,6 +1234,67 @@ fn send_usdc_dry_run_emits_send_json_shape() {
     assert_eq!(v["tx"], "", "dry run must not carry a tx link");
 }
 
+/// Non-interactive send to an unlisted address is refused BEFORE any network
+/// access; a listed address passes the gate (and fails later on the dead RPC,
+/// proving gate passage). Fixture: age wallet with a one-address policy,
+/// written directly via rwa-ondo and registered by path.
+#[test]
+fn send_policy_blocks_unlisted_recipient_pre_network() {
+    let home = test_home("send-policy-gate");
+    let listed = "Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1";
+    let unlisted = "5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiYtRo7DFYiuZ47";
+
+    let (w, _phrase) = rwa_ondo::wallet::Wallet::generate_with_mnemonic(12).unwrap();
+    let mut policy = rwa_ondo::wallet::SendPolicy::default();
+    policy.allow(listed, Some("test-cold"), "2026-07-16T00:00:00Z").unwrap();
+    let key_path = home.join("polwal.age");
+    w.save_encrypted_payload(&key_path, "TestPass2026!secure", None, Some(&policy)).unwrap();
+
+    let added = rwa(&home)
+        .args(["keys", "add", "polwal", "--path", key_path.to_str().unwrap()])
+        .output().unwrap();
+    assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+
+    // Unlisted, --json -y, no mocks: must die at the gate, pre-network.
+    let out = rwa(&home)
+        .args(["--json", "--wallet", "polwal", "gm", "send", "USDC", "1", unlisted, "-y"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "recipient_not_allowed", "{v}");
+    assert!(v["error"].as_str().unwrap().contains("keys policy allow"), "{v}");
+
+    // Listed, dead RPC: must get PAST the gate (different failure).
+    let server = MockServer::start();
+    server.mock(|when, then| { when.method(POST).path("/rpc"); then.status(500); });
+    let out = rwa(&home)
+        .args(["--json", "--wallet", "polwal", "gm", "send", "USDC", "1", listed, "--dry-run"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .output().unwrap();
+    let v = stdout_json(&out);
+    assert_ne!(v["error_kind"], "recipient_not_allowed", "listed address must pass the gate: {v}");
+}
+
+/// No policy (or plaintext wallet) → send behaves exactly as before the
+/// feature (regression pin: the gate is opt-in).
+#[test]
+fn send_without_policy_is_unchanged() {
+    let home = test_home("send-no-policy");
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let server = MockServer::start();
+    server.mock(|when, then| { when.method(POST).path("/rpc"); then.status(500); });
+    let out = rwa(&home)
+        .args(["--json", "gm", "send", "USDC", "1", "Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .output().unwrap();
+    let v = stdout_json(&out);
+    assert_ne!(v["error_kind"], "recipient_not_allowed", "no policy → no gate: {v}");
+}
+
 /// `gm reclaim --json` with no empty token accounts: success, zero closed,
 /// zero reclaimed — and exit 0.
 #[test]

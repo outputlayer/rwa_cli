@@ -384,6 +384,16 @@ pub(super) fn load_wallet(selected: Option<&str>) -> Result<wallet::Wallet> {
     crate::wallets::load_selected(selected)
 }
 
+/// Like `load_wallet`, but also returns the wallet's send policy (`None` for
+/// plaintext wallets or encrypted wallets with no policy embedded). Used only
+/// by `send`, which is the sole command that enforces the allowed-recipient
+/// gate.
+pub(super) fn load_wallet_with_policy(
+    selected: Option<&str>,
+) -> Result<(wallet::Wallet, Option<wallet::SendPolicy>)> {
+    crate::wallets::load_selected_with_policy(selected)
+}
+
 // One canonical symbol->mint resolution path for the whole workspace.
 pub(super) use usecases::gm::resolve_gm_mint;
 
