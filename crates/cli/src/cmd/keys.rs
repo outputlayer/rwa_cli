@@ -758,29 +758,17 @@ async fn policy_show(selected: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `rwa keys policy allow|remove`. Admin class (spec A3): mutating the
-/// send-policy allow list only takes a typed passphrase — env/keychain are
-/// deliberately not consulted, same as `store-passphrase`/`decrypt`/`export`.
-async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Result<()> {
-    let (_account, target) = resolve_wallet_account(selected)?;
-    if !target_is_encrypted(&target)? {
-        return Err(eyre::eyre!(
-            "Send policy requires an encrypted wallet. Encrypt first: rwa keys encrypt"
-        ));
-    }
-    let pass = crate::passphrase::admin_passphrase("keys policy")?;
-    let path = target_path(&target)?;
-    let mut dw = Wallet::load_encrypted_payload(&path, &pass)?;
-    let mut policy = dw.policy.take().unwrap_or_default();
-    match &edit {
+/// Pure mutation step of the `policy_edit` decrypt->mutate->re-encrypt spine:
+/// given the already-decrypted wallet payload and the requested edit, returns
+/// the mutated policy or a typed error. Address FORMAT validation runs
+/// earlier in `policy_edit`, before the passphrase prompt — it needs no
+/// wallet material. This only covers what DOES need the decrypted wallet: the
+/// self-send check (needs `dw.wallet.pubkey()`) and the policy mutation
+/// itself. Split deliberately (spec review item 2), not an oversight.
+fn apply_policy_edit(dw: &wallet::DecryptedWallet, edit: &PolicyEdit) -> Result<wallet::SendPolicy> {
+    let mut policy = dw.policy.clone().unwrap_or_default();
+    match edit {
         PolicyEdit::Allow { address, label } => {
-            // Typed so agents can branch on error_kind instead of matching prose.
-            rwa_ondo::solana::validate_address(address).map_err(|e| {
-                eyre::Report::from(rwa_ondo::usecases::gm::GmTradeError::new(
-                    rwa_ondo::usecases::gm::GmTradeErrorKind::InvalidAddress,
-                    e.to_string(),
-                ))
-            })?;
             if *address == dw.wallet.pubkey() {
                 return Err(rwa_ondo::usecases::gm::GmTradeError::new(
                     rwa_ondo::usecases::gm::GmTradeErrorKind::SelfSend,
@@ -796,9 +784,43 @@ async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Re
             }
         }
     }
+    Ok(policy)
+}
+
+/// `rwa keys policy allow|remove`. Admin class (spec A3): mutating the
+/// send-policy allow list only takes a typed passphrase — env/keychain are
+/// deliberately not consulted, same as `store-passphrase`/`decrypt`/`export`.
+async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Result<()> {
+    let (_account, target) = resolve_wallet_account(selected)?;
+    if !target_is_encrypted(&target)? {
+        return Err(eyre::eyre!(
+            "Send policy requires an encrypted wallet. Encrypt first: rwa keys encrypt"
+        ));
+    }
+    // Validate what's possible BEFORE prompting for the passphrase: address
+    // syntax needs no wallet material, so there's no reason to make the human
+    // type their passphrase first only to reject a malformed address. The
+    // self-send check needs the decrypted wallet's own pubkey, so it stays
+    // inside `apply_policy_edit`, post-decrypt.
+    if let PolicyEdit::Allow { address, .. } = &edit {
+        // Typed so agents can branch on error_kind instead of matching prose.
+        rwa_ondo::solana::validate_address(address).map_err(|e| {
+            eyre::Report::from(rwa_ondo::usecases::gm::GmTradeError::new(
+                rwa_ondo::usecases::gm::GmTradeErrorKind::InvalidAddress,
+                e.to_string(),
+            ))
+        })?;
+    }
+    let pass = crate::passphrase::admin_passphrase("keys policy")?;
+    let path = target_path(&target)?;
+    let dw = Wallet::load_encrypted_payload(&path, &pass)?;
+    let policy = apply_policy_edit(&dw, &edit)?;
     // Atomic rewrite with the SAME passphrase, preserving the mnemonic: write
-    // to a sibling tmp path, then rename over the real file.
+    // to a sibling tmp path, then rename over the real file. Clear any stale
+    // tmp left by a crashed prior edit first (ignore the result — ENOENT is
+    // the common case) so it can't confuse this write.
     let tmp = path.with_extension("age.tmp");
+    let _ = std::fs::remove_file(&tmp);
     dw.wallet.save_encrypted_payload(&tmp, &pass, dw.mnemonic.as_deref(), Some(&policy))?;
     std::fs::rename(&tmp, &path)?;
     let (action, address) = match &edit {
@@ -1276,5 +1298,55 @@ mod tests {
         for action in &no_passphrase_actions {
             assert_eq!(passphrase_class(action), PassphraseClass::NoPassphrase, "{action:?}");
         }
+    }
+
+    // ── Final-review fix wave (Plan B): item 3 — policy_edit seam ──
+
+    #[test]
+    fn apply_policy_edit_allow_preserves_mnemonic_through_save_and_reload() {
+        // Pins the decrypt->mutate->re-encrypt spine end to end: the pure
+        // `apply_policy_edit` seam produces the mutated policy, then this test
+        // drives the EXACT same tmp-write + rename sequence `policy_edit` uses,
+        // so a regression that drops the mnemonic (or the policy) on save is
+        // caught without needing a TTY-driven full command invocation.
+        let dir = std::env::temp_dir().join(format!("rwa-policy-edit-seam-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.age");
+        let pass = "TestPass2026!secure";
+
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        // No policy embedded yet — mirrors a wallet created before this feature.
+        w.save_encrypted_with_mnemonic(&path, pass, Some(&phrase)).unwrap();
+
+        let dw = Wallet::load_encrypted_payload(&path, pass).unwrap();
+        assert_eq!(dw.mnemonic.as_deref(), Some(phrase.as_str()));
+        assert!(dw.policy.is_none(), "fresh wallet has no policy yet");
+
+        let edit = PolicyEdit::Allow {
+            address: "Dn9Qxyz111111111111111111111111111111111111".to_string(),
+            label: Some("cold".to_string()),
+        };
+        let policy = apply_policy_edit(&dw, &edit).expect("allow edit should succeed");
+        assert!(policy.permits("Dn9Qxyz111111111111111111111111111111111111"));
+
+        // Same sequence as `policy_edit`: stale-tmp cleanup, write tmp, rename.
+        let tmp = path.with_extension("age.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        dw.wallet.save_encrypted_payload(&tmp, pass, dw.mnemonic.as_deref(), Some(&policy)).unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+
+        let reloaded = Wallet::load_encrypted_payload(&path, pass).unwrap();
+        assert_eq!(
+            reloaded.mnemonic.as_deref(),
+            Some(phrase.as_str()),
+            "mnemonic must survive the policy-edit save/reload round trip"
+        );
+        assert_eq!(reloaded.wallet.pubkey(), w.pubkey());
+        let reloaded_policy = reloaded.policy.expect("policy must be present after the edit");
+        assert!(reloaded_policy.permits("Dn9Qxyz111111111111111111111111111111111111"));
+        assert_eq!(reloaded_policy.allowed_recipients[0].label.as_deref(), Some("cold"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

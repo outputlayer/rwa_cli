@@ -110,7 +110,7 @@ where
 }
 
 pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
-    let (w, policy) = load_wallet_with_policy(selected)?;
+    let (w, policy, target) = load_wallet_with_policy(selected)?;
     let pubkey = w.pubkey();
 
     // Typed so agents can branch on error_kind instead of matching prose.
@@ -152,6 +152,15 @@ pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: 
         if !suffix_matches(to, &line) {
             return Err(eyre::eyre!("Cancelled — suffix mismatch."));
         }
+        // Suffix alone is bypassable by a PTY-driving agent (it knows the
+        // address it typed). Also require the wallet passphrase, verified by
+        // actually re-decrypting the wallet file — mirrors `store_passphrase`
+        // in keys.rs. This path only runs when `policy` is `Some` (opt-in),
+        // which only ever comes from an ENCRYPTED payload (plaintext wallets
+        // carry no policy), so there's always something to decrypt against.
+        let pass = crate::passphrase::admin_passphrase("send to a non-allowed recipient")?;
+        crate::wallets::load_target_full(&target, || Ok(pass.clone()))
+            .map_err(|_| eyre::eyre!("Passphrase rejected — send cancelled"))?;
     }
 
     let token_upper = token.to_uppercase();

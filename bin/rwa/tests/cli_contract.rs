@@ -1278,6 +1278,48 @@ fn send_policy_blocks_unlisted_recipient_pre_network() {
     assert_ne!(v["error_kind"], "recipient_not_allowed", "listed address must pass the gate: {v}");
 }
 
+/// The interactive TTY escape hatch (suffix + passphrase) can't be
+/// contract-tested (no PTY here), but this pins the adjacent, testable half:
+/// a PTY-less spawned process (stdin piped/null, not a terminal) with NEITHER
+/// `-y` NOR `--json` still hits the non-interactive branch of the gate and
+/// refuses outright — it must NOT block waiting on stdin for a suffix.
+/// Human-mode error text (not the `--json` envelope, since `--json` alone
+/// takes a different, JSON-emitting branch of `send`).
+#[test]
+fn send_policy_refuses_unlisted_recipient_without_tty_in_human_mode() {
+    let home = test_home("send-policy-no-tty-human");
+    let listed = "Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1";
+    let unlisted = "5CjgV1J2FE8yyxsHKGs2v4GJULBS7AiYtRo7DFYiuZ47";
+
+    let (w, _phrase) = rwa_ondo::wallet::Wallet::generate_with_mnemonic(12).unwrap();
+    let mut policy = rwa_ondo::wallet::SendPolicy::default();
+    policy.allow(listed, Some("test-cold"), "2026-07-16T00:00:00Z").unwrap();
+    let key_path = home.join("polwal.age");
+    w.save_encrypted_payload(&key_path, "TestPass2026!secure", None, Some(&policy)).unwrap();
+
+    let added = rwa(&home)
+        .args(["keys", "add", "polwal", "--path", key_path.to_str().unwrap()])
+        .output().unwrap();
+    assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+
+    // No -y, no --json: human mode, and stdin is NOT a terminal (spawned with
+    // a piped/null stdin, no controlling PTY) — must refuse immediately via
+    // the non-interactive branch, not hang prompting for a suffix.
+    let out = rwa(&home)
+        .args(["--wallet", "polwal", "gm", "send", "USDC", "1", unlisted])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .stdin(std::process::Stdio::null())
+        .output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not in this wallet's allowed list"),
+        "expected the non-interactive refusal message on stderr, got: {stderr}"
+    );
+    assert!(stderr.contains("keys policy allow"), "stderr: {stderr}");
+}
+
 /// No policy (or plaintext wallet) → send behaves exactly as before the
 /// feature (regression pin: the gate is opt-in).
 #[test]

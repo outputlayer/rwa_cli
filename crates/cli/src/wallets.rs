@@ -354,10 +354,14 @@ pub fn load_target_full(
 }
 
 /// Like `load_selected`, but also returns the wallet's [`wallet::SendPolicy`]
-/// when the encrypted payload carries one. Plaintext wallets (and encrypted
-/// wallets with no policy embedded) yield `None` — the send-recipient gate
+/// and the resolved [`WalletTarget`] (needed by the `send` off-list gate to
+/// re-verify the passphrase against the SAME file it just loaded from, via
+/// `load_target_full`). Plaintext wallets (and encrypted wallets with no
+/// policy embedded) yield `None` for the policy — the send-recipient gate
 /// treats `None` as opt-in inactive, identical to pre-feature behavior.
-pub fn load_selected_with_policy(selected: Option<&str>) -> Result<(Wallet, Option<wallet::SendPolicy>)> {
+pub fn load_selected_with_policy(
+    selected: Option<&str>,
+) -> Result<(Wallet, Option<wallet::SendPolicy>, WalletTarget)> {
     let config = dirs::config_dir()
         .ok_or_else(|| eyre!("Cannot determine config directory"))?;
     let reg = WalletRegistry::load(&config)?;
@@ -371,7 +375,7 @@ pub fn load_selected_with_policy(selected: Option<&str>) -> Result<(Wallet, Opti
         })
     });
     result
-        .map(|decrypted| (decrypted.wallet, decrypted.policy))
+        .map(|decrypted| (decrypted.wallet, decrypted.policy, target.clone()))
         .map_err(|e| {
             if from_keychain.get() {
                 e.wrap_err(
