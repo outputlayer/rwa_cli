@@ -905,13 +905,15 @@ fn keys_add_import_encrypted_by_default() {
     assert!(show_out.contains(&warm_pk), "encrypted wallet must resolve to the same address as the plaintext one:\n{show_out}");
 }
 
-/// `keys encrypt --json` and `keys decrypt --json` must emit JSON on SUCCESS,
-/// not human prose (both advertise --json in --help). The bug was invisible
-/// because the ERROR paths already emit JSON (via render_error) and no test
-/// touched the success path. Also proves `keys decrypt` honours RWA_PASSPHRASE
-/// (it read a TTY-only prompt before, so it couldn't be scripted at all).
+/// `keys encrypt --json` must emit JSON on SUCCESS, not human prose (it
+/// advertises --json in --help). The bug was invisible because the ERROR
+/// paths already emit JSON (via render_error) and no test touched the
+/// success path. `encrypt` takes a NEW passphrase (creation, not unlock), so
+/// it is unaffected by the admin-class gate — see
+/// `decrypt_headless_is_interactive_required_even_with_env` (spec A3
+/// BREAKING) for why `keys decrypt` can no longer be scripted this way.
 #[test]
-fn keys_encrypt_decrypt_json_emit_json_on_success() {
+fn keys_encrypt_json_emits_json_on_success() {
     let home = test_home("encrypt-json");
     let pass = "TestPass2026!secure";
 
@@ -937,16 +939,19 @@ fn keys_encrypt_decrypt_json_emit_json_on_success() {
         "encrypt must warn the phrase isn't preserved: {enc_err}"
     );
 
-    // decrypt --json → JSON, AND reads RWA_PASSPHRASE (no TTY available here).
+    // BREAKING (spec A3): decrypt --json now fails closed even with
+    // RWA_PASSPHRASE set — see decrypt_headless_is_interactive_required_even_with_env
+    // for the dedicated pin; this just confirms it also applies to a wallet
+    // produced by `encrypt` (not just `generate`).
     let dec = rwa(&home)
         .env("RWA_PASSPHRASE", pass)
+        .env("RWA_KEYRING_DISABLE", "1")
         .args(["--json", "keys", "decrypt"])
         .output()
         .unwrap();
-    assert!(dec.status.success(), "decrypt (scripted via RWA_PASSPHRASE) failed: {}", String::from_utf8_lossy(&dec.stderr));
+    assert!(!dec.status.success(), "decrypt must no longer be scriptable via env passphrase");
     let v = stdout_json(&dec);
-    assert_eq!(v["status"], "ok", "decrypt --json must be JSON, got: {}", String::from_utf8_lossy(&dec.stdout));
-    assert_eq!(v["encrypted"], serde_json::Value::Bool(false));
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
 }
 
 #[test]
@@ -1429,48 +1434,36 @@ fn keys_export_roundtrip_restores_the_same_wallet() {
     );
 }
 
-/// Encrypted wallets store the phrase inside the age payload: export reveals
-/// it (with RWA_PASSPHRASE) and it restores the same wallet.
+/// Encrypted wallets store the phrase inside the age payload, and the
+/// storage/retrieval round trip itself is pinned at the wallet layer
+/// (`rwa_ondo::wallet::tests::encrypted_mnemonic_roundtrip_and_legacy_compat`).
+/// At the CLI layer, BREAKING (spec A3): `keys export --reveal` on an
+/// encrypted wallet can no longer be driven headlessly via RWA_PASSPHRASE —
+/// see `export_reveal_headless_is_interactive_required_even_with_env` for the
+/// dedicated pin; this confirms the same gate applies to a wallet created via
+/// `keys add --seed-phrase` (not just `keys generate`).
 #[test]
-fn keys_export_reveals_stored_mnemonic_for_encrypted_wallet() {
+fn keys_export_reveal_is_blocked_headless_for_seed_imported_encrypted_wallet() {
     let home = test_home("keys-export-enc");
     let pass = "TestPass2026!secure";
-
-    let generated = rwa(&home)
-        .args(["keys", "generate"])
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let imp = rwa(&home)
+        .args(["keys", "add", "main", "--seed-phrase", phrase, "--path"])
+        .arg(home.join("main.age"))
         .env("RWA_PASSPHRASE", pass)
         .output()
         .unwrap();
-    // `keys generate` prompts interactively for a NEW passphrase (env is for
-    // unlocking, not creation) — if it can't prompt it fails; fall back to
-    // seed-phrase import, which exercises the same storage path.
-    let (home, pubkey) = if generated.status.success() {
-        let out = String::from_utf8_lossy(&generated.stdout);
-        let pk = out.lines().find_map(|l| l.strip_prefix("Address:")).unwrap().trim().to_string();
-        (home, pk)
-    } else {
-        let home2 = test_home("keys-export-enc2");
-        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-        let imp = rwa(&home2)
-            .args(["keys", "add", "main", "--seed-phrase", phrase, "--path"])
-            .arg(home2.join("main.age"))
-            .env("RWA_PASSPHRASE", pass)
-            .output()
-            .unwrap();
-        assert!(imp.status.success(), "add: {}", String::from_utf8_lossy(&imp.stderr));
-        (home2, "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_string())
-    };
+    assert!(imp.status.success(), "add: {}", String::from_utf8_lossy(&imp.stderr));
 
     let exp = rwa(&home)
         .args(["--json", "keys", "export", "--reveal"])
         .env("RWA_PASSPHRASE", pass)
+        .env("RWA_KEYRING_DISABLE", "1")
         .output()
         .unwrap();
-    assert!(exp.status.success(), "export: {}", String::from_utf8_lossy(&exp.stderr));
+    assert!(!exp.status.success(), "export --reveal must no longer be scriptable via env passphrase");
     let v = stdout_json(&exp);
-    assert_eq!(v["pubkey"].as_str().unwrap(), pubkey);
-    let mnemonic = v["mnemonic"].as_str().expect("encrypted wallet stores the phrase");
-    assert!(mnemonic.split_whitespace().count() >= 12);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
 }
 
 /// Operational chain, headless: encrypted wallet, no RWA_PASSPHRASE, keychain
@@ -1518,6 +1511,52 @@ fn store_passphrase_headless_is_interactive_required() {
     let out = rwa(&home)
         .args(["--json", "keys", "store-passphrase"])
         .env("RWA_PASSPHRASE", "TestPass2026!secure") // deliberately set — must be ignored
+        .env("RWA_KEYRING_DISABLE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
+}
+
+/// BREAKING (spec A3): `keys decrypt` no longer reads RWA_PASSPHRASE — an
+/// injected agent must not be able to strip encryption headlessly.
+#[test]
+fn decrypt_headless_is_interactive_required_even_with_env() {
+    let home = test_home("decrypt-admin-gate");
+    let generated = rwa(&home)
+        .args(["keys", "generate"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "keys", "decrypt"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .env("RWA_KEYRING_DISABLE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
+}
+
+/// BREAKING (spec A3): same gate for `keys export --reveal` on an encrypted
+/// wallet — the key cannot be exfiltrated with a leaked env passphrase.
+#[test]
+fn export_reveal_headless_is_interactive_required_even_with_env() {
+    let home = test_home("export-admin-gate");
+    let generated = rwa(&home)
+        .args(["keys", "generate"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "keys", "export", "--reveal"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
         .env("RWA_KEYRING_DISABLE", "1")
         .output()
         .unwrap();

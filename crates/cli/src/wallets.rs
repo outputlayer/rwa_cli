@@ -324,19 +324,6 @@ pub fn load_target_full(
     }
 }
 
-/// Read the wallet passphrase from `RWA_PASSPHRASE` (one-time warning) or prompt.
-pub(crate) fn prompt_passphrase() -> Result<Zeroizing<String>> {
-    if let Ok(p) = std::env::var("RWA_PASSPHRASE") {
-        warn_passphrase_env_once();
-        return Ok(Zeroizing::new(p));
-    }
-    rpassword::prompt_password("Wallet passphrase: ")
-        .map(Zeroizing::new)
-        .map_err(|e| eyre!(
-            "Failed to read passphrase ({e}). No terminal to prompt? Set RWA_PASSPHRASE or run interactively."
-        ))
-}
-
 /// Normalize a path for identity comparison: canonicalize the parent directory
 /// (which usually still exists even when the file itself was just renamed) and
 /// reattach the file name. Falls back to the path as-is when the parent can't
@@ -691,22 +678,7 @@ mod tests {
         assert_eq!(v.pointer("/encrypted"), Some(&serde_json::Value::from(true)));
     }
 
-    #[test]
-    #[serial_test::serial] // mutates RWA_PASSPHRASE — must not race other env tests
-    #[allow(unsafe_code)]
-    fn prompt_passphrase_returns_zeroizing() {
-        // Test requires env var mutation to exercise env var code path
-        // Set RWA_PASSPHRASE env var for headless testing
-        unsafe {
-            std::env::set_var("RWA_PASSPHRASE", "TestPass2026!secure");
-        }
-        let result = prompt_passphrase().expect("prompt_passphrase must succeed");
-
-        // Content check: verify the passphrase is correct
-        assert_eq!(&*result, "TestPass2026!secure");
-
-        unsafe {
-            std::env::remove_var("RWA_PASSPHRASE");
-        }
-    }
+    // `prompt_passphrase` (and its env-wins unit test) was retired with it —
+    // env-wins semantics for the operational chain are covered by
+    // `passphrase::tests::chain_env_wins` (Task 2).
 }

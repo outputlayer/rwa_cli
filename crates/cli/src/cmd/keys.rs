@@ -408,7 +408,11 @@ async fn export(selected: Option<&str>, reveal: bool, json: bool) -> Result<()> 
         }
     }
 
-    let (w, mnemonic) = crate::wallets::load_target_full(&target, crate::wallets::prompt_passphrase)?;
+    // Admin class (spec A3): secret export takes a typed passphrase only when
+    // the wallet is encrypted; plaintext wallets have nothing to prompt for.
+    let (w, mnemonic) = crate::wallets::load_target_full(&target, || {
+        crate::passphrase::admin_passphrase("keys export --reveal")
+    })?;
     let keypair = w.to_keypair_bytes();
     let b58 = w.to_base58_keypair();
 
@@ -502,10 +506,9 @@ async fn decrypt_wallet(json: bool) -> Result<()> {
         }
         return Err(eyre::eyre!("No wallet found."));
     }
-    // Use the shared prompt so `RWA_PASSPHRASE` works for scripted decryption
-    // (CLAUDE.md: "RWA_PASSPHRASE can be used for scripted access") — the
-    // local `read_passphrase` only prompts a TTY and ignored the env var.
-    let passphrase = crate::wallets::prompt_passphrase()?;
+    // Admin class (spec A3): decrypting strips the at-rest protection, so the
+    // passphrase must be typed — RWA_PASSPHRASE/keychain deliberately unread.
+    let passphrase = crate::passphrase::admin_passphrase("keys decrypt")?;
     let w = Wallet::from_encrypted_file(&age_path, &passphrase)?;
     let json_path = w.save_default()?;
     std::fs::remove_file(&age_path)
