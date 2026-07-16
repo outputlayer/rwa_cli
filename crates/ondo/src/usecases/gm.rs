@@ -56,6 +56,9 @@ pub enum GmTradeErrorKind {
     /// passphrase typed at a live terminal — env/keychain are deliberately
     /// not consulted, so non-interactive runs fail closed.
     InteractiveRequired,
+    /// `send` recipient is not in the wallet's allowed-recipient policy
+    /// (add with `keys policy allow`, human-only).
+    RecipientNotAllowed,
     /// Another rwa process holds the exclusive lock — transient by definition.
     LockContention,
 }
@@ -87,7 +90,7 @@ impl GmTradeErrorKind {
     /// appears in llms.txt / README / CLAUDE.md). Adding a variant already
     /// breaks `label()`'s exhaustive match at compile time — when you fix that,
     /// add the variant here and document it, or the guard fails.
-    pub const ALL: [GmTradeErrorKind; 18] = [
+    pub const ALL: [GmTradeErrorKind; 19] = [
         Self::MarketClosed,
         Self::NotTradable,
         Self::SlippageTooHigh,
@@ -105,6 +108,7 @@ impl GmTradeErrorKind {
         Self::SelfSend,
         Self::RevealRequired,
         Self::InteractiveRequired,
+        Self::RecipientNotAllowed,
         Self::LockContention,
     ];
 
@@ -129,6 +133,7 @@ impl GmTradeErrorKind {
             Self::SelfSend => "self_send",
             Self::RevealRequired => "reveal_required",
             Self::InteractiveRequired => "interactive_required",
+            Self::RecipientNotAllowed => "recipient_not_allowed",
             Self::LockContention => "lock_contention",
         }
     }
@@ -1110,6 +1115,16 @@ mod tests {
     }
 
     #[test]
+    fn recipient_not_allowed_is_typed_and_labeled() {
+        let err: eyre::Error = GmTradeError::new(
+            GmTradeErrorKind::RecipientNotAllowed,
+            "recipient is not in the allowed list",
+        )
+        .into();
+        assert_eq!(classify_error(&err), Some("recipient_not_allowed"));
+    }
+
+    #[test]
     fn all_error_kinds_listed_with_unique_labels() {
         // Compile-time tripwire: adding a variant breaks this exhaustive match
         // (and `label()`'s), a reminder to add it to `ALL` and document it —
@@ -1133,6 +1148,7 @@ mod tests {
                 | GmTradeErrorKind::SelfSend
                 | GmTradeErrorKind::RevealRequired
                 | GmTradeErrorKind::InteractiveRequired
+                | GmTradeErrorKind::RecipientNotAllowed
                 | GmTradeErrorKind::LockContention => {}
             }
         }
