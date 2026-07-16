@@ -101,12 +101,15 @@ GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via
 - `rwa keys import --private-key <BASE58>` — import private key
 - `rwa keys show` — show address + key path
 - `rwa keys encrypt` — convert `key.json` -> `key.age`
-- `rwa keys decrypt` — convert `key.age` -> `key.json`
+- `rwa keys decrypt` — convert `key.age` -> `key.json`; admin-class (TTY-only, see below)
+- `rwa keys store-passphrase [--wallet N]` — verify + save the encrypted wallet's passphrase in the OS keychain (TTY-only; nothing is stored on a rejected passphrase)
+- `rwa keys forget-passphrase [--wallet N]` — remove the stored passphrase from the OS keychain (headless OK). Both speak `--json` (`{status, action, wallet}`, `forget-passphrase` adds `existed`)
 - `rwa keys add <NAME> --path <PATH>` — register an existing key file by name; with `--seed-phrase "..."` or `--private-key <KEY>` it imports the key to `<PATH>` (encrypted by default; `--allow-plaintext` to opt out) and registers it
 - `rwa keys list` — list named wallets (* = active); `--json` returns `{wallets:[{name,path,pubkey,active,encrypted}]}`
 - `rwa keys use <NAME>` — set the active wallet
 - `rwa keys remove <NAME>` — unregister (key file is NOT deleted)
 - `rwa --wallet <NAME> gm <CMD>` — select a named wallet for one command; wallet selection priority: `--wallet` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age`
+- Passphrase resolution: operational commands (trading, `keys show`) try `RWA_PASSPHRASE` → OS keychain → interactive prompt (`RWA_KEYRING_DISABLE=1` skips the keychain step); admin commands (`keys export --reveal`, `keys decrypt`, `keys store-passphrase`) accept ONLY a live TTY prompt — env and keychain are deliberately not consulted, so headless runs fail with `interactive_required` instead of silently using a leaked env passphrase
 
 ## Amount formats
 

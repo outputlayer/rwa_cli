@@ -9,6 +9,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **OS-keychain passphrase storage** — `keys store-passphrase` / `keys forget-passphrase`; operational commands resolve the passphrase `RWA_PASSPHRASE` → OS keychain → prompt, so a desktop agent trades headless without the secret ever entering env or transcript. `RWA_KEYRING_DISABLE=1` skips the keychain step.
+
+### Breaking
+
+- **`keys decrypt` and `keys export --reveal` are now admin-class**: the passphrase must be typed at a live terminal; `RWA_PASSPHRASE` and the keychain are deliberately not consulted (headless → `error_kind: interactive_required`, exit 1). Closes the "injected agent strips encryption / exfiltrates the key with a leaked env passphrase" hole. Requires a minor version bump at release.
+
 ## [0.7.8] - 2026-07-16 — buy-basket --total weighted allocation
 
 ### Added
