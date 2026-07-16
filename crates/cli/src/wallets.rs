@@ -353,6 +353,40 @@ pub fn load_target_full(
     }
 }
 
+/// Like `load_target_full`, but returns the full [`wallet::DecryptedWallet`]
+/// (wallet + mnemonic + [`wallet::SendPolicy`]) instead of dropping the
+/// policy. Plaintext wallets never carry a mnemonic or a policy, so both are
+/// `None` on that path.
+pub fn load_target_payload(
+    target: &WalletTarget,
+    passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
+) -> Result<wallet::DecryptedWallet> {
+    match target {
+        WalletTarget::Path(path) => {
+            if !path.exists() {
+                return Err(eyre!(
+                    "Wallet key file not found: {}. Re-add it with `rwa keys add`.",
+                    path.display()
+                ));
+            }
+            if wallet::is_age_encrypted(path)? {
+                let pass = passphrase()?;
+                Wallet::load_encrypted_payload(path, &pass)
+            } else {
+                Ok(wallet::DecryptedWallet { wallet: Wallet::from_file(path)?, mnemonic: None, policy: None })
+            }
+        }
+        WalletTarget::LegacyDefault => {
+            if wallet::is_wallet_encrypted() {
+                let pass = passphrase()?;
+                Wallet::load_encrypted_payload(&wallet::encrypted_key_path()?, &pass)
+            } else {
+                Ok(wallet::DecryptedWallet { wallet: Wallet::load_default()?, mnemonic: None, policy: None })
+            }
+        }
+    }
+}
+
 /// Normalize a path for identity comparison: canonicalize the parent directory
 /// (which usually still exists even when the file itself was just renamed) and
 /// reattach the file name. Falls back to the path as-is when the parent can't

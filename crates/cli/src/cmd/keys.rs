@@ -142,6 +142,34 @@ pub enum KeysAction {
         /// Name of the wallet to remove
         name: String,
     },
+
+    /// Manage the send-policy allowed-recipient list (stored INSIDE the
+    /// encrypted wallet payload; edits require typing the passphrase)
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PolicyAction {
+    /// List allowed recipients (reads via the operational passphrase chain)
+    Show,
+    /// Allow a recipient address (admin: typed passphrase only)
+    Allow {
+        address: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Remove a recipient address (admin: typed passphrase only)
+    Remove { address: String },
+}
+
+/// The two policy-mutating operations, sharing the decrypt -> mutate ->
+/// re-encrypt spine in `policy_edit`.
+enum PolicyEdit {
+    Allow { address: String, label: Option<String> },
+    Remove { address: String },
 }
 
 /// Which passphrase resolution chain (if any) a `keys` subcommand consults —
@@ -176,6 +204,14 @@ fn passphrase_class(action: &KeysAction) -> PassphraseClass {
         KeysAction::Export { .. } => Admin,
 
         KeysAction::Show => Operational,
+
+        // `Policy` mixes both classes at the sub-action level: `show` reads
+        // via the operational chain, `allow`/`remove` mutate via the admin
+        // chain (see `policy_show`/`policy_edit`).
+        KeysAction::Policy { action } => match action {
+            PolicyAction::Show => Operational,
+            PolicyAction::Allow { .. } | PolicyAction::Remove { .. } => Admin,
+        },
 
         KeysAction::Generate { .. }
         | KeysAction::Import { .. }
@@ -226,6 +262,15 @@ pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> 
         KeysAction::List => list(json).await,
         KeysAction::Use { name } => use_wallet(&name, json).await,
         KeysAction::Remove { name } => remove(&name, json).await,
+        KeysAction::Policy { action } => match action {
+            PolicyAction::Show => policy_show(selected, json).await,
+            PolicyAction::Allow { address, label } => {
+                policy_edit(selected, json, PolicyEdit::Allow { address, label }).await
+            }
+            PolicyAction::Remove { address } => {
+                policy_edit(selected, json, PolicyEdit::Remove { address }).await
+            }
+        },
     }
 }
 
@@ -640,6 +685,137 @@ async fn forget_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
         true => println!("Stored passphrase for '{account}' removed from the OS keychain."),
         false => println!("No stored passphrase for '{account}' — nothing to remove."),
     }
+    Ok(())
+}
+
+/// Whether the given wallet target is currently stored age-encrypted. Send
+/// policy lives inside the encrypted payload, so a plaintext wallet has no
+/// policy to read or edit.
+fn target_is_encrypted(target: &crate::wallets::WalletTarget) -> Result<bool> {
+    Ok(match target {
+        crate::wallets::WalletTarget::Path(p) => wallet::is_age_encrypted(p)?,
+        crate::wallets::WalletTarget::LegacyDefault => wallet::is_wallet_encrypted(),
+    })
+}
+
+/// Resolve a wallet target to its concrete on-disk key-file path.
+fn target_path(target: &crate::wallets::WalletTarget) -> Result<std::path::PathBuf> {
+    Ok(match target {
+        crate::wallets::WalletTarget::Path(p) => p.clone(),
+        crate::wallets::WalletTarget::LegacyDefault => wallet::encrypted_key_path()?,
+    })
+}
+
+/// `rwa keys policy show`. Reads via the operational passphrase chain
+/// (`RWA_PASSPHRASE` -> OS keychain -> interactive prompt) since listing the
+/// allow list is not a sensitive-material reveal the way `export` is.
+async fn policy_show(selected: Option<&str>, json: bool) -> Result<()> {
+    let (account, target) = resolve_wallet_account(selected)?;
+    if !target_is_encrypted(&target)? {
+        if json {
+            println!("{}", serde_json::json!({ "status": "ok", "policy": null }));
+            return Ok(());
+        }
+        println!("No send policy: wallet '{account}' is plaintext (policy requires an encrypted wallet).");
+        return Ok(());
+    }
+    let dw = crate::wallets::load_target_payload(&target, || {
+        crate::passphrase::operational_passphrase(&account).map(|(p, _)| p)
+    })?;
+    match dw.policy {
+        None => {
+            if json {
+                println!("{}", serde_json::json!({ "status": "ok", "policy": null }));
+            } else {
+                println!(
+                    "No send policy configured for '{account}'. Add one: rwa keys policy allow <ADDR>"
+                );
+            }
+        }
+        Some(p) => {
+            if json {
+                let recipients: Vec<_> = p
+                    .allowed_recipients
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "address": r.address, "label": r.label, "added_at": r.added_at,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({ "status": "ok", "policy": { "recipients": recipients } })
+                );
+            } else {
+                println!("Allowed recipients for '{account}' ({}):", p.allowed_recipients.len());
+                for r in &p.allowed_recipients {
+                    println!("  {}  {}  (added {})", r.address, r.label.as_deref().unwrap_or("-"), r.added_at);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `rwa keys policy allow|remove`. Admin class (spec A3): mutating the
+/// send-policy allow list only takes a typed passphrase — env/keychain are
+/// deliberately not consulted, same as `store-passphrase`/`decrypt`/`export`.
+async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Result<()> {
+    let (_account, target) = resolve_wallet_account(selected)?;
+    if !target_is_encrypted(&target)? {
+        return Err(eyre::eyre!(
+            "Send policy requires an encrypted wallet. Encrypt first: rwa keys encrypt"
+        ));
+    }
+    let pass = crate::passphrase::admin_passphrase("keys policy")?;
+    let path = target_path(&target)?;
+    let mut dw = Wallet::load_encrypted_payload(&path, &pass)?;
+    let mut policy = dw.policy.take().unwrap_or_default();
+    match &edit {
+        PolicyEdit::Allow { address, label } => {
+            // Typed so agents can branch on error_kind instead of matching prose.
+            rwa_ondo::solana::validate_address(address).map_err(|e| {
+                eyre::Report::from(rwa_ondo::usecases::gm::GmTradeError::new(
+                    rwa_ondo::usecases::gm::GmTradeErrorKind::InvalidAddress,
+                    e.to_string(),
+                ))
+            })?;
+            if *address == dw.wallet.pubkey() {
+                return Err(rwa_ondo::usecases::gm::GmTradeError::new(
+                    rwa_ondo::usecases::gm::GmTradeErrorKind::SelfSend,
+                    "That's this wallet's own address — self-send is always allowed, no policy entry needed",
+                )
+                .into());
+            }
+            policy.allow(address, label.as_deref(), &chrono::Utc::now().to_rfc3339())?;
+        }
+        PolicyEdit::Remove { address } => {
+            if !policy.remove(address) {
+                return Err(eyre::eyre!("Address not in the allowed list: {address}"));
+            }
+        }
+    }
+    // Atomic rewrite with the SAME passphrase, preserving the mnemonic: write
+    // to a sibling tmp path, then rename over the real file.
+    let tmp = path.with_extension("age.tmp");
+    dw.wallet.save_encrypted_payload(&tmp, &pass, dw.mnemonic.as_deref(), Some(&policy))?;
+    std::fs::rename(&tmp, &path)?;
+    let (action, address) = match &edit {
+        PolicyEdit::Allow { address, .. } => ("allowed", address.clone()),
+        PolicyEdit::Remove { address } => ("removed", address.clone()),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ok", "action": action, "address": address,
+                "recipients": policy.allowed_recipients.len(),
+            })
+        );
+        return Ok(());
+    }
+    println!("Address {address} {action}. Allowed recipients: {}.", policy.allowed_recipients.len());
     Ok(())
 }
 

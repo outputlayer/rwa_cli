@@ -48,6 +48,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa keys encrypt/decrypt` | Toggle passphrase encryption of the key file |
 | `rwa keys store-passphrase/forget-passphrase` | Save (TTY-only) / remove (headless OK) the passphrase in the OS keychain |
 | `rwa keys add/list/use/remove` | Multiple named wallets |
+| `rwa keys policy show/allow/remove` | Manage the `send` allowed-recipient list (encrypted wallets only) |
 | `rwa update [-y]` | Self-update |
 
 Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--slippage <BPS>`, `--max-bps <N>` (cost ceiling), and `--json`.

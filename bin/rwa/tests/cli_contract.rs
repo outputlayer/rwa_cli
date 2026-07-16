@@ -1656,3 +1656,31 @@ fn pnl_json_computes_from_the_ledger() {
     assert_eq!(v["totals"]["realized_usdc"], 3.0);
     assert_eq!(v["totals"]["total_pnl_usdc"], 3.0);
 }
+
+/// `keys policy allow --json` headless (env passphrase set) → admin gate.
+#[test]
+fn policy_allow_headless_is_interactive_required() {
+    let home = test_home("policy-allow-headless");
+    let generated = rwa(&home).args(["keys", "generate"]).env("RWA_PASSPHRASE", "TestPass2026!secure").output().unwrap();
+    assert!(generated.status.success());
+    let out = rwa(&home)
+        .args(["--json", "keys", "policy", "allow", "Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
+}
+
+/// `keys policy show --json` on a plaintext wallet → policy: null, exit 0.
+#[test]
+fn policy_show_plaintext_wallet_is_null() {
+    let home = test_home("policy-show-plaintext");
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let out = rwa(&home).args(["--json", "keys", "policy", "show"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert!(v["policy"].is_null(), "{v}");
+}
