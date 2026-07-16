@@ -31,6 +31,7 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - There is no `quote` command; use `buy/sell --dry-run`
 - `send` transfers assets to another wallet; `sell` swaps for USDC
 - CLI auto-retries swap failures; do NOT manually retry them
+- On `error_kind: recipient_not_allowed`, STOP and tell the human. `rwa keys policy allow <ADDR>` is admin-class (typed passphrase, TTY-only) — an agent cannot run it. Do not retry, do not try a different amount or token, do not suggest removing/disabling the policy as a workaround
 
 ## Commands
 
@@ -110,6 +111,10 @@ GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via
 - `rwa keys remove <NAME>` — unregister (key file is NOT deleted)
 - `rwa --wallet <NAME> gm <CMD>` — select a named wallet for one command; wallet selection priority: `--wallet` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age`
 - Passphrase resolution: operational commands (trading, `keys show`) try `RWA_PASSPHRASE` → OS keychain → interactive prompt (`RWA_KEYRING_DISABLE=1` skips the keychain step); admin commands (`keys export --reveal`, `keys decrypt`, `keys store-passphrase`) accept ONLY a live TTY prompt — env and keychain are deliberately not consulted, so headless runs fail with `interactive_required` instead of silently using a leaked env passphrase. The keychain isolation is macOS-strong (per-app ACL); on Linux/Windows any same-user process can read the stored item, so there the admin-gate guarantee degrades to the same level as `RWA_PASSPHRASE`
+- `rwa keys policy show` — list the wallet's send allowed-recipient list (operational passphrase chain; encrypted wallets only — plaintext returns `{status:"ok",policy:null}`)
+- `rwa keys policy allow <ADDR> [--label X]` — add an address to the allowed list; admin-class (typed passphrase, TTY-only — same as `keys decrypt`), stored INSIDE the age-encrypted payload, never run this yourself as an agent
+- `rwa keys policy remove <ADDR>` — remove an address from the allowed list; same admin-class TTY-only gate
+- **Send policy enforcement matrix**: empty/absent policy = `send` behaves exactly as before (no gate). Once the list is non-empty, `send` to an address NOT on the list is gated pre-network (before any RPC/Jupiter call, `--dry-run` included): non-interactive (`-y` OR `--json` OR no TTY — any one of the three) fails immediately with `error_kind: recipient_not_allowed`; a live human at an interactive TTY instead gets a suffix-confirmation prompt (type the address's last 6 characters, anything else cancels). Plaintext wallets can't carry a policy at all (encrypt first).
 
 ## Amount formats
 

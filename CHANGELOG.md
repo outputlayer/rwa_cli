@@ -14,6 +14,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **OS-keychain passphrase storage** — `keys store-passphrase` / `keys forget-passphrase`; operational commands resolve the passphrase `RWA_PASSPHRASE` → OS keychain → prompt, so a desktop agent trades headless without the secret ever entering env or transcript. `RWA_KEYRING_DISABLE=1` skips the keychain step.
+- **Send policy (allowed recipients)** — `keys policy show/allow/remove` stores a whitelist INSIDE the age-encrypted wallet payload (edits are admin-class: typed passphrase only). Opt-in: once the list is non-empty, any non-interactive `send` (`-y`/`--json`/no TTY) to an unlisted address fails pre-network with `error_kind: recipient_not_allowed`; a live TTY send requires typing the address's last 6 characters. Empty/absent policy = behavior unchanged. Plaintext wallets can't carry a policy (encrypt first).
 
 ### Breaking
 
