@@ -282,8 +282,14 @@ pub fn load_target(
 pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
     let config = dirs::config_dir()
         .ok_or_else(|| eyre!("Cannot determine config directory"))?;
-    let target = WalletRegistry::load(&config)?.resolve(selected)?;
-    load_target(&target, prompt_passphrase)
+    let reg = WalletRegistry::load(&config)?;
+    // Keychain account = explicit selection > registry active > legacy "default".
+    let account = selected
+        .map(str::to_string)
+        .or_else(|| reg.active.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let target = reg.resolve(selected)?;
+    load_target(&target, move || crate::passphrase::operational_passphrase(&account))
 }
 
 /// Like `load_target`, but also returns the stored recovery mnemonic when the

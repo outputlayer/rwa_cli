@@ -41,6 +41,7 @@ fn rwa(home: &Path) -> Command {
         "RWA_ONDO_SESSION_URL",
         "RWA_JUPITER_URL",
         "RWA_NO_AUTO_GAS",
+        "RWA_KEYRING_DISABLE",
     ] {
         c.env_remove(var);
     }
@@ -1466,6 +1467,36 @@ fn keys_export_reveals_stored_mnemonic_for_encrypted_wallet() {
     assert_eq!(v["pubkey"].as_str().unwrap(), pubkey);
     let mnemonic = v["mnemonic"].as_str().expect("encrypted wallet stores the phrase");
     assert!(mnemonic.split_whitespace().count() >= 12);
+}
+
+/// Operational chain, headless: encrypted wallet, no RWA_PASSPHRASE, keychain
+/// disabled → the command must fail fast with the no-terminal message, not
+/// hang on a prompt and not touch the developer's real keychain.
+#[test]
+fn headless_encrypted_wallet_fails_fast_without_passphrase_source() {
+    let home = test_home("keychain-headless");
+    let generated = rwa(&home)
+        .args(["keys", "generate"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output()
+        .unwrap();
+    assert!(generated.status.success(), "encrypted generate failed: {}", String::from_utf8_lossy(&generated.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "keys", "show"])
+        .env("RWA_KEYRING_DISABLE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    // `--json` errors are a stdout JSON contract (`render_error`), not stderr —
+    // check the JSON's `error` field for the fail-fast hint.
+    let v = stdout_json(&out);
+    assert_eq!(v["status"].as_str().unwrap(), "error");
+    let msg = v["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("No terminal") || msg.contains("passphrase"),
+        "must fail fast with a passphrase/terminal hint: {msg}"
+    );
 }
 
 // ── pnl ──────────────────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ chrono-tz.workspace = true
 fs2.workspace = true
 dirs.workspace = true
 rpassword.workspace = true
+keyring.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true

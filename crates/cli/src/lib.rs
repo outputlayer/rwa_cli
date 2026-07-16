@@ -1,4 +1,5 @@
 pub mod cmd;
+pub(crate) mod passphrase;
 pub mod wallets;
 
 use clap::Parser;
