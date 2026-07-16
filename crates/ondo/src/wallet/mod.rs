@@ -67,6 +67,60 @@ pub struct Wallet {
     signing_key: SigningKey,
 }
 
+/// A single recipient address allow-listed for `send`, stored inside the
+/// encrypted wallet payload (v3).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AllowedRecipient {
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub added_at: String, // RFC3339
+}
+
+/// Send-time allow list, embedded (encrypted) alongside the key and mnemonic
+/// in the payload v3 age container.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SendPolicy {
+    #[serde(default)]
+    pub allowed_recipients: Vec<AllowedRecipient>,
+}
+
+impl SendPolicy {
+    /// True when `addr` is in the allowed list (exact base58 match).
+    #[must_use]
+    pub fn permits(&self, addr: &str) -> bool {
+        self.allowed_recipients.iter().any(|r| r.address == addr)
+    }
+
+    /// Add an address. Errors on exact-duplicate address.
+    pub fn allow(&mut self, address: &str, label: Option<&str>, added_at: &str) -> Result<()> {
+        if self.permits(address) {
+            return Err(eyre!("{address} is already in the allowed-recipients list"));
+        }
+        self.allowed_recipients.push(AllowedRecipient {
+            address: address.to_string(),
+            label: label.map(str::to_string),
+            added_at: added_at.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Remove an address; returns whether it was present.
+    pub fn remove(&mut self, address: &str) -> bool {
+        let before = self.allowed_recipients.len();
+        self.allowed_recipients.retain(|r| r.address != address);
+        self.allowed_recipients.len() != before
+    }
+}
+
+/// Result of decrypting a payload v1/v2/v3 age container: the wallet plus
+/// whatever optional extras the payload carried.
+pub struct DecryptedWallet {
+    pub wallet: Wallet,
+    pub mnemonic: Option<String>,
+    pub policy: Option<SendPolicy>,
+}
+
 impl Wallet {
     /// Generate a new random keypair.
     pub fn generate() -> Self {
@@ -116,11 +170,31 @@ impl Wallet {
     /// encrypted payload (object `{"key": [...], "mnemonic": "..."}` instead
     /// of the legacy bare array) so `keys export` can reveal it later. The
     /// mnemonic is NEVER written outside the age container.
+    ///
+    /// Thin wrapper over [`Self::save_encrypted_payload`] with `policy: None`
+    /// — signature preserved for existing callers.
     pub fn save_encrypted_with_mnemonic(
         &self,
         path: &Path,
         passphrase: &str,
         mnemonic: Option<&str>,
+    ) -> Result<()> {
+        self.save_encrypted_payload(path, passphrase, mnemonic, None)
+    }
+
+    /// Save encrypted, optionally embedding the recovery mnemonic and/or a
+    /// [`SendPolicy`] inside the encrypted payload. Always writes the object
+    /// form when either extra is present (`{"key": [...], "mnemonic": "...",
+    /// "policy": {...}}`), omitting whichever key(s) are `None`; with both
+    /// `None` this writes the legacy bare-array form (identical to
+    /// `save_encrypted`). The mnemonic and policy are NEVER written outside
+    /// the age container.
+    pub fn save_encrypted_payload(
+        &self,
+        path: &Path,
+        passphrase: &str,
+        mnemonic: Option<&str>,
+        policy: Option<&SendPolicy>,
     ) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -128,12 +202,18 @@ impl Wallet {
         let mut key_bytes = Zeroizing::new(Vec::with_capacity(64));
         key_bytes.extend_from_slice(self.signing_key.as_bytes());
         key_bytes.extend_from_slice(self.verifying_key().as_bytes());
-        let json = Zeroizing::new(match mnemonic {
-            Some(phrase) => serde_json::to_string(&serde_json::json!({
-                "key": &*key_bytes,
-                "mnemonic": phrase,
-            }))?,
-            None => serde_json::to_string(&*key_bytes)?,
+        let json = Zeroizing::new(if mnemonic.is_some() || policy.is_some() {
+            let mut obj = serde_json::Map::new();
+            obj.insert("key".to_string(), serde_json::to_value(&*key_bytes)?);
+            if let Some(phrase) = mnemonic {
+                obj.insert("mnemonic".to_string(), serde_json::Value::String(phrase.to_string()));
+            }
+            if let Some(p) = policy {
+                obj.insert("policy".to_string(), serde_json::to_value(p)?);
+            }
+            serde_json::to_string(&serde_json::Value::Object(obj))?
+        } else {
+            serde_json::to_string(&*key_bytes)?
         });
 
         let encryptor = age::Encryptor::with_user_passphrase(Secret::new(passphrase.to_string()));
@@ -154,12 +234,23 @@ impl Wallet {
     }
 
     /// Load an encrypted wallet plus its stored recovery mnemonic, when the
-    /// payload carries one. Accepts both the legacy bare-array payload and the
-    /// object form written by `save_encrypted_with_mnemonic`.
+    /// payload carries one. Accepts the legacy bare-array payload and both
+    /// object forms (v2 `{key, mnemonic}`, v3 `{key, mnemonic, policy}`).
+    ///
+    /// Thin wrapper over [`Self::load_encrypted_payload`], dropping the
+    /// policy — signature preserved for existing callers.
     pub fn from_encrypted_file_full(
         path: &Path,
         passphrase: &str,
     ) -> Result<(Self, Option<String>)> {
+        let decrypted = Self::load_encrypted_payload(path, passphrase)?;
+        Ok((decrypted.wallet, decrypted.mnemonic))
+    }
+
+    /// Load an encrypted wallet plus whatever optional extras its payload
+    /// carries: v1 (bare key array) → mnemonic `None`, policy `None`; v2
+    /// `{key, mnemonic}` → policy `None`; v3 `{key, mnemonic, policy}` → full.
+    pub fn load_encrypted_payload(path: &Path, passphrase: &str) -> Result<DecryptedWallet> {
         let encrypted = std::fs::read(path)?;
         let decryptor = match age::Decryptor::new(&encrypted[..])
             .map_err(|e| eyre!("Failed to open encrypted wallet: {e}"))?
@@ -181,14 +272,16 @@ impl Wallet {
                 key: Vec<u8>,
                 #[serde(default)]
                 mnemonic: Option<String>,
+                #[serde(default)]
+                policy: Option<SendPolicy>,
             }
             let payload: Payload = serde_json::from_str(json)
                 .map_err(|e| eyre!("Invalid wallet payload after decryption: {e}"))?;
             let key_json = Zeroizing::new(serde_json::to_string(&payload.key)?);
             let wallet = Self::from_json(&key_json)?;
-            return Ok((wallet, payload.mnemonic));
+            return Ok(DecryptedWallet { wallet, mnemonic: payload.mnemonic, policy: payload.policy });
         }
-        Ok((Self::from_json(json)?, None))
+        Ok(DecryptedWallet { wallet: Self::from_json(json)?, mnemonic: None, policy: None })
     }
 
     /// Save encrypted to the default path `~/.config/rwa/key.age`.
@@ -1026,5 +1119,60 @@ mod tests {
 
         assert!(!is_age_encrypted(plain.path()).unwrap(), "plaintext JSON => false");
         assert!(is_age_encrypted(enc.path()).unwrap(), "age file => true");
+    }
+
+    // ── payload v3 (SendPolicy) ───────────────────────────────────────────
+    // `tempfile` isn't a dev-dep of rwa-ondo, so these mirror the dir-based
+    // temp-file style already used by `encrypted_mnemonic_roundtrip_and_legacy_compat`.
+
+    #[test]
+    fn payload_v3_roundtrip_preserves_key_mnemonic_policy() {
+        let dir = std::env::temp_dir().join(format!("rwa-payload-v3-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.age");
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        let mut policy = SendPolicy::default();
+        policy.allow("Dn9Qxyz111111111111111111111111111111111111", Some("cold"), "2026-07-16T00:00:00Z").unwrap();
+        w.save_encrypted_payload(&path, "pass123", Some(&phrase), Some(&policy)).unwrap();
+
+        let loaded = Wallet::load_encrypted_payload(&path, "pass123").unwrap();
+        assert_eq!(loaded.wallet.pubkey(), w.pubkey());
+        assert_eq!(loaded.mnemonic.as_deref(), Some(phrase.as_str()));
+        let p = loaded.policy.unwrap();
+        assert!(p.permits("Dn9Qxyz111111111111111111111111111111111111"));
+        assert!(!p.permits("SomeOtherAddress11111111111111111111111111"));
+        assert_eq!(p.allowed_recipients[0].label.as_deref(), Some("cold"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn payload_v2_and_v1_load_with_policy_none() {
+        let dir = std::env::temp_dir().join(format!("rwa-payload-v2v1-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // v2: written via the legacy wrapper (object without "policy").
+        let v2 = dir.join("v2.age");
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        w.save_encrypted_with_mnemonic(&v2, "pass123", Some(&phrase)).unwrap();
+        let loaded = Wallet::load_encrypted_payload(&v2, "pass123").unwrap();
+        assert_eq!(loaded.mnemonic.as_deref(), Some(phrase.as_str()));
+        assert!(loaded.policy.is_none());
+        // v1: bare array (written via save_encrypted).
+        let v1 = dir.join("v1.age");
+        w.save_encrypted(&v1, "pass123").unwrap();
+        let loaded = Wallet::load_encrypted_payload(&v1, "pass123").unwrap();
+        assert!(loaded.mnemonic.is_none());
+        assert!(loaded.policy.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn policy_allow_rejects_duplicates_and_remove_reports_presence() {
+        let mut p = SendPolicy::default();
+        p.allow("Addr1", None, "2026-07-16T00:00:00Z").unwrap();
+        assert!(p.allow("Addr1", Some("again"), "2026-07-16T00:00:00Z").is_err());
+        assert!(p.remove("Addr1"));
+        assert!(!p.remove("Addr1"));
     }
 }
