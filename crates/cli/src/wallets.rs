@@ -276,6 +276,18 @@ pub fn load_target(
     }
 }
 
+/// Keychain account name for a wallet selection: explicit `selected` > registry
+/// `active` > legacy `"default"`. Shared by `load_selected` (trading, `keys
+/// show`) and the `keys` admin handlers (`store-passphrase`,
+/// `forget-passphrase`), which must agree on the same account name the
+/// operational chain uses to look up (or clear) a keychain entry.
+pub(crate) fn keychain_account(reg: &WalletRegistry, selected: Option<&str>) -> String {
+    selected
+        .map(str::to_string)
+        .or_else(|| reg.active.clone())
+        .unwrap_or_else(|| "default".to_string())
+}
+
 /// Resolve the active/selected wallet under the real config dir and load it,
 /// reading the passphrase from `RWA_PASSPHRASE` or an interactive prompt.
 /// Single entry point for trading commands and `keys show`.
@@ -283,13 +295,30 @@ pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
     let config = dirs::config_dir()
         .ok_or_else(|| eyre!("Cannot determine config directory"))?;
     let reg = WalletRegistry::load(&config)?;
-    // Keychain account = explicit selection > registry active > legacy "default".
-    let account = selected
-        .map(str::to_string)
-        .or_else(|| reg.active.clone())
-        .unwrap_or_else(|| "default".to_string());
+    let account = keychain_account(&reg, selected);
     let target = reg.resolve(selected)?;
-    load_target(&target, move || crate::passphrase::operational_passphrase(&account))
+    // Track whether the passphrase came from the keychain (the closure runs
+    // at most once, inside `load_target`, only if the wallet is encrypted) so
+    // a decrypt failure right after can hint at a stale keychain entry rather
+    // than a generic error.
+    let from_keychain = std::cell::Cell::new(false);
+    let result = load_target(&target, || {
+        crate::passphrase::operational_passphrase(&account).map(|(pass, keychain)| {
+            from_keychain.set(keychain);
+            pass
+        })
+    });
+    result.map_err(|e| {
+        if from_keychain.get() {
+            e.wrap_err(
+                "Hint: this passphrase came from the OS keychain — if it's stale, run \
+                 `rwa keys forget-passphrase` and re-store it with `rwa keys store-passphrase`, \
+                 or set RWA_PASSPHRASE",
+            )
+        } else {
+            e
+        }
+    })
 }
 
 /// Like `load_target`, but also returns the stored recovery mnemonic when the

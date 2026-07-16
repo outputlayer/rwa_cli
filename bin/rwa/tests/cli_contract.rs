@@ -1538,6 +1538,7 @@ fn decrypt_headless_is_interactive_required_even_with_env() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1), "interactive_required is permanent, not transient (exit 1, not 75)");
     let v = stdout_json(&out);
     assert_eq!(v["error_kind"], "interactive_required", "{v}");
 }
@@ -1561,6 +1562,7 @@ fn export_reveal_headless_is_interactive_required_even_with_env() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1), "interactive_required is permanent, not transient (exit 1, not 75)");
     let v = stdout_json(&out);
     assert_eq!(v["error_kind"], "interactive_required", "{v}");
 }

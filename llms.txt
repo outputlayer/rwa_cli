@@ -109,7 +109,7 @@ GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via
 - `rwa keys use <NAME>` — set the active wallet
 - `rwa keys remove <NAME>` — unregister (key file is NOT deleted)
 - `rwa --wallet <NAME> gm <CMD>` — select a named wallet for one command; wallet selection priority: `--wallet` / `RWA_WALLET` > registry `active` > legacy `key.json`/`key.age`
-- Passphrase resolution: operational commands (trading, `keys show`) try `RWA_PASSPHRASE` → OS keychain → interactive prompt (`RWA_KEYRING_DISABLE=1` skips the keychain step); admin commands (`keys export --reveal`, `keys decrypt`, `keys store-passphrase`) accept ONLY a live TTY prompt — env and keychain are deliberately not consulted, so headless runs fail with `interactive_required` instead of silently using a leaked env passphrase
+- Passphrase resolution: operational commands (trading, `keys show`) try `RWA_PASSPHRASE` → OS keychain → interactive prompt (`RWA_KEYRING_DISABLE=1` skips the keychain step); admin commands (`keys export --reveal`, `keys decrypt`, `keys store-passphrase`) accept ONLY a live TTY prompt — env and keychain are deliberately not consulted, so headless runs fail with `interactive_required` instead of silently using a leaked env passphrase. The keychain isolation is macOS-strong (per-app ACL); on Linux/Windows any same-user process can read the stored item, so there the admin-gate guarantee degrades to the same level as `RWA_PASSPHRASE`
 
 ## Amount formats
 

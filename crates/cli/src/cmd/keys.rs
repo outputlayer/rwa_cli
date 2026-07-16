@@ -144,6 +144,50 @@ pub enum KeysAction {
     },
 }
 
+/// Which passphrase resolution chain (if any) a `keys` subcommand consults —
+/// spec A0/A3's two classes (admin / operational), plus "reads no *existing*
+/// wallet passphrase at all". Creation-time commands (`generate`/`import`/
+/// `encrypt`/`add --seed-phrase`) fall in the third bucket: they read a NEW
+/// passphrase via `prompt_new_passphrase`, a deliberately separate,
+/// non-TTY-gated flow (see CLAUDE.md's creation-time caveat) — not the
+/// `admin_passphrase`/`operational_passphrase` chains this classifier tracks.
+/// Test-only: a compile-time tripwire (below), not a runtime dispatch table —
+/// see Task 5 / spec A3 gap.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum PassphraseClass {
+    /// `admin_passphrase`: a live TTY prompt only, env/keychain deliberately unread.
+    Admin,
+    /// `operational_passphrase`: `RWA_PASSPHRASE` -> OS keychain -> interactive prompt.
+    Operational,
+    /// No existing-wallet passphrase is consulted.
+    NoPassphrase,
+}
+
+/// Compile-time routing tripwire (Task 5 / spec A3 gap): an explicit match
+/// over every `KeysAction` variant, not a prose list, so a new variant fails
+/// to compile here until someone consciously classifies it.
+#[cfg(test)]
+fn passphrase_class(action: &KeysAction) -> PassphraseClass {
+    use PassphraseClass::{Admin, NoPassphrase, Operational};
+    match action {
+        KeysAction::StorePassphrase => Admin,
+        KeysAction::Decrypt => Admin,
+        KeysAction::Export { .. } => Admin,
+
+        KeysAction::Show => Operational,
+
+        KeysAction::Generate { .. }
+        | KeysAction::Import { .. }
+        | KeysAction::Encrypt
+        | KeysAction::ForgetPassphrase
+        | KeysAction::Add { .. }
+        | KeysAction::List
+        | KeysAction::Use { .. }
+        | KeysAction::Remove { .. } => NoPassphrase,
+    }
+}
+
 pub async fn execute(action: KeysAction, json: bool, selected: Option<&str>) -> Result<()> {
     match action {
         KeysAction::Generate { allow_plaintext, encrypt } => {
@@ -546,10 +590,7 @@ async fn decrypt_wallet(json: bool) -> Result<()> {
 fn resolve_wallet_account(selected: Option<&str>) -> Result<(String, crate::wallets::WalletTarget)> {
     let cfg = config_dir()?;
     let reg = crate::wallets::WalletRegistry::load(&cfg)?;
-    let account = selected
-        .map(str::to_string)
-        .or_else(|| reg.active.clone())
-        .unwrap_or_else(|| "default".to_string());
+    let account = crate::wallets::keychain_account(&reg, selected);
     let target = reg.resolve(selected)?;
     Ok((account, target))
 }
@@ -1013,5 +1054,51 @@ mod tests {
             validate_passphrase("abcdefghijkl").is_ok(),
             "exactly 12 non-digit chars must be accepted"
         );
+    }
+
+    // ── Final-review fix wave: Task 5 — command->class routing tripwire ──
+
+    #[test]
+    fn keys_action_passphrase_class_routing_matches_spec() {
+        // Admin (spec A3): exactly these three variants.
+        assert_eq!(passphrase_class(&KeysAction::StorePassphrase), PassphraseClass::Admin);
+        assert_eq!(passphrase_class(&KeysAction::Decrypt), PassphraseClass::Admin);
+        assert_eq!(passphrase_class(&KeysAction::Export { reveal: true }), PassphraseClass::Admin);
+
+        // Operational: reads via `load_selected` -> `operational_passphrase`.
+        assert_eq!(passphrase_class(&KeysAction::Show), PassphraseClass::Operational);
+
+        // Everything else: no *existing*-wallet passphrase is consulted
+        // (creation-time flows read a NEW passphrase separately, or no key
+        // material is touched at all).
+        let no_passphrase_actions = [
+            KeysAction::Generate { allow_plaintext: false, encrypt: false },
+            KeysAction::Import {
+                file: None,
+                private_key: None,
+                seed_phrase: None,
+                account: None,
+                derivation_path: None,
+                allow_plaintext: false,
+                encrypt: false,
+            },
+            KeysAction::Encrypt,
+            KeysAction::ForgetPassphrase,
+            KeysAction::Add {
+                name: "x".into(),
+                path: "x".into(),
+                seed_phrase: None,
+                account: None,
+                derivation_path: None,
+                private_key: None,
+                allow_plaintext: false,
+            },
+            KeysAction::List,
+            KeysAction::Use { name: "x".into() },
+            KeysAction::Remove { name: "x".into() },
+        ];
+        for action in &no_passphrase_actions {
+            assert_eq!(passphrase_class(action), PassphraseClass::NoPassphrase, "{action:?}");
+        }
     }
 }

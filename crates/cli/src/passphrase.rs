@@ -30,13 +30,29 @@ fn resolve_chain(
 
 /// Passphrase for operational commands (trading, `keys show`, policy reads):
 /// `RWA_PASSPHRASE` → OS keychain (per wallet name) → interactive prompt.
-pub(crate) fn operational_passphrase(wallet_name: &str) -> Result<Zeroizing<String>> {
+/// Also reports whether the passphrase came from the keychain, so a caller
+/// whose subsequent decrypt fails can hint `rwa keys forget-passphrase`
+/// instead of a generic error (a stale/rotated keychain entry otherwise
+/// looks like an unexplained decrypt failure).
+pub(crate) fn operational_passphrase(wallet_name: &str) -> Result<(Zeroizing<String>, bool)> {
     let env = std::env::var("RWA_PASSPHRASE").ok();
     if env.is_some() {
         crate::wallets::warn_passphrase_env_once();
     }
     let name = wallet_name.to_string();
-    resolve_chain(env, move || keyring_get(&name), tty_prompt)
+    let from_keychain = std::cell::Cell::new(false);
+    let pass = resolve_chain(
+        env,
+        || {
+            let p = keyring_get(&name);
+            if p.is_some() {
+                from_keychain.set(true);
+            }
+            p
+        },
+        tty_prompt,
+    )?;
+    Ok((pass, from_keychain.get()))
 }
 
 /// Passphrase for ADMIN commands: a live TTY prompt or nothing. Env and
@@ -57,6 +73,16 @@ pub(crate) fn admin_passphrase(what: &str) -> Result<Zeroizing<String>> {
 }
 
 fn tty_prompt() -> Result<Zeroizing<String>> {
+    // rpassword's `prompt_password` opens /dev/tty directly, bypassing stdio —
+    // a piped-stdio spawn that still has a controlling terminal (e.g. a test
+    // harness or agent runner) would silently block on it instead of erroring.
+    // Guard exactly like `admin_passphrase` does: no stdin terminal, no prompt.
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return Err(eyre!(
+            "Failed to read passphrase (stdin is not a terminal). No terminal to prompt? Set RWA_PASSPHRASE or run interactively."
+        ));
+    }
     rpassword::prompt_password("Wallet passphrase: ")
         .map(Zeroizing::new)
         .map_err(|e| {
