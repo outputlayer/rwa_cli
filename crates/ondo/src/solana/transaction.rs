@@ -56,6 +56,7 @@ impl std::fmt::Display for TransactionErrorKind {
 impl std::error::Error for TransactionError {}
 
 /// Result of sending a transaction — includes whether it was confirmed on-chain.
+#[derive(Debug)]
 pub struct TransactionResult {
     /// Base58-encoded transaction signature.
     pub signature: String,
@@ -301,12 +302,33 @@ pub async fn confirm_transaction(
     }
 }
 
+/// Whether a `confirm_transaction` error must be treated as a hard failure
+/// rather than swallowed into an ambiguous `confirmed: false` result. Only a
+/// landed-and-reverted tx (`OnChainFailure`) qualifies: the RPC has proven the
+/// swap did NOT happen, so the caller must not report it as success (audit
+/// M1 — the Metis path used to hard-code `status: "Success"` regardless).
+/// A `ConfirmationTimeout` (or any other, non-`TransactionError` failure) is
+/// genuinely ambiguous — the tx may still land later — and must stay
+/// swallowed, exactly as before.
+fn is_hard_revert(err: &eyre::Error) -> bool {
+    matches!(
+        err.downcast_ref::<TransactionError>(),
+        Some(TransactionError { kind: TransactionErrorKind::OnChainFailure, .. })
+    )
+}
+
 /// Send an already signed base64 transaction and wait for `confirmed`
 /// commitment (this path carries swaps — always full confirmation).
+///
+/// A proven on-chain revert is returned as `Err` (see [`is_hard_revert`]) so
+/// callers can never mistake a reverted swap for a success. An ambiguous
+/// confirmation-poll failure (timeout — the tx may still land) still resolves
+/// to `Ok(TransactionResult { confirmed: false, .. })`.
 pub async fn send_signed_transaction(tx_base64: &str, rpc_url: Option<&str>) -> Result<TransactionResult> {
     let sig = send_raw_transaction(tx_base64, false, rpc_url).await?;
     let confirmed = match confirm_transaction(&sig, rpc_url, ConfirmLevel::Confirmed).await {
         Ok(()) => true,
+        Err(e) if is_hard_revert(&e) => return Err(e),
         Err(e) => {
             eprintln!("Warning: confirmation poll failed ({e}), tx may still land.");
             false
@@ -687,6 +709,100 @@ mod tests {
         sent.assert_hits_async(0).await;
         let te = err.downcast_ref::<TransactionError>().expect("typed error");
         assert_eq!(te.kind, TransactionErrorKind::SimulationFailure);
+    }
+
+    // ── is_hard_revert / send_signed_transaction (audit M1) ──
+
+    #[test]
+    fn is_hard_revert_true_only_for_on_chain_failure() {
+        let revert: eyre::Error = TransactionError::new(
+            TransactionErrorKind::OnChainFailure,
+            "program failed",
+        )
+        .into();
+        assert!(is_hard_revert(&revert));
+
+        // Ambiguous timeout must NOT be treated as a hard revert — the tx may
+        // still land.
+        let timeout: eyre::Error = TransactionError::new(
+            TransactionErrorKind::ConfirmationTimeout,
+            "may still land",
+        )
+        .into();
+        assert!(!is_hard_revert(&timeout));
+
+        // A non-TransactionError failure (e.g. plain RPC error) is not a
+        // proven revert either — fails safe toward the old ambiguous path.
+        let opaque = eyre::eyre!("socket exploded");
+        assert!(!is_hard_revert(&opaque));
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_propagates_on_chain_failure() {
+        // Audit M1: a landed-but-reverted tx must surface as Err(on_chain_failure),
+        // never as an Ok success — this is the exact defect in the Metis swap
+        // path (`execute_metis_order`), reproduced here at the RPC layer it
+        // delegates to.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+
+        let fake_sig = bs58::encode([9u8; 64]).into_string();
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("sendTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": bs58::encode([9u8; 64]).into_string()
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getSignatureStatuses");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [ {
+                    "confirmationStatus": "confirmed",
+                    "err": { "InstructionError": [1, "Custom"] }
+                } ] }
+            }));
+        }).await;
+
+        let err = send_signed_transaction("dGVzdA==", Some(&server.base_url()))
+            .await
+            .expect_err("a landed-but-reverted tx must be Err, not a phantom success");
+
+        let te = err.downcast_ref::<TransactionError>().expect("typed error");
+        assert_eq!(te.kind, TransactionErrorKind::OnChainFailure);
+        assert!(te.detail.contains(&fake_sig) || te.detail.contains("InstructionError"));
+    }
+
+    #[tokio::test]
+    async fn send_signed_transaction_confirmed_success_unchanged() {
+        // Regression guard: a genuinely confirmed, non-reverted tx must still
+        // resolve to Ok(confirmed: true) exactly as before this fix.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+
+        let fake_sig = bs58::encode([9u8; 64]).into_string();
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("sendTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": bs58::encode([9u8; 64]).into_string()
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getSignatureStatuses");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [ { "confirmationStatus": "confirmed", "err": null } ] }
+            }));
+        }).await;
+
+        let result = send_signed_transaction("dGVzdA==", Some(&server.base_url()))
+            .await
+            .expect("a genuinely confirmed tx must still succeed");
+
+        assert_eq!(result.signature, fake_sig);
+        assert!(result.confirmed);
     }
 
     // ── compute budget instructions ──────────────────────────
