@@ -254,10 +254,14 @@ pub async fn close_all(
             skipped,
             total_usdc: format!("{total_usdc:.2}"),
         })?;
-        // All items failed: the envelope above already carries the per-item
-        // detail, so exit directly here rather than returning an `Err` that
-        // would make main() print a SECOND, differently-shaped JSON object
-        // after it (which would break "one JSON object per invocation").
+        // All items failed. Exit directly (rather than `return Err`) so main()
+        // doesn't print a SECOND, differently-shaped error JSON object after the
+        // envelope above — one JSON object per invocation. `process::exit` runs
+        // no destructors, but unlike the baskets there is no wallet on the stack
+        // to leak here: `wallet_arc` (an ed25519 SigningKey that zeroizes on
+        // Drop) is scoped INSIDE the `else` block above and was already dropped
+        // when that block ended — all run_swap_items tasks join before it does,
+        // so the key is zeroized well before this exit.
         if status == "error" {
             std::process::exit(1);
         }

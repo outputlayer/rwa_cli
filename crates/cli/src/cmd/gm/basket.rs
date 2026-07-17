@@ -280,11 +280,15 @@ pub async fn buy_basket(
             skipped: vec![],
             total_usdc_spent: total_str,
         })?;
-        // All items failed: the envelope above already carries the per-item
-        // detail, so exit directly here rather than returning an `Err` that
-        // would make main() print a SECOND, differently-shaped JSON object
-        // after it (which would break "one JSON object per invocation").
+        // All items failed. Exit directly (rather than `return Err`) so main()
+        // doesn't print a SECOND, differently-shaped error JSON object after the
+        // envelope above — one JSON object per invocation. But `process::exit`
+        // runs no destructors, and `wallet_arc` wraps an ed25519 SigningKey that
+        // zeroizes its secret on Drop; all run_swap_items tasks are joined by
+        // now, so this Arc is the sole strong ref — drop it explicitly to
+        // zeroize the key before exiting.
         if status == "error" {
+            drop(wallet_arc);
             std::process::exit(1);
         }
         return Ok(());
@@ -431,11 +435,15 @@ pub async fn sell_basket(
             skipped: vec![],
             total_usdc_received: total_str,
         })?;
-        // All items failed: the envelope above already carries the per-item
-        // detail, so exit directly here rather than returning an `Err` that
-        // would make main() print a SECOND, differently-shaped JSON object
-        // after it (which would break "one JSON object per invocation").
+        // All items failed. Exit directly (rather than `return Err`) so main()
+        // doesn't print a SECOND, differently-shaped error JSON object after the
+        // envelope above — one JSON object per invocation. But `process::exit`
+        // runs no destructors, and `wallet_arc` wraps an ed25519 SigningKey that
+        // zeroizes its secret on Drop; all run_swap_items tasks are joined by
+        // now, so this Arc is the sole strong ref — drop it explicitly to
+        // zeroize the key before exiting.
         if status == "error" {
+            drop(wallet_arc);
             std::process::exit(1);
         }
         return Ok(());
