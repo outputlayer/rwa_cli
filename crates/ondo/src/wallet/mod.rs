@@ -512,10 +512,18 @@ impl Wallet {
         let (num_keys, keys_count_len) = decode_compact_u16(&message[keys_compact_start..])?;
         let keys_start = keys_compact_start + keys_count_len;
 
-        // Find our pubkey among the required signers
+        // Find our pubkey among the required signers.
+        //
+        // Audit L2: `num_required_sigs` comes straight from the untrusted
+        // message header and must never be trusted past the *outer*
+        // signature-slot count (`num_sigs`, decoded from the transaction's
+        // own compact-u16 prefix). A crafted quote could claim a large
+        // `num_required_sigs` while shipping far fewer real signature slots
+        // — clamp the search to whichever of the three counts is smallest so
+        // `sig_index` can never point past the real signature area.
         let verifying_key = self.signing_key.verifying_key();
         let our_pubkey = verifying_key.as_bytes();
-        let search_limit = std::cmp::min(num_keys as usize, num_required_sigs);
+        let search_limit = std::cmp::min(std::cmp::min(num_keys as usize, num_required_sigs), num_sigs as usize);
         let mut sig_index = None;
         for i in 0..search_limit {
             let offset = keys_start + i * 32;
@@ -535,8 +543,17 @@ impl Wallet {
         // Sign the message portion
         let signature = self.signing_key.sign(message);
 
-        // Write signature into the correct slot
+        // Write signature into the correct slot. `sig_index < search_limit <=
+        // num_sigs` already guarantees this is in-bounds (sigs_end + 4 <=
+        // tx_bytes.len() was checked above), but keep an explicit bounds
+        // check as defense-in-depth against any future change to the
+        // invariant above: an out-of-bounds write must error, never panic.
         let slot_offset = sigs_start + sig_index * 64;
+        if slot_offset + 64 > tx_bytes.len() {
+            return Err(eyre!(
+                "Signature slot offset out of bounds — malformed transaction header"
+            ));
+        }
         tx_bytes[slot_offset..slot_offset + 64].copy_from_slice(&signature.to_bytes());
 
         Ok(engine.encode(&tx_bytes))
@@ -909,6 +926,49 @@ mod tests {
         let w = Wallet::generate();
         // Empty base64 should fail
         assert!(w.sign_transaction("").is_err());
+    }
+
+    /// Audit L2: a hand-rolled parser must not trust the message-header
+    /// `num_required_sigs` beyond the bounds of the outer signature-slot
+    /// count. Craft a v0 message that claims 10 required signers (with our
+    /// wallet's pubkey placed as key index 9, the LAST claimed signer) while
+    /// the real signature area (the outer compact-u16 prefix) has only 1
+    /// slot. Before the fix, `search_limit = min(num_keys, num_required_sigs)`
+    /// happily walks up to index 9, finds our pubkey, and computes
+    /// `slot_offset = sigs_start + 9*64 = 577` against a 390-byte buffer —
+    /// `tx_bytes[577..641].copy_from_slice(..)` panics (index out of range).
+    /// After the fix this must be a clean `Err`, never a panic.
+    #[test]
+    fn sign_transaction_rejects_header_sig_count_mismatch() {
+        use base64::Engine;
+
+        let w = Wallet::generate();
+        let owner_bytes: [u8; 32] =
+            bs58::decode(w.pubkey()).into_vec().unwrap().try_into().unwrap();
+
+        // 10 keys; our pubkey is the last one (index 9).
+        let mut keys = vec![[0u8; 32]; 10];
+        keys[9] = owner_bytes;
+
+        // v0 tag + header claiming num_required_sigs = 10 (a lie: only 1
+        // signature slot actually exists below).
+        let mut message = vec![0x80u8, 10, 0, 0];
+        encode_compact_u16_test(keys.len() as u16, &mut message);
+        for k in &keys {
+            message.extend_from_slice(k);
+        }
+
+        let mut tx = Vec::new();
+        encode_compact_u16_test(1, &mut tx); // outer sig-slot count = 1 (the truth)
+        tx.extend_from_slice(&[0u8; 64]); // the single real signature slot
+        tx.extend_from_slice(&message);
+
+        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx);
+
+        assert!(
+            w.sign_transaction(&tx_b64).is_err(),
+            "header claiming more required sigs than the outer sig-slot count must be rejected, not panic"
+        );
     }
 
     // Helper: create a unique temp path that cleans itself up on drop.

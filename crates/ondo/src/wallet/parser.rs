@@ -83,6 +83,18 @@ pub(crate) fn parse_message(tx_bytes: &[u8]) -> Result<ParsedMessage> {
     let num_readonly_unsigned = msg[cur + 2];
     cur += 3;
 
+    // Audit L2: the header's `num_required_sigs` must never exceed the
+    // outer signature-slot count decoded above — a crafted message could
+    // otherwise claim more required signers than real signature slots
+    // exist, which downstream signer-slot lookups (`Wallet::sign_transaction`)
+    // must not have to defend against on their own. Reject the shape here,
+    // up front, rather than trusting individual callers to clamp correctly.
+    if num_required_sigs as usize > num_sigs as usize {
+        return Err(eyre!(
+            "message header claims {num_required_sigs} required signers but only {num_sigs} signature slot(s) exist"
+        ));
+    }
+
     // Static account keys
     let (num_keys, n) = decode_compact_u16(&msg[cur..])?;
     cur += n;
