@@ -276,6 +276,30 @@ async fn execute_metis_order(
         .sign_jupiter_swap(tx_b64, expected)
         .wrap_err("failed to sign Metis swap transaction")?;
     let tx = solana::send_signed_transaction(&signed_tx, None).await?;
+    metis_result_to_response(tx)
+}
+
+/// Turn a Metis direct-submit `TransactionResult` into an execute response —
+/// the money-safety gate, isolated so it can be tested without a network.
+///
+/// `send_signed_transaction` already turns a proven revert (`OnChainFailure`)
+/// into `Err`, so what reaches here is either a confirmed success or
+/// `confirmed == false` (confirmation timed out). A timeout is ambiguous — the
+/// tx may not have landed, or may have reverted outside the poll window — so
+/// reporting `status:"Success"` (and letting the caller write the tamper-evident
+/// ledger) for it is the same phantom-trade bug the audit opened. Surface a
+/// typed `confirmation_timeout` instead: transient → exit 75, and the caller's
+/// `Ok`-only ledger gate skips it. NOT auto-resubmitted — it's a
+/// `TransactionError`, not an `ExecuteFailure`, so `execute_with_retry` returns
+/// it immediately rather than blindly re-sending a possibly-landed tx.
+fn metis_result_to_response(tx: solana::TransactionResult) -> Result<ExecuteResponse> {
+    if !tx.confirmed {
+        return Err(solana::TransactionError {
+            kind: solana::TransactionErrorKind::ConfirmationTimeout,
+            detail: format!("Metis swap submitted but confirmation timed out: {}", tx.signature),
+        }
+        .into());
+    }
     Ok(ExecuteResponse {
         status: Some("Success".to_string()),
         signature: Some(tx.signature),
@@ -448,6 +472,48 @@ mod tests {
             ..OrderResponse::default()
         };
         assert_eq!(quoted_out_amount(&order).unwrap(), 40_273_156);
+    }
+
+    #[test]
+    fn metis_confirmed_result_builds_success_response() {
+        // A genuinely confirmed Metis submit stays exactly as before: a Success
+        // response carrying the signature (this is what feeds the ledger).
+        let tx = solana::TransactionResult {
+            signature: "Sig111".to_string(),
+            confirmed: true,
+        };
+        let resp = metis_result_to_response(tx).expect("confirmed tx → Success");
+        assert_eq!(resp.status.as_deref(), Some("Success"));
+        assert_eq!(resp.signature.as_deref(), Some("Sig111"));
+    }
+
+    #[test]
+    fn metis_timeout_surfaces_confirmation_timeout_not_fake_success() {
+        // Audit M1 (timeout half): a submitted-but-unconfirmed Metis tx is
+        // ambiguous — it must NOT be reported as a completed Success, and must
+        // NOT reach the ledger (the caller's Ok-only gate skips an Err).
+        let tx = solana::TransactionResult {
+            signature: "SigTimeout".to_string(),
+            confirmed: false,
+        };
+        let err = metis_result_to_response(tx)
+            .expect_err("an unconfirmed (timed-out) tx must be Err, not a phantom Success");
+
+        // Classified as confirmation_timeout for agents/scripts …
+        assert_eq!(
+            crate::usecases::gm::classify_error(&err),
+            Some("confirmation_timeout"),
+        );
+        // … which is transient (exit 75 — user re-checks/retries), not a hard 1.
+        assert!(crate::usecases::gm::is_transient_kind("confirmation_timeout"));
+
+        // NOT auto-resubmitted: it is a TransactionError, not an ExecuteFailure,
+        // so execute_with_retry's downcast yields no retry_action and the error
+        // is returned immediately rather than re-sending a possibly-landed tx.
+        assert!(
+            err.downcast_ref::<ExecuteFailure>().is_none(),
+            "a timeout must not carry an ExecuteFailure retry_action — no blind resubmit",
+        );
     }
 
     #[test]
