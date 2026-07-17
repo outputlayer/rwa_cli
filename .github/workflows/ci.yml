@@ -118,8 +118,11 @@ jobs:
       # (audit H1) would install a tampered binary. shellcheck catches the
       # `if ! fn` / set -e class of bug; the hermetic test pins fail-closed
       # behavior on a checksum mismatch. Neither needs the network or a build.
+      # --severity=warning: fail on real bugs (the `if ! fn` / set -e class),
+      # not on info-level false positives like SC2317/SC2329 for the test's
+      # indirectly-invoked download() stub (which vary by shellcheck version).
       - name: shellcheck
-        run: shellcheck install.sh scripts/test-install.sh
+        run: shellcheck --severity=warning install.sh scripts/test-install.sh
 
       - name: Fail-closed checksum test
         run: sh scripts/test-install.sh

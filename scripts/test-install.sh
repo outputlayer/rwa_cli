@@ -6,7 +6,7 @@
 # Run: sh scripts/test-install.sh   (exit 0 = all pass)
 set -u
 
-REPO_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 INSTALL_SH="${REPO_ROOT}/install.sh"
 
 pass=0
@@ -57,6 +57,8 @@ run_case() {
     ec="$(
         . "$INSTALL_SH"
         # Stub the network: serve the requested basename from the fixtures dir.
+        # (shellcheck can't see it's invoked indirectly by install_prebuilt;
+        # the CI job runs at --severity=warning so this info-level note is fine.)
         download() { cp "${RWA_FIXTURES}/$(basename "$2")" "$2" 2>/dev/null; }
         detect_platform
         if ( install_prebuilt ) >/dev/null 2>&1; then echo 0; else echo 1; fi
