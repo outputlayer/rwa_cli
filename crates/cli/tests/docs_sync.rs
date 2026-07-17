@@ -69,8 +69,19 @@ fn error_kinds_are_documented() {
     let mut labels: Vec<&'static str> = GmTradeErrorKind::ALL.iter().map(|k| k.label()).collect();
     labels.extend(ExecuteFailureKind::ALL.iter().map(|k| k.label()));
     for label in labels {
+        // A plain `contains` is a weak check for labels that are substrings of
+        // OTHER documented labels — `unknown` lives inside `unknown_wallet`,
+        // `unknown_token`, `unknown_aggregator_error`, etc., so a bare
+        // `contains("unknown")` would pass even if `unknown` itself were never
+        // documented. For those, require the exact backtick-quoted form so the
+        // guard actually proves the standalone label is present.
+        let needle = if label == "unknown" {
+            "`unknown`".to_string()
+        } else {
+            label.to_string()
+        };
         for (file, content) in &docs {
-            if !content.contains(label) {
+            if !content.contains(&needle) {
                 missing.push(format!("  error_kind `{label}` is not documented in {file}"));
             }
         }
