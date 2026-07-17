@@ -1275,4 +1275,15 @@ mod tests {
         assert!(p.remove("Addr1"));
         assert!(!p.remove("Addr1"));
     }
+
+    // Audit L4: removing the last allowed recipient must be detectable as a
+    // 1->0 transition (`allowed_recipients.is_empty()` after the remove) so
+    // `policy_edit` can warn that the send gate just went back to disabled.
+    #[test]
+    fn removing_last_recipient_empties_the_policy() {
+        let mut p = SendPolicy::default();
+        p.allow("Addr1", None, "2026-07-16T00:00:00Z").unwrap();
+        assert!(p.remove("Addr1"));
+        assert!(p.allowed_recipients.is_empty());
+    }
 }

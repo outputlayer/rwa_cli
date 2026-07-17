@@ -1856,6 +1856,26 @@ fn policy_allow_headless_is_interactive_required() {
     assert_eq!(v["error_kind"], "interactive_required", "{v}");
 }
 
+/// `keys policy remove --json` headless (env passphrase set) → still the
+/// admin TTY gate, same as `allow` — this stays true even after adding the
+/// `policy_now_empty` warning (audit L4): the new field only appears past
+/// this gate, so it can't be exercised end-to-end without a PTY. This pins
+/// that the gate itself is unaffected.
+#[test]
+fn policy_remove_headless_is_interactive_required() {
+    let home = test_home("policy-remove-headless");
+    let generated = rwa(&home).args(["keys", "generate"]).env("RWA_PASSPHRASE", "TestPass2026!secure").output().unwrap();
+    assert!(generated.status.success());
+    let out = rwa(&home)
+        .args(["--json", "keys", "policy", "remove", "Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1"])
+        .env("RWA_PASSPHRASE", "TestPass2026!secure")
+        .output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "interactive_required", "{v}");
+}
+
 /// `keys policy show --json` on a plaintext wallet → policy: null, exit 0.
 #[test]
 fn policy_show_plaintext_wallet_is_null() {

@@ -833,15 +833,29 @@ async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Re
         PolicyEdit::Allow { address, .. } => ("allowed", address.clone()),
         PolicyEdit::Remove { address } => ("removed", address.clone()),
     };
+    // Audit L4: an empty allowed list is treated as "no policy" by the send
+    // gate (`recipient_gate`), so draining the last address on a `remove`
+    // silently reopens sends to any recipient. Only the remove that actually
+    // reaches zero is a footgun worth flagging — `Allow` always grows the
+    // list, so it can never trigger this, and a `remove` that leaves entries
+    // behind doesn't change the gate's behavior. Warn, don't block: emptying
+    // the list on purpose (disabling the gate) is a legitimate action.
+    let policy_now_empty = matches!(edit, PolicyEdit::Remove { .. }) && policy.allowed_recipients.is_empty();
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "status": "ok", "action": action, "address": address,
-                "recipients": policy.allowed_recipients.len(),
-            })
-        );
+        let mut out = serde_json::json!({
+            "status": "ok", "action": action, "address": address,
+            "recipients": policy.allowed_recipients.len(),
+        });
+        if policy_now_empty {
+            out["policy_now_empty"] = serde_json::json!(true);
+        }
+        println!("{out}");
         return Ok(());
+    }
+    if policy_now_empty {
+        eprintln!(
+            "Allowed-recipient list is now EMPTY — the send gate is disabled; non-interactive sends to any address will proceed. Re-add an address to re-enable it."
+        );
     }
     println!("Address {address} {action}. Allowed recipients: {}.", policy.allowed_recipients.len());
     Ok(())
@@ -1354,6 +1368,40 @@ mod tests {
         let reloaded_policy = reloaded.policy.expect("policy must be present after the edit");
         assert!(reloaded_policy.permits("Dn9Qxyz111111111111111111111111111111111111"));
         assert_eq!(reloaded_policy.allowed_recipients[0].label.as_deref(), Some("cold"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Audit L4: `apply_policy_edit` is the exact seam `policy_edit` reads to
+    // decide `policy_now_empty` — remove is admin/TTY-only end to end, so the
+    // full `rwa keys policy remove -y` path can't be driven headlessly from
+    // `cli_contract` (see `policy_allow_headless_is_interactive_required`).
+    // Pinning this pure seam instead: a `Remove` that drains the last
+    // allowed address must return a policy with an empty list, which is the
+    // exact condition `policy_edit` checks to emit the warning/JSON field.
+    #[test]
+    fn apply_policy_edit_remove_drains_last_recipient_to_empty() {
+        let dir = std::env::temp_dir().join(format!("rwa-policy-remove-empty-seam-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.age");
+        let pass = "TestPass2026!secure";
+        let addr = "Dn9Qxyz111111111111111111111111111111111111";
+
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        let mut policy = wallet::SendPolicy::default();
+        policy.allow(addr, None, "2026-07-16T00:00:00Z").unwrap();
+        w.save_encrypted_payload(&path, pass, Some(phrase.as_str()), Some(&policy)).unwrap();
+
+        let dw = Wallet::load_encrypted_payload(&path, pass).unwrap();
+        assert!(dw.policy.as_ref().is_some_and(|p| p.permits(addr)), "fixture must start with one allowed address");
+
+        let edit = PolicyEdit::Remove { address: addr.to_string() };
+        let result = apply_policy_edit(&dw, &edit).expect("removing the only address should succeed");
+        assert!(
+            result.allowed_recipients.is_empty(),
+            "removing the last address must leave the list empty (the condition policy_edit warns on)"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
