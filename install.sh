@@ -219,13 +219,21 @@ resolve_latest_tag() {
     if need_cmd curl; then
         _final="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$_latest_url" 2>/dev/null)" || return 1
     elif need_cmd wget; then
+        # awk exits 0 even when no Location line is found, so the pipeline's own
+        # status can't gate this — the anchored case below is the real check
+        # (an unresolved redirect yields an empty _final and returns 1).
         _final="$(wget -S --max-redirect=10 -O /dev/null "$_latest_url" 2>&1 \
-            | awk '/^[[:space:]]*Location:/{loc=$2} END{print loc}')" || return 1
+            | awk '/^[[:space:]]*Location:/{loc=$2} END{print loc}')"
     else
         return 1
     fi
+    # Anchor to the trusted repo's tag path — accept the tag only when the final
+    # URL is exactly this repo's /releases/tag/<tag>, not any URL containing that
+    # substring. (REPO is hardcoded, so even a bogus tag only makes the later
+    # `cargo install --tag` fail against the real repo — fails safe, not open.)
     case "$_final" in
-        */releases/tag/*) printf '%s\n' "${_final##*/tag/}" ;;
+        "https://github.com/${REPO}/releases/tag/"*)
+            printf '%s\n' "${_final##*/tag/}" ;;
         *) return 1 ;;
     esac
 }
@@ -234,6 +242,12 @@ install_from_source() {
     tmproot="$(mktemp -d 2>/dev/null || mktemp -d -t rwa-source-install)"
 
     ensure_rust
+    # NOTE: the source path's integrity rests on TLS + git ref pinning + --locked
+    # (Cargo.lock), NOT on a SHA256 of a released artifact — categorically weaker
+    # assurance than the checksum-verified prebuilt path above. H2/H3 tighten
+    # WHICH ref is built (a real release tag, never a floating branch); they do
+    # not add artifact verification.
+    #
     # Pick the git ref explicitly. A TAG needs `--tag` (not `--branch`, which
     # cannot resolve a tag ref); only real branches use `--branch`.
     _ref_args=""
