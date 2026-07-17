@@ -25,6 +25,17 @@ fn suffix_matches(address: &str, typed: &str) -> bool {
     typed.trim() == suffix
 }
 
+/// Off-list send gate: BOTH factors required. The suffix confirmation defends
+/// against a clipboard-swapped address; the passphrase (verified by
+/// re-decrypting the wallet file) defends against a PTY-driving agent that
+/// already knows the suffix it typed. Pure so the boolean combination itself
+/// is unit-tested, independent of the I/O (prompts, decrypt) producing each
+/// half — a refactor that weakens this to suffix-only (or drops the
+/// passphrase factor) breaks a test, not just a live audit.
+fn off_list_proceed(suffix_ok: bool, passphrase_verifies: bool) -> bool {
+    suffix_ok && passphrase_verifies
+}
+
 /// USDC to reserve (keep untouched) for the pre-send auto-gas refuel. Only an
 /// EXACT USDC amount leaves a well-defined remainder that auto-gas may convert
 /// to SOL; a balance-relative amount (`all`/`100%`/`NN%`) has no fixed
@@ -149,7 +160,8 @@ pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: 
         std::io::stdout().flush().ok();
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).ok();
-        if !suffix_matches(to, &line) {
+        let suffix_ok = suffix_matches(to, &line);
+        if !suffix_ok {
             return Err(eyre::eyre!("Cancelled — suffix mismatch."));
         }
         // Suffix alone is bypassable by a PTY-driving agent (it knows the
@@ -159,8 +171,10 @@ pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: 
         // which only ever comes from an ENCRYPTED payload (plaintext wallets
         // carry no policy), so there's always something to decrypt against.
         let pass = crate::passphrase::admin_passphrase("send to a non-allowed recipient")?;
-        crate::wallets::load_target_full(&target, || Ok(pass.clone()))
-            .map_err(|_| eyre::eyre!("Passphrase rejected — send cancelled"))?;
+        let passphrase_verifies = crate::wallets::load_target_full(&target, || Ok(pass.clone())).is_ok();
+        if !off_list_proceed(suffix_ok, passphrase_verifies) {
+            return Err(eyre::eyre!("Passphrase rejected — send cancelled"));
+        }
     }
 
     let token_upper = token.to_uppercase();
@@ -346,6 +360,14 @@ mod tests {
         assert!(suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", " qmHnW1 ")); // typed input is trimmed
         assert!(!suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "QMHNW1"));
         assert!(!suffix_matches("Dn9WuqLXnBu5N4nqhPE6DgPPXWFNqYtwaZFM77qmHnW1", "wrong6"));
+    }
+
+    #[test]
+    fn off_list_send_requires_both_suffix_and_passphrase() {
+        assert!(!off_list_proceed(false, false));
+        assert!(!off_list_proceed(true, false)); // right suffix, wrong passphrase → refuse
+        assert!(!off_list_proceed(false, true));
+        assert!(off_list_proceed(true, true)); // both → proceed
     }
 
     #[test]
