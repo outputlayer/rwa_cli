@@ -124,6 +124,28 @@ pub enum ExecuteFailureKind {
 }
 
 impl ExecuteFailureKind {
+    /// Every variant, in declaration order. Source list for the docs-coverage
+    /// guard (`error_kinds_are_documented` in the cli crate asserts each label
+    /// appears in llms.txt / README / CLAUDE.md, mirroring `GmTradeErrorKind::ALL`)
+    /// and for deriving `is_transient_kind`'s exit-75 set straight from
+    /// `retry_action()` instead of a second, hand-maintained list that can drift.
+    pub const ALL: [ExecuteFailureKind; 14] = [
+        Self::MissingCachedOrder,
+        Self::InvalidSignedTransaction,
+        Self::InvalidMessageBytes,
+        Self::FailedToLand,
+        Self::UnknownAggregatorError,
+        Self::RfqFailedToLand,
+        Self::UnknownRfqError,
+        Self::InvalidPayload,
+        Self::QuoteExpired,
+        Self::SwapRejected,
+        Self::InternalError,
+        Self::Unavailable,
+        Self::RouteUnfillable,
+        Self::Unknown,
+    ];
+
     #[must_use]
     pub fn from_code(code: Option<i32>) -> Self {
         match code {

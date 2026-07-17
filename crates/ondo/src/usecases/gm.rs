@@ -179,12 +179,21 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
 /// Whether an `error_kind` label denotes a transient failure worth retrying
 /// (network/exchange hiccup) vs a permanent one (bad input, no funds, closed
 /// market). Drives the CLI exit code: transient → 75 (EX_TEMPFAIL), else 1.
+///
+/// `/execute` labels (`failed_to_land`, `quote_expired`, `swap_rejected`, …)
+/// are classified straight from `ExecuteFailureKind::retry_action()` — a
+/// label is transient iff Jupiter's own retry loop (`execute_with_retry`)
+/// considers it worth a fresh order/resubmit. That's the single source of
+/// truth so this can't drift from the retry loop as new codes are added.
 #[must_use]
 pub fn is_transient_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "rpc_unavailable" | "execute_unavailable" | "confirmation_timeout" | "lock_contention"
-    )
+    if matches!(kind, "rpc_unavailable" | "confirmation_timeout" | "lock_contention") {
+        return true;
+    }
+    jupiter::ExecuteFailureKind::ALL
+        .into_iter()
+        .find(|k| k.label() == kind)
+        .is_some_and(|k| k.retry_action() != jupiter::ExecuteRetryAction::None)
 }
 
 /// Default slippage limit in basis points (100 = 1%).
@@ -722,6 +731,61 @@ mod tests {
         }
         for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused", "confirmation_required"] {
             assert!(!is_transient_kind(k), "{k} must be permanent");
+        }
+    }
+
+    /// M2: `/execute` failure kinds must exit 75 (transient) exactly when
+    /// `ExecuteFailureKind::retry_action()` says a retry is worth attempting —
+    /// that's the source of truth, not a hand-picked list. This covers more
+    /// than the four originally-suspected labels: `retry_action()` also marks
+    /// `missing_cached_order`, `swap_rejected`, and `route_unfillable` as
+    /// `RefreshOrder` (i.e. Jupiter itself already retries them internally via
+    /// `execute_with_retry`), so they must be transient too, consistent with
+    /// `execute_unavailable`'s existing exit-75 treatment.
+    #[test]
+    fn execute_transient_kinds_exit_75() {
+        for label in [
+            "failed_to_land",
+            "rfq_failed_to_land",
+            "internal_error",
+            "quote_expired",
+            "missing_cached_order",
+            "swap_rejected",
+            "route_unfillable",
+        ] {
+            assert!(
+                is_transient_kind(label),
+                "{label} carries a retry action (retry_action() != None) and must be transient (exit 75)"
+            );
+        }
+        // Kinds with `retry_action() == None` stay permanent: nothing about a
+        // fresh command invocation would fix these (bad payload, unparseable
+        // response, genuinely unknown code).
+        for label in [
+            "invalid_signed_transaction",
+            "invalid_message_bytes",
+            "unknown_aggregator_error",
+            "unknown_rfq_error",
+            "invalid_payload",
+            "unknown",
+        ] {
+            assert!(!is_transient_kind(label), "{label} must be permanent");
+        }
+    }
+
+    /// Cross-check `is_transient_kind` against `ExecuteFailureKind::ALL`
+    /// directly so the classification can never silently drift from
+    /// `retry_action()` as new variants are added.
+    #[test]
+    fn is_transient_kind_matches_retry_action_for_every_execute_kind() {
+        for kind in jupiter::ExecuteFailureKind::ALL {
+            let expected = kind.retry_action() != jupiter::ExecuteRetryAction::None;
+            assert_eq!(
+                is_transient_kind(kind.label()),
+                expected,
+                "{} : is_transient_kind must match retry_action() != None",
+                kind.label()
+            );
         }
     }
 

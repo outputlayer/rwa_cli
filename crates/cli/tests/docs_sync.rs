@@ -47,14 +47,18 @@ fn every_command_is_documented() {
     );
 }
 
-/// Drift guard for the AGENT CONTRACT: every `GmTradeErrorKind` label must be
-/// documented in llms.txt (the agent manual), README.md, and CLAUDE.md. Seven
-/// kinds were added in 0.7.2 alone; before this guard a new one reached agents
-/// undocumented if the author forgot the three prose lists. The source list is
-/// `GmTradeErrorKind::ALL`, kept exhaustive by a compile-time tripwire in the
-/// ondo crate.
+/// Drift guard for the AGENT CONTRACT: every `GmTradeErrorKind` label AND
+/// every `ExecuteFailureKind` label (Jupiter `/execute` failures — also
+/// surfaced via `classify_error` into the `error_kind` JSON field, see M2/L6)
+/// must be documented in llms.txt (the agent manual), README.md, and
+/// CLAUDE.md. Seven kinds were added in 0.7.2 alone; before this guard a new
+/// one reached agents undocumented if the author forgot the three prose
+/// lists. The source lists are `GmTradeErrorKind::ALL` and
+/// `ExecuteFailureKind::ALL`, each kept exhaustive by a compile-time tripwire
+/// in the ondo crate.
 #[test]
 fn error_kinds_are_documented() {
+    use rwa_ondo::jupiter::ExecuteFailureKind;
     use rwa_ondo::usecases::gm::GmTradeErrorKind;
     let docs = [
         ("llms.txt", doc("llms.txt")),
@@ -62,8 +66,9 @@ fn error_kinds_are_documented() {
         ("CLAUDE.md", doc("CLAUDE.md")),
     ];
     let mut missing = Vec::new();
-    for kind in GmTradeErrorKind::ALL {
-        let label = kind.label();
+    let mut labels: Vec<&'static str> = GmTradeErrorKind::ALL.iter().map(|k| k.label()).collect();
+    labels.extend(ExecuteFailureKind::ALL.iter().map(|k| k.label()));
+    for label in labels {
         for (file, content) in &docs {
             if !content.contains(label) {
                 missing.push(format!("  error_kind `{label}` is not documented in {file}"));
