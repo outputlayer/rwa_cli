@@ -92,16 +92,22 @@ verify_checksum() {
         return 0
     fi
 
+    # Every check below must signal failure EXPLICITLY (return 1 / exit 1), never
+    # rely on `set -e`: verify_checksum runs inside install_prebuilt, which is
+    # called via `if ! install_prebuilt` — and `set -e` is suppressed for the
+    # whole call tree of a function used in an `if` condition. A bare failing
+    # `sha256sum -c` there would print FAILED but NOT abort, installing a
+    # tampered binary. So the mismatch path returns 1 and the caller acts on it.
     if need_cmd sha256sum; then
-        (
-            cd "$(dirname "$archive")"
-            sha256sum -c "$(basename "$checksum_file")"
-        )
+        if ! ( cd "$(dirname "$archive")" && sha256sum -c "$(basename "$checksum_file")" ); then
+            echo "ERROR: checksum verification FAILED for ${archive_name}." >&2
+            return 1
+        fi
     elif need_cmd shasum; then
-        (
-            cd "$(dirname "$archive")"
-            shasum -a 256 -c "$(basename "$checksum_file")"
-        )
+        if ! ( cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "$checksum_file")" ); then
+            echo "ERROR: checksum verification FAILED for ${archive_name}." >&2
+            return 1
+        fi
     else
         if [ "${RWA_INSTALL_INSECURE:-}" != "1" ]; then
             echo "ERROR: cannot verify download (sha256sum/shasum not found)." >&2
@@ -112,6 +118,7 @@ verify_checksum() {
         fi
         echo "WARNING: RWA_INSTALL_INSECURE=1 set — installing WITHOUT checksum verification." >&2
     fi
+    return 0
 }
 
 extract_archive() {
@@ -158,7 +165,16 @@ install_prebuilt() {
     fi
 
     if download "${base_url}/SHA256SUMS.txt" "$checksums_path"; then
-        verify_checksum "$archive_path" "$checksums_path"
+        # MUST check the result explicitly — see the note in verify_checksum:
+        # `set -e` is suppressed here (install_prebuilt runs under `if !`), so a
+        # bare call would let a checksum mismatch fall through to install.
+        if ! verify_checksum "$archive_path" "$checksums_path"; then
+            echo "ERROR: refusing to install — the download failed checksum verification." >&2
+            echo "The archive may be corrupt or tampered. Try again, or build from source:" >&2
+            echo "  cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa" >&2
+            echo "Bypass at your own risk: RWA_INSTALL_INSECURE=1 <installer>" >&2
+            exit 1
+        fi
     else
         if [ "${RWA_INSTALL_INSECURE:-}" != "1" ]; then
             echo "ERROR: cannot verify download (SHA256SUMS.txt not found)." >&2
@@ -195,19 +211,52 @@ ensure_rust() {
     . "$HOME/.cargo/env"
 }
 
+# Resolve the concrete latest release tag by following the releases/latest
+# redirect, so a source fallback reproduces the RELEASE, not main HEAD.
+# Best-effort: prints the tag on success, returns 1 if it can't be resolved.
+resolve_latest_tag() {
+    _latest_url="https://github.com/${REPO}/releases/latest"
+    if need_cmd curl; then
+        _final="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$_latest_url" 2>/dev/null)" || return 1
+    elif need_cmd wget; then
+        _final="$(wget -S --max-redirect=10 -O /dev/null "$_latest_url" 2>&1 \
+            | awk '/^[[:space:]]*Location:/{loc=$2} END{print loc}')" || return 1
+    else
+        return 1
+    fi
+    case "$_final" in
+        */releases/tag/*) printf '%s\n' "${_final##*/tag/}" ;;
+        *) return 1 ;;
+    esac
+}
+
 install_from_source() {
     tmproot="$(mktemp -d 2>/dev/null || mktemp -d -t rwa-source-install)"
 
     ensure_rust
-    echo "Installing ${BIN_NAME} from source (ref: ${VERSION})..."
+    # Pick the git ref explicitly. A TAG needs `--tag` (not `--branch`, which
+    # cannot resolve a tag ref); only real branches use `--branch`.
+    _ref_args=""
     case "$VERSION" in
         latest)
-            cargo install --git "https://github.com/${REPO}" --bin "$BIN_NAME" --locked --root "$tmproot"
+            _tag="$(resolve_latest_tag)" || _tag=""
+            if [ -n "$_tag" ]; then
+                echo "Resolved latest release tag: ${_tag}"
+                _ref_args="--tag ${_tag}"
+            else
+                echo "WARNING: could not resolve the latest release tag; building the default branch (main HEAD)." >&2
+            fi
+            ;;
+        main|master)
+            _ref_args="--branch ${VERSION}"
             ;;
         *)
-            cargo install --git "https://github.com/${REPO}" --branch "$VERSION" --bin "$BIN_NAME" --locked --root "$tmproot"
+            _ref_args="--tag ${VERSION}"
             ;;
-    esac || {
+    esac
+    echo "Installing ${BIN_NAME} from source (ref: ${VERSION})..."
+    # shellcheck disable=SC2086
+    cargo install --git "https://github.com/${REPO}" $_ref_args --bin "$BIN_NAME" --locked --root "$tmproot" || {
         rm -rf "$tmproot"
         return 1
     }
@@ -252,4 +301,8 @@ main() {
     show_summary "$installed_path"
 }
 
-main "$@"
+# Test seam: `RWA_INSTALL_NO_MAIN=1` lets the test harness source this file to
+# exercise individual functions without running the installer.
+if [ "${RWA_INSTALL_NO_MAIN:-}" != "1" ]; then
+    main "$@"
+fi

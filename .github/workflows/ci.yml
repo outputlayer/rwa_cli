@@ -107,3 +107,19 @@ jobs:
       # no code change, so it is deliberately its own job, not part of `make ci`.
       - name: cargo audit
         run: cargo audit --deny warnings --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0370
+
+  install-script:
+    name: Install Script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # install.sh moves a wallet binary onto PATH; a fail-open checksum bug
+      # (audit H1) would install a tampered binary. shellcheck catches the
+      # `if ! fn` / set -e class of bug; the hermetic test pins fail-closed
+      # behavior on a checksum mismatch. Neither needs the network or a build.
+      - name: shellcheck
+        run: shellcheck install.sh scripts/test-install.sh
+
+      - name: Fail-closed checksum test
+        run: sh scripts/test-install.sh

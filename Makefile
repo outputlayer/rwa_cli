@@ -8,7 +8,7 @@
 
 export RUSTFLAGS := -Dwarnings
 
-.PHONY: ci check lint test integration release fmt install-hooks
+.PHONY: ci check lint test integration release fmt install-hooks test-install
 
 # NOTE: `make ci` mirrors ci.yml's BUILD/TEST/LINT jobs (the ones a code change
 # can break). The separate `audit` job (cargo-audit / RUSTSEC advisory scan) is
@@ -45,6 +45,11 @@ release:
 ## fmt — format (not gated by CI, but keep the tree tidy)
 fmt:
 	cargo fmt --all
+
+## test-install — hermetic fail-closed checksum test for install.sh (not in `make ci`,
+## mirrors the CI "Install Script" job; no network/build needed)
+test-install:
+	sh scripts/test-install.sh
 
 ## install-hooks — enable the pre-push hook that runs `make ci`
 install-hooks:
