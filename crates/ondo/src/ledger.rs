@@ -159,12 +159,22 @@ pub fn verify_chain(taker: &str) -> ChainStatus {
 /// - if it fails to parse, or parses but has no `prev`, that's a pre-chain
 ///   legacy entry (or corruption `record_at` never produces) — noted, but
 ///   only turns into the final `Legacy` verdict if no break is found.
-/// - if it parses and carries `prev` (i>0), compare it to the hash of the
+/// - if it parses and carries `prev` for i==0 (the file's first line), it
+///   must equal the genesis sentinel `hash16_hex(b"")`; anything else means
+///   the true genesis (and possibly more) was deleted ahead of it — a
+///   head-truncation attack — and is `BrokenAt(1)`.
+/// - if it parses and carries `prev` for i>0, compare it to the hash of the
 ///   raw *previous* line (whether or not that line itself parses — a
 ///   corrupted predecessor changes its own hash, which is exactly what
 ///   catches it); a mismatch is `BrokenAt(i+1)` (1-based), reported
 ///   against the successor since that's the first line that provably
 ///   disagrees with what's on disk.
+///
+/// Known limit (out of scope here): this only chains each entry to its
+/// predecessor, so the file's LAST entry has no successor to validate it —
+/// editing the newest entry's own fields in place is undetectable. A HEAD
+/// checkpoint stored outside the file would close this gap; tracked as a
+/// separate feature. Tamper-evident, not tamper-proof.
 ///
 /// Missing file reads as `Ok` (nothing to verify yet).
 #[must_use]
@@ -179,7 +189,17 @@ pub(crate) fn verify_chain_at(dir: &Path, taker: &str) -> ChainStatus {
         let prev = serde_json::from_str::<LedgerEvent>(line).ok().and_then(|e| e.prev);
         match prev {
             Some(p) => {
-                if i > 0 && p != hash16_hex(lines[i - 1].as_bytes()) {
+                if i == 0 {
+                    // A chained first line must carry the genesis sentinel
+                    // (hash of empty bytes) — anything else means a prefix
+                    // of the file (the true genesis + earlier entries) was
+                    // deleted, leaving this line's link dangling. Without
+                    // this check a head-truncated ledger reads as `Ok`,
+                    // silently hiding the true cost basis.
+                    if p != hash16_hex(b"") {
+                        return ChainStatus::BrokenAt(1);
+                    }
+                } else if p != hash16_hex(lines[i - 1].as_bytes()) {
                     return ChainStatus::BrokenAt(i + 1);
                 }
             }
@@ -345,6 +365,42 @@ mod tests {
         // so all three events remain readable.
         let events = read_all_at(&dir, taker);
         assert_eq!(events.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn head_truncation_is_detected() {
+        // Build a valid 3-entry chain, then drop the genesis + first entry
+        // (keep entries 2..). The new first line's `prev` still points at
+        // the (now-deleted) original first line, not at the genesis
+        // sentinel hash16_hex(b"") — that mismatch must NOT report "ok",
+        // since silently accepting it would let a prefix-deletion attack
+        // hide the wallet's true cost basis.
+        let dir = std::env::temp_dir().join(format!("rwa-ledger-head-trunc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let taker = "HeadTruncWallet";
+
+        let e1 = LedgerEvent::now(Some("sig1".into()), "buy", "TSLAon", "1", None);
+        let e2 = LedgerEvent::now(Some("sig2".into()), "sell", "TSLAon", "1", None);
+        let e3 = LedgerEvent::now(Some("sig3".into()), "buy", "NVDAon", "2", None);
+        record_at(&dir, taker, &e1).unwrap();
+        record_at(&dir, taker, &e2).unwrap();
+        record_at(&dir, taker, &e3).unwrap();
+
+        // Drop the genesis line (e1), keeping only e2 and e3 — a prefix
+        // truncation. e2's `prev` is unchanged (still hashes the deleted
+        // e1 line), so it no longer matches the genesis sentinel.
+        let path = dir.join(format!("{taker}.jsonl"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        std::fs::write(&path, format!("{}\n{}\n", lines[1], lines[2])).unwrap();
+
+        let status = verify_chain_at(&dir, taker);
+        assert!(
+            matches!(status, ChainStatus::BrokenAt(1)),
+            "head truncation must be reported as broken, got {status:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
