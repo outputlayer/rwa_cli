@@ -70,7 +70,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # Dev / test only
 httpmock = "0.7"
 proptest = "1"
-zeroize = "1"
+zeroize = { version = "1", features = ["serde"] }
 criterion = "0.5"
 serial_test = "3"
 

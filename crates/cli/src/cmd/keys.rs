@@ -291,26 +291,26 @@ async fn generate(allow_plaintext: bool, json: bool) -> Result<()> {
         if json {
             // The mnemonic is included: for plaintext wallets this is the ONLY
             // time it exists anywhere — an agent must be able to capture it.
-            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), false, Some(&phrase)));
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), false, Some(phrase.as_str())));
             return Ok(());
         }
         println!("New wallet generated!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
-        print_recovery_phrase(&phrase, false);
+        print_recovery_phrase(phrase.as_str(), false);
         println!("\nFund this address with SOL and USDC to start trading.");
     } else {
         let passphrase = prompt_new_passphrase()?;
         let saved = wallet::encrypted_key_path()?;
-        w.save_encrypted_with_mnemonic(&saved, &passphrase, Some(&phrase))?;
+        w.save_encrypted_with_mnemonic(&saved, &passphrase, Some(phrase.as_str()))?;
         if json {
-            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), true, Some(&phrase)));
+            println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), true, Some(phrase.as_str())));
             return Ok(());
         }
         println!("New wallet generated (encrypted)!");
         println!("Address:  {}", w.pubkey());
         println!("Key file: {}", saved.display());
-        print_recovery_phrase(&phrase, true);
+        print_recovery_phrase(phrase.as_str(), true);
         println!("\nFund this address with SOL and USDC to start trading.");
     }
     Ok(())
@@ -348,12 +348,14 @@ async fn import(
         ));
     }
 
-    let mut imported_phrase: Option<String> = None;
+    let mut imported_phrase: Option<Zeroizing<String>> = None;
     let w = match (file, private_key, seed_phrase) {
         (Some(f), None, None) => Wallet::from_file(std::path::Path::new(&f))?,
         (None, Some(pk), None) => Wallet::from_private_key(&pk)?,
         (None, None, Some(sp)) => {
-            let phrase = if sp.is_empty() {
+            // Audit L3: wrap as soon as the phrase exists (whichever source
+            // it came from) so it never sits as a bare String afterward.
+            let phrase = Zeroizing::new(if sp.is_empty() {
                 let input = rpassword::prompt_password("Enter seed phrase: ")
                     .map_err(|e| eyre::eyre!("Failed to read seed phrase: {e}"))?;
                 if input.is_empty() {
@@ -362,8 +364,8 @@ async fn import(
                 input
             } else {
                 sp
-            };
-            let w = Wallet::from_mnemonic_at(&phrase, &derivation_path)?;
+            });
+            let w = Wallet::from_mnemonic_at(phrase.as_str(), &derivation_path)?;
             warn_non_default_path(&derivation_path);
             imported_phrase = Some(phrase);
             w
@@ -389,7 +391,7 @@ async fn import(
         let saved = wallet::encrypted_key_path()?;
         // A seed-phrase import keeps the phrase inside the encrypted payload
         // so `keys export` can reveal it later.
-        w.save_encrypted_with_mnemonic(&saved, &passphrase, imported_phrase.as_deref())?;
+        w.save_encrypted_with_mnemonic(&saved, &passphrase, imported_phrase.as_deref().map(|s| s.as_str()))?;
         if json {
             println!("{}", wallet_created_json(&w.pubkey(), &saved.display().to_string(), true, None));
             return Ok(());
@@ -821,7 +823,7 @@ async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Re
     // the common case) so it can't confuse this write.
     let tmp = path.with_extension("age.tmp");
     let _ = std::fs::remove_file(&tmp);
-    dw.wallet.save_encrypted_payload(&tmp, &pass, dw.mnemonic.as_deref(), Some(&policy))?;
+    dw.wallet.save_encrypted_payload(&tmp, &pass, dw.mnemonic.as_deref().map(|s| s.as_str()), Some(&policy))?;
     std::fs::rename(&tmp, &path)?;
     let (action, address) = match &edit {
         PolicyEdit::Allow { address, .. } => ("allowed", address.clone()),
@@ -887,10 +889,12 @@ async fn add(
 
     // Derive a wallet from a secret source, if one was provided. A seed-phrase
     // source keeps the phrase so the encrypted payload can embed it.
-    let mut imported_phrase: Option<String> = None;
+    let mut imported_phrase: Option<Zeroizing<String>> = None;
     let imported = match (seed_phrase, private_key) {
         (Some(sp), None) => {
-            let phrase = if sp.is_empty() {
+            // Audit L3: wrap as soon as the phrase exists so it never sits
+            // as a bare String afterward.
+            let phrase = Zeroizing::new(if sp.is_empty() {
                 let input = rpassword::prompt_password("Enter seed phrase: ")
                     .map_err(|e| eyre::eyre!("Failed to read seed phrase: {e}"))?;
                 if input.is_empty() {
@@ -899,8 +903,8 @@ async fn add(
                 input
             } else {
                 sp
-            };
-            let w = Wallet::from_mnemonic_at(&phrase, &derivation_path)?;
+            });
+            let w = Wallet::from_mnemonic_at(phrase.as_str(), &derivation_path)?;
             warn_non_default_path(&derivation_path);
             imported_phrase = Some(phrase);
             Some(w)
@@ -935,7 +939,7 @@ async fn add(
                 w.save(&abs)?;
             } else {
                 let passphrase = prompt_new_passphrase()?;
-                w.save_encrypted_with_mnemonic(&abs, &passphrase, imported_phrase.as_deref())?;
+                w.save_encrypted_with_mnemonic(&abs, &passphrase, imported_phrase.as_deref().map(|s| s.as_str()))?;
             }
             added_pubkey = Some(w.pubkey());
         }
@@ -1317,10 +1321,10 @@ mod tests {
 
         let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
         // No policy embedded yet — mirrors a wallet created before this feature.
-        w.save_encrypted_with_mnemonic(&path, pass, Some(&phrase)).unwrap();
+        w.save_encrypted_with_mnemonic(&path, pass, Some(phrase.as_str())).unwrap();
 
         let dw = Wallet::load_encrypted_payload(&path, pass).unwrap();
-        assert_eq!(dw.mnemonic.as_deref(), Some(phrase.as_str()));
+        assert_eq!(dw.mnemonic.as_deref().map(|s| s.as_str()), Some(phrase.as_str()));
         assert!(dw.policy.is_none(), "fresh wallet has no policy yet");
 
         let edit = PolicyEdit::Allow {
@@ -1333,12 +1337,12 @@ mod tests {
         // Same sequence as `policy_edit`: stale-tmp cleanup, write tmp, rename.
         let tmp = path.with_extension("age.tmp");
         let _ = std::fs::remove_file(&tmp);
-        dw.wallet.save_encrypted_payload(&tmp, pass, dw.mnemonic.as_deref(), Some(&policy)).unwrap();
+        dw.wallet.save_encrypted_payload(&tmp, pass, dw.mnemonic.as_deref().map(|s| s.as_str()), Some(&policy)).unwrap();
         std::fs::rename(&tmp, &path).unwrap();
 
         let reloaded = Wallet::load_encrypted_payload(&path, pass).unwrap();
         assert_eq!(
-            reloaded.mnemonic.as_deref(),
+            reloaded.mnemonic.as_deref().map(|s| s.as_str()),
             Some(phrase.as_str()),
             "mnemonic must survive the policy-edit save/reload round trip"
         );

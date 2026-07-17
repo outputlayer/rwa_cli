@@ -117,7 +117,10 @@ impl SendPolicy {
 /// whatever optional extras the payload carried.
 pub struct DecryptedWallet {
     pub wallet: Wallet,
-    pub mnemonic: Option<String>,
+    // Audit L3: the recovery mnemonic alone drains the wallet (it re-derives
+    // the signing key), so it's held `Zeroizing` like every other secret here
+    // — zeroed on drop instead of lingering in freed heap/swap/core dumps.
+    pub mnemonic: Option<Zeroizing<String>>,
     pub policy: Option<SendPolicy>,
 }
 
@@ -131,15 +134,16 @@ impl Wallet {
 
     /// Generate a fresh wallet from a new BIP39 mnemonic (12 or 24 words),
     /// derived at the standard Solana path — the same wallet Phantom/Solflare
-    /// would restore from the phrase. Returns the wallet and the phrase.
-    pub fn generate_with_mnemonic(word_count: usize) -> Result<(Self, String)> {
+    /// would restore from the phrase. Returns the wallet and the phrase,
+    /// `Zeroizing` since it alone can re-derive the signing key (audit L3).
+    pub fn generate_with_mnemonic(word_count: usize) -> Result<(Self, Zeroizing<String>)> {
         use rand::RngCore;
         let entropy_len = if word_count == 24 { 32 } else { 16 };
         let mut entropy = Zeroizing::new(vec![0u8; entropy_len]);
         rand::thread_rng().fill_bytes(&mut entropy);
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
             .map_err(|e| eyre!("mnemonic generation failed: {e}"))?;
-        let phrase = mnemonic.to_string();
+        let phrase = Zeroizing::new(mnemonic.to_string());
         let wallet = Self::from_mnemonic(&phrase)?;
         Ok((wallet, phrase))
     }
@@ -239,12 +243,20 @@ impl Wallet {
     ///
     /// Thin wrapper over [`Self::load_encrypted_payload`], dropping the
     /// policy — signature preserved for existing callers.
+    ///
+    /// Audit L3: this public boundary still returns a plain `String` (kept
+    /// as-is rather than rippling `Zeroizing` through the several existing
+    /// callers of this exact signature). Every hop up to here — the
+    /// deserialize buffer, the `Payload.mnemonic` field, and
+    /// [`DecryptedWallet.mnemonic`] — stays `Zeroizing`; only this final
+    /// handoff converts, so callers that only display or discard the phrase
+    /// don't need to change.
     pub fn from_encrypted_file_full(
         path: &Path,
         passphrase: &str,
     ) -> Result<(Self, Option<String>)> {
         let decrypted = Self::load_encrypted_payload(path, passphrase)?;
-        Ok((decrypted.wallet, decrypted.mnemonic))
+        Ok((decrypted.wallet, decrypted.mnemonic.map(|z| z.to_string())))
     }
 
     /// Load an encrypted wallet plus whatever optional extras its payload
@@ -270,8 +282,11 @@ impl Wallet {
             #[derive(serde::Deserialize)]
             struct Payload {
                 key: Vec<u8>,
+                // Audit L3: deserialize straight into `Zeroizing` (zeroize's
+                // `serde` feature) so the phrase never sits as a bare String
+                // in this local before being moved into `DecryptedWallet`.
                 #[serde(default)]
-                mnemonic: Option<String>,
+                mnemonic: Option<Zeroizing<String>>,
                 #[serde(default)]
                 policy: Option<SendPolicy>,
             }
@@ -657,6 +672,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Audit L3: compile-level pin that `DecryptedWallet.mnemonic` (and, by
+    /// construction, the `Payload.mnemonic` it's deserialized from) is
+    /// exactly `Option<Zeroizing<String>>` — `assert_zeroizing` only
+    /// type-checks against that field type, so a regression back to a bare
+    /// `Option<String>` fails to compile, not just fails at runtime. Paired
+    /// with a behavioral round trip: the phrase set at save time is still
+    /// the phrase read back after load, proving the type change is
+    /// otherwise a no-op.
+    #[test]
+    fn decrypted_wallet_mnemonic_is_zeroizing() {
+        fn assert_zeroizing(_: &Option<Zeroizing<String>>) {}
+
+        let dir = std::env::temp_dir().join(format!("rwa-zeroizing-pin-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.age");
+        let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
+        w.save_encrypted_with_mnemonic(&path, "pass123", Some(phrase.as_str())).unwrap();
+
+        let dw = Wallet::load_encrypted_payload(&path, "pass123").unwrap();
+        assert_zeroizing(&dw.mnemonic);
+        assert_eq!(dw.mnemonic.as_deref().map(|s| s.as_str()), Some(phrase.as_str()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn encrypted_mnemonic_roundtrip_and_legacy_compat() {
         let dir = std::env::temp_dir().join(format!("rwa-mn-test-{}", std::process::id()));
@@ -667,7 +707,7 @@ mod tests {
         let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
         assert_eq!(phrase.split_whitespace().count(), 12);
         let p = dir.join("k.age");
-        w.save_encrypted_with_mnemonic(&p, "TestPass2026!secure", Some(&phrase)).unwrap();
+        w.save_encrypted_with_mnemonic(&p, "TestPass2026!secure", Some(phrase.as_str())).unwrap();
         let (loaded, stored) = Wallet::from_encrypted_file_full(&p, "TestPass2026!secure").unwrap();
         assert_eq!(loaded.pubkey(), w.pubkey());
         assert_eq!(stored.as_deref(), Some(phrase.as_str()));
@@ -1193,11 +1233,11 @@ mod tests {
         let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
         let mut policy = SendPolicy::default();
         policy.allow("Dn9Qxyz111111111111111111111111111111111111", Some("cold"), "2026-07-16T00:00:00Z").unwrap();
-        w.save_encrypted_payload(&path, "pass123", Some(&phrase), Some(&policy)).unwrap();
+        w.save_encrypted_payload(&path, "pass123", Some(phrase.as_str()), Some(&policy)).unwrap();
 
         let loaded = Wallet::load_encrypted_payload(&path, "pass123").unwrap();
         assert_eq!(loaded.wallet.pubkey(), w.pubkey());
-        assert_eq!(loaded.mnemonic.as_deref(), Some(phrase.as_str()));
+        assert_eq!(loaded.mnemonic.as_deref().map(|s| s.as_str()), Some(phrase.as_str()));
         let p = loaded.policy.unwrap();
         assert!(p.permits("Dn9Qxyz111111111111111111111111111111111111"));
         assert!(!p.permits("SomeOtherAddress11111111111111111111111111"));
@@ -1213,9 +1253,9 @@ mod tests {
         // v2: written via the legacy wrapper (object without "policy").
         let v2 = dir.join("v2.age");
         let (w, phrase) = Wallet::generate_with_mnemonic(12).unwrap();
-        w.save_encrypted_with_mnemonic(&v2, "pass123", Some(&phrase)).unwrap();
+        w.save_encrypted_with_mnemonic(&v2, "pass123", Some(phrase.as_str())).unwrap();
         let loaded = Wallet::load_encrypted_payload(&v2, "pass123").unwrap();
-        assert_eq!(loaded.mnemonic.as_deref(), Some(phrase.as_str()));
+        assert_eq!(loaded.mnemonic.as_deref().map(|s| s.as_str()), Some(phrase.as_str()));
         assert!(loaded.policy.is_none());
         // v1: bare array (written via save_encrypted).
         let v1 = dir.join("v1.age");
