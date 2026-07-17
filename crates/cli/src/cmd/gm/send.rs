@@ -171,7 +171,12 @@ pub async fn send(token: &str, amount: &str, to: &str, opts: ExecOpts, rpc_url: 
         // which only ever comes from an ENCRYPTED payload (plaintext wallets
         // carry no policy), so there's always something to decrypt against.
         let pass = crate::passphrase::admin_passphrase("send to a non-allowed recipient")?;
-        let passphrase_verifies = crate::wallets::load_target_full(&target, || Ok(pass.clone())).is_ok();
+        // Audit L3: verify via the payload loader (mnemonic returned as
+        // Zeroizing) rather than `load_target_full`, whose public-boundary
+        // String conversion would materialize an un-zeroized heap copy of the
+        // recovery phrase on every off-list send. The tuple is discarded
+        // either way — this only checks the passphrase decrypts.
+        let passphrase_verifies = crate::wallets::load_target_payload(&target, || Ok(pass.clone())).is_ok();
         if !off_list_proceed(suffix_ok, passphrase_verifies) {
             return Err(eyre::eyre!("Passphrase rejected — send cancelled"));
         }

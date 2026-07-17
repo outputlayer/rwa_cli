@@ -659,8 +659,12 @@ async fn store_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
     }
     // Typed by a human, never env/keychain: storing is an admin act.
     let pass = crate::passphrase::admin_passphrase("keys store-passphrase")?;
-    // Verify by actually decrypting before touching the keychain.
-    crate::wallets::load_target_full(&target, || Ok(pass.clone()))
+    // Verify by actually decrypting before touching the keychain. Use the
+    // payload loader (mnemonic returned as Zeroizing) rather than
+    // `load_target_full`, whose public-boundary String conversion would
+    // materialize an un-zeroized heap copy of the recovery phrase here; the
+    // decrypted wallet is discarded either way (audit L3).
+    crate::wallets::load_target_payload(&target, || Ok(pass.clone()))
         .map_err(|e| eyre::eyre!("Passphrase rejected — nothing stored: {e}"))?;
     crate::passphrase::keyring_set(&account, &pass)?;
     if json {
