@@ -269,22 +269,34 @@ pub async fn buy_basket(
     .await;
 
     let total_str = format!("{total_usdc_spent:.2}");
+    let status = multi_status(bought.len(), failed.len());
     if json {
-        return json_out(&BuyBasketResultJson {
+        json_out(&BuyBasketResultJson {
             gas_refuel,
-            status: "success",
+            status,
             allocation,
             bought,
             failed,
             skipped: vec![],
             total_usdc_spent: total_str,
-        });
+        })?;
+        // All items failed: the envelope above already carries the per-item
+        // detail, so exit directly here rather than returning an `Err` that
+        // would make main() print a SECOND, differently-shaped JSON object
+        // after it (which would break "one JSON object per invocation").
+        if status == "error" {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     let label = if parallel { "Buy-basket (parallel)" } else { "Buy-basket" };
     println!("\n{} complete:", label);
     println!("  Bought:  {} tokens → {} USDC", bought.len(), total_usdc_spent);
     if !failed.is_empty() {
         println!("  Failed:  {} tokens", failed.len());
+    }
+    if status == "error" {
+        return Err(eyre!("buy-basket: all {} order(s) failed", failed.len()));
     }
     Ok(())
 }
@@ -410,20 +422,32 @@ pub async fn sell_basket(
     .await;
 
     let total_str = format!("{total_usdc:.2}");
+    let status = multi_status(sold.len(), failed.len());
     if json {
-        return json_out(&SellBasketResultJson {
-            status: "success",
+        json_out(&SellBasketResultJson {
+            status,
             sold,
             failed,
             skipped: vec![],
             total_usdc_received: total_str,
-        });
+        })?;
+        // All items failed: the envelope above already carries the per-item
+        // detail, so exit directly here rather than returning an `Err` that
+        // would make main() print a SECOND, differently-shaped JSON object
+        // after it (which would break "one JSON object per invocation").
+        if status == "error" {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     let label = if parallel { "Sell-basket (parallel)" } else { "Sell-basket" };
     println!("\n{} complete:", label);
     println!("  Sold:    {} tokens → {:.2} USDC", sold.len(), total_usdc);
     if !failed.is_empty() {
         println!("  Failed:  {} tokens", failed.len());
+    }
+    if status == "error" {
+        return Err(eyre!("sell-basket: all {} order(s) failed", failed.len()));
     }
     Ok(())
 }

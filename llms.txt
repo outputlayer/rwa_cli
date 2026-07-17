@@ -160,7 +160,7 @@ rwa --json gm buy-basket TSLA 100 AAPL 50 --sequential -y       # if rate-limite
 rwa --json gm buy-basket TSLA 50% NVDA 30% SPY 20% --total 1000 -y   # weighted allocation of one total
 ```
 
-IMPORTANT for baskets and close-all: a partially failed run still exits 0 with `status: "success"` — the command completed; per-item outcomes live in `failed[]` (and close-all's `skipped[]`). ALWAYS inspect those arrays; do not gate on the exit code alone.
+IMPORTANT for baskets and close-all: the envelope `status` reflects the real-path outcome — `"success"` (everything landed, or nothing to do, e.g. an empty close-all), `"partial"` (some items landed, some in `failed[]`; exits 0), or `"error"` (every item landed in `failed[]`, nothing moved; exits non-zero). Per-item detail always lives in `failed[]` (and close-all's `skipped[]`, which is NOT a failure — tiny/non-tradable positions). ALWAYS inspect `failed[]` for the per-item reason even on `"partial"`; do not gate on the exit code alone for partial runs — do gate on it for all-failed ones.
 
 Full exit:
 
@@ -183,7 +183,7 @@ Parallel is safe for different tokens. jupiterz routes through multiple MMs inte
 
 ## Error handling
 
-With `--json`, failures return `{"status":"error","error":"...","error_kind":...}` on stdout and exit code `1` (or `75` if transient).
+With `--json`, failures return `{"status":"error","error":"...","error_kind":...}` on stdout and exit code `1` (or `75` if transient). Exception: buy-basket/sell-basket/close-all keep their own envelope shape (`bought`/`sold`/`failed`/`skipped`, no top-level `error`/`error_kind`) even when `status` is `"error"` (all items failed) — the per-item detail in `failed[]` IS the error info; only the exit code goes non-zero.
 
 - Exit code `2` = clap usage error (unknown/conflicting flags, missing args): NO JSON is emitted — human usage text goes to stderr. Fix the invocation; never retry as-is.
 - Number policy: exact money fields (`amount`, `counter_amount`, `qty`, ledger units) are DECIMAL STRINGS — parse them as decimals, never floats. Informational prices/percentages (`share_price`, `slippage_pct`, `change_pct_24h`) are rounded JSON numbers.

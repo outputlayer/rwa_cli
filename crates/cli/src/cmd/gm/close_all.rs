@@ -1,4 +1,4 @@
-use eyre::Result;
+use eyre::{Result, eyre};
 use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
 use std::sync::Arc;
 
@@ -242,14 +242,26 @@ pub async fn close_all(
         .await
     };
 
+    // Real path only — the dry-run status stays "dry_run" unconditionally
+    // (a dry-run never "fails" the invocation; it only previews).
+    let status = if dry_run { "dry_run" } else { multi_status(sold.len(), failed.len()) };
+
     if json {
-        return json_out(&CloseAllResultJson {
-            status: if dry_run { "dry_run" } else { "success" },
+        json_out(&CloseAllResultJson {
+            status,
             sold,
             failed,
             skipped,
             total_usdc: format!("{total_usdc:.2}"),
-        });
+        })?;
+        // All items failed: the envelope above already carries the per-item
+        // detail, so exit directly here rather than returning an `Err` that
+        // would make main() print a SECOND, differently-shaped JSON object
+        // after it (which would break "one JSON object per invocation").
+        if status == "error" {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     let label = if dry_run {
@@ -276,6 +288,9 @@ pub async fn close_all(
     }
     if !failed.is_empty() {
         println!("  Failed:  {} positions", failed.len());
+    }
+    if status == "error" {
+        return Err(eyre!("close-all: all {} position(s) failed", failed.len()));
     }
     Ok(())
 }

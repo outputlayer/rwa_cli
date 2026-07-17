@@ -351,6 +351,20 @@ pub(super) fn json_out(v: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// Derive the envelope status from item outcomes for the real (non-dry-run)
+/// path of close-all/buy-basket/sell-basket: all-fail is an error (nothing
+/// moved — an agent gating on `status == "success"` must not be fooled),
+/// a mix of hits and misses is partial, and anything else (including
+/// nothing-to-do, e.g. an empty close-all) is success. Does not touch the
+/// separate `"dry_run"` status, which is set unconditionally by callers.
+pub(super) fn multi_status(succeeded: usize, failed: usize) -> &'static str {
+    match (succeeded, failed) {
+        (0, f) if f > 0 => "error",
+        (_, f) if f > 0 => "partial",
+        _ => "success",
+    }
+}
+
 pub(super) fn confirm(msg: &str) -> bool {
     print!("{msg} [y/N] ");
     io::stdout().flush().ok();
@@ -441,6 +455,14 @@ mod tests {
             token_type_from_name("Vanguard Total Stock Market Index Fund"),
             "etf"
         );
+    }
+
+    #[test]
+    fn multi_status_reflects_outcomes() {
+        assert_eq!(multi_status(3, 0), "success");
+        assert_eq!(multi_status(2, 1), "partial");
+        assert_eq!(multi_status(0, 2), "error");
+        assert_eq!(multi_status(0, 0), "success"); // nothing to do (empty close-all)
     }
 
     #[test]
@@ -619,6 +641,39 @@ mod tests {
         // and not the failed item's value — a mutant that folds in failures'
         // values too would give 2.0 (1+2+3-4) instead of 6.0.
         assert!((total - 6.0).abs() < 1e-9, "total was {total}");
+    }
+
+    // M3: close_all/buy_basket/sell_basket derive their real-path JSON
+    // `status` as `multi_status(succeeded.len(), failed.len())` fed directly
+    // by `run_swap_items`'s output — this is that exact composition, one
+    // level below the spawned-binary `cli_contract` suite (which cannot
+    // cheaply drive a real item all the way through a signed swap; that path
+    // is live-money-only per CLAUDE.md). A mix of one success and one
+    // failure must land on "partial", not "success" or "error".
+    #[tokio::test]
+    async fn run_swap_items_mixed_outcome_yields_partial_status() {
+        let items = vec![1i32, -2];
+        let (done, failed, _total) = run_swap_items(
+            items,
+            true, // parallel
+            true, // json (suppress prints)
+            "items",
+            || 0,
+            |_| String::new(),
+            |item: i32| async move {
+                if item < 0 {
+                    Err(CloseFailJson {
+                        token: item.to_string(),
+                        error: "boom".into(),
+                        error_kind: None,
+                    })
+                } else {
+                    Ok((item, item as f64))
+                }
+            },
+        )
+        .await;
+        assert_eq!(multi_status(done.len(), failed.len()), "partial");
     }
 
     #[tokio::test(start_paused = true)]

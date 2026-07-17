@@ -381,6 +381,86 @@ fn buy_basket_dry_run_enforces_max_bps() {
     }
 }
 
+/// M3: a REAL (non-`--dry-run`, `-y`) buy-basket where every item fails must
+/// surface `status:"error"` and a non-zero exit — the previous behavior
+/// hard-coded `status:"success"`/exit 0 even when nothing moved, which let an
+/// agent gating on `$? == 0 && .status == "success"` believe the trade
+/// happened. Unknown symbols fail per-item at mint resolution before any
+/// Jupiter call, so only the preflight balance RPCs need mocking.
+#[test]
+fn buy_basket_real_all_items_fail_is_status_error_and_nonzero_exit() {
+    let home = test_home("basket-real-all-fail");
+    let server = MockServer::start();
+
+    // preflight_basket_buy: plenty of SOL + USDC so the failure comes from
+    // the unknown symbols, not a funds gate.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!(
+                { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+            ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 }, "value": [{
+                    "pubkey": "SomePubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "owner": WALLET,
+                                    "tokenAmount": {
+                                        "amount": "1000000000",
+                                        "decimals": 6,
+                                        "uiAmount": 1000.0,
+                                        "uiAmountString": "1000"
+                                    }
+                                },
+                                "type": "account"
+                            },
+                            "program": "spl-token",
+                            "space": 165
+                        },
+                        "executable": false,
+                        "lamports": 2039280,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "rentEpoch": 0
+                    }
+                }] }
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success(), "keys generate failed: {}", String::from_utf8_lossy(&keygen.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "ZZZNOTREAL", "10", "ZZZFAKE2", "10", "-y"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_NO_AUTO_GAS", "1") // keep the run to the preflight RPCs above
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "all-failed basket must exit non-zero: {out:?}");
+    assert_ne!(out.status.code(), Some(0));
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error", "{v}");
+    assert!(v["bought"].as_array().unwrap().is_empty(), "{v}");
+    let failed = v["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 2, "{v}");
+    for entry in failed {
+        assert_eq!(entry["error_kind"], "unknown_token", "{v}");
+    }
+    assert_eq!(v["total_usdc_spent"], "0.00", "{v}");
+}
+
 /// `buy-basket --total` validation is local and typed: bad weights fail with
 /// `invalid_amount` / `amount_below_minimum` envelopes before any wallet load
 /// or network access (no mocks configured on purpose — a network touch or a
