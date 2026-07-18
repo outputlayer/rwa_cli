@@ -48,7 +48,10 @@ pub struct OrderResponse {
     pub out_amount: String,
     pub in_usd_value: Option<f64>,
     pub out_usd_value: Option<f64>,
-    /// Price impact as decimal (e.g. -0.001 = -0.1%).
+    /// Price impact as a PERCENT (e.g. -0.1 = -0.1%). The swap/v2 backend
+    /// returns it in this unit directly; the Metis mapper converts Jupiter's
+    /// `priceImpactPct` fraction ×100 (jupiter/order.rs) so this field is
+    /// unit-consistent across backends. Consumers treat it as a percent.
     pub price_impact: Option<f64>,
     /// Price impact as string for precise display (deprecated in V2, use price_impact).
     pub price_impact_pct: Option<String>,

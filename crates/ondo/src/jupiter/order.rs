@@ -438,9 +438,16 @@ async fn fetch_metis_quote(
         .as_str()
         .ok_or_else(|| eyre!("Metis quote missing outAmount"))?
         .to_string();
+    // Jupiter's `priceImpactPct` is a decimal FRACTION (0..1; "0.01" = 1%) —
+    // normalize to a PERCENT here so `OrderResponse.price_impact` carries the
+    // same unit the swap/v2 backend already uses and every consumer expects
+    // (calc_slippage/check_slippage/cost gates treat it as a percent). Without
+    // the ×100 a real -4% Metis impact ("-0.04") would read as -0.04% and sail
+    // past the -3% block.
     let price_impact = quote_json["priceImpactPct"]
         .as_str()
-        .and_then(|value| value.parse::<f64>().ok());
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|fraction| fraction * 100.0);
     let slippage_bps = quote_json["slippageBps"]
         .as_u64()
         .and_then(|value| u32::try_from(value).ok())
@@ -760,8 +767,9 @@ mod tests {
             Some(50),
         ).await.unwrap();
 
-        // Sanity: the raw mapped field is the fraction, not a percent.
-        assert_eq!(order.price_impact, Some(-0.04));
+        // The Metis mapper normalizes Jupiter's "-0.04" fraction to a PERCENT
+        // (-4.0), unit-consistent with the swap/v2 backend and every consumer.
+        assert_eq!(order.price_impact, Some(-4.0));
 
         let err = crate::usecases::gm_internal::check_slippage(&order, false).unwrap_err();
         let te = err

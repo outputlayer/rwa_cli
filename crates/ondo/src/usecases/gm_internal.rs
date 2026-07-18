@@ -40,13 +40,11 @@ pub fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> 
 /// otherwise the in/out USD value delta.
 pub(crate) fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     if let Some(pi) = order.price_impact {
-        // QM-1: `price_impact` is ALWAYS a decimal fraction by contract
-        // (types.rs: -0.001 = -0.1%), never a percent — convert here so this
-        // branch matches the USD branch below and every consumer
-        // (check_slippage, cost_exceeds_max_bps, previews). Confirmed
-        // reachable via the Metis fallback mapper (jupiter/order.rs), which
-        // sets this field straight from Jupiter's `priceImpactPct` fraction.
-        return Some(pi * 100.0);
+        // `price_impact` is normalized to a PERCENT at each backend source
+        // (swap/v2 already returns it as a percent; the Metis mapper converts
+        // Jupiter's `priceImpactPct` fraction ×100 — see jupiter/order.rs), so
+        // it is unit-consistent with the USD branch below and every consumer.
+        return Some(pi);
     }
     match (order.in_usd_value, order.out_usd_value) {
         (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => Some((usd_out - usd_in) / usd_in * 100.0),

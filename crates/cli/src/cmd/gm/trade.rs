@@ -169,13 +169,10 @@ fn trade_json(
         tx,
         slippage_pct: plan.slippage_pct,
         actual_slippage_pct,
-        // `order.price_impact` is a decimal FRACTION (types.rs: -0.001 =
-        // -0.1%); this field is named `_pct` and sits beside `slippage_pct`
-        // (a percent), so convert to a percent for JSON coherence — an agent
-        // reading -0.02 as 0.02% when it's really 2% would badly under-read
-        // the impact. Display-only: the internal `price_impact` field and
-        // `calc_slippage` are unchanged (already correct).
-        price_impact_pct: plan.order.price_impact.map(|p| p * 100.0),
+        // `order.price_impact` is already a PERCENT (normalized at source —
+        // swap/v2 native, Metis mapper ×100), unit-consistent with the
+        // `slippage_pct` field beside it. Echo it verbatim.
+        price_impact_pct: plan.order.price_impact,
         fee_bps: plan.order.fee_bps,
         gasless: plan.order.gasless,
         router: plan.order.router.clone(),
