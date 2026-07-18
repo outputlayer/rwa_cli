@@ -41,7 +41,7 @@ pub fn token_to_raw(amount: &str, decimals: u8) -> Result<String> {
     let raw = format!("{integer}{frac_trimmed}");
     let raw = raw.trim_start_matches('0');
     if raw.is_empty() {
-        return Err(eyre!("Amount must be positive"));
+        return Err(invalid_amount("Amount must be positive"));
     }
     Ok(raw.to_string())
 }
@@ -232,6 +232,14 @@ mod tests {
     #[test]
     fn token_rejects_zero() {
         assert!(token_to_raw("0", 6).is_err());
+    }
+
+    #[test]
+    fn zero_amount_is_typed_invalid_amount() {
+        for bad in ["0", "0.000000"] {
+            let err = token_to_raw(bad, 6).unwrap_err();
+            assert_eq!(crate::usecases::gm::classify_error(&err), Some("invalid_amount"), "{bad}");
+        }
     }
 
     #[test]

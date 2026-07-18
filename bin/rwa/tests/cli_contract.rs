@@ -507,6 +507,37 @@ fn buy_basket_total_validation_envelopes() {
     assert_eq!(v["error_kind"], "invalid_amount");
 }
 
+/// L7: a zero amount / zero `--limit-price` must classify as `invalid_amount`,
+/// not leak `error_kind: null` from a bare `eyre!`. Both fail before any
+/// network access (amount parsing precedes tradability/RPC checks in
+/// `prepare_buy`, and `--limit-price` is parsed before wallet load), so no
+/// mocks are needed.
+#[test]
+fn buy_zero_amount_and_zero_limit_price_are_typed_invalid_amount() {
+    let home = test_home("buy-zero-amount");
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success(), "keys generate failed: {}", String::from_utf8_lossy(&keygen.stderr));
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "0", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "zero amount must exit non-zero");
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error", "{v}");
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "100", "--limit-price", "0", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "zero limit-price must exit non-zero");
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "error", "{v}");
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+}
+
 /// `buy-basket --total --dry-run` echoes the allocation object: `total` as
 /// entered plus a symbol→weight map, alongside the usual dry_run shape.
 #[test]

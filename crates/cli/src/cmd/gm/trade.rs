@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 use rwa_ondo::{amounts, jupiter, types::Symbol, usecases};
-use rwa_ondo::usecases::gm::LimitFrame;
+use rwa_ondo::usecases::gm::{GmTradeError, GmTradeErrorKind, LimitFrame};
 
 use super::*;
 
@@ -32,7 +32,15 @@ fn parse_limit_price(raw: Option<&[String]>) -> Result<Option<(u128, LimitFrame)
         .wrap_err("invalid --limit-price")?;
     let v: u128 = raw6.parse().wrap_err("invalid --limit-price")?;
     if v == 0 {
-        return Err(eyre!("--limit-price must be greater than 0"));
+        // Unreachable in practice: `token_to_raw` already rejects an
+        // all-zero amount as `invalid_amount` before we get here. Kept as
+        // a typed (not bare) defense-in-depth check so a future change to
+        // `token_to_raw` can't silently reopen error_kind:null here (L7).
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InvalidAmount,
+            "--limit-price must be greater than 0",
+        )
+        .into());
     }
     Ok(Some((v, frame)))
 }
