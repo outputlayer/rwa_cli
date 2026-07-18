@@ -19,6 +19,26 @@ pub(crate) fn check_cost_gate(
     fee_bps: Option<u32>,
     max_bps: Option<u32>,
 ) -> Result<()> {
+    // QM-2: `cost_exceeds_max_bps` (and the `all_in_cost_bps` it wraps)
+    // return `None` — i.e. allow — when cost is simply unmeasurable (neither
+    // slippage nor fee reported). That is the right default when no cap was
+    // requested, but once the caller set an explicit `--max-bps` ceiling,
+    // silently allowing an unverifiable cost defeats the gate they asked
+    // for — fail closed instead. (No `--max-bps` set: unaffected, same as
+    // the plain 3% slippage guard's own fail-open policy for honest
+    // thin-token quotes — see `check_slippage`.)
+    if let Some(max) = max_bps
+        && slippage_pct.is_none()
+        && fee_bps.is_none()
+    {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::CostTooHigh,
+            format!(
+                "quoted cost cannot be measured (no slippage or fee data reported) — refusing under --max-bps {max}"
+            ),
+        )
+        .into());
+    }
     if let Some((cost, max)) = cost_exceeds_max_bps(slippage_pct, fee_bps, max_bps) {
         return Err(GmTradeError::new(
             GmTradeErrorKind::CostTooHigh,
@@ -356,6 +376,32 @@ pub async fn fetch_buy_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cost_gate_fails_closed_when_max_bps_set_and_cost_unmeasurable() {
+        // QM-2: an explicit --max-bps ceiling means the caller asked for a
+        // verified cost cap. A quote reporting neither slippage nor fee data
+        // (cost_exceeds_max_bps would otherwise return None = allow) must
+        // not silently pass under it.
+        let err = check_cost_gate(None, None, Some(5)).unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("cost_too_high"));
+    }
+
+    #[test]
+    fn cost_gate_allows_unmeasurable_cost_without_max_bps() {
+        // No --max-bps ceiling requested: an unmeasurable cost must not be
+        // invented into a block (unchanged, allow — same fail-open policy
+        // the plain 3% slippage guard applies for honest thin-token quotes).
+        assert!(check_cost_gate(None, None, None).is_ok());
+    }
+
+    #[test]
+    fn cost_gate_still_evaluates_normally_when_measurable() {
+        // Guard: the QM-2 branch must not shadow the ordinary exceeds-cap
+        // path when data IS present.
+        assert!(check_cost_gate(Some(-0.45), Some(10), Some(30)).is_err());
+        assert!(check_cost_gate(Some(-0.45), Some(10), Some(100)).is_ok());
+    }
 
     #[test]
     fn basket_buy_rejects_items_below_minimum() {

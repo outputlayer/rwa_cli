@@ -578,6 +578,12 @@ mod tests {
 
     #[test]
     fn slippage_from_price_impact() {
+        // QM-1: `price_impact` is a decimal FRACTION (types.rs: -0.001 =
+        // -0.1%), not a percent — -0.5 means -50%, not -0.5%. The old
+        // (buggy) assertion here expected -0.5 verbatim, i.e. it encoded the
+        // bug; corrected to the percent `calc_slippage` now returns. Note
+        // in/out USD values are also set but must be ignored: the
+        // price_impact branch takes priority whenever it's `Some`.
         let order = jupiter::OrderResponse {
             in_amount: "100".into(),
             out_amount: "99".into(),
@@ -587,11 +593,42 @@ mod tests {
             ..Default::default()
         };
         let slip = calc_slippage(&order);
-        assert!((slip.unwrap() - (-0.5)).abs() < f64::EPSILON);
+        assert!((slip.unwrap() - (-50.0)).abs() < f64::EPSILON, "got {:?}", slip);
+    }
+
+    #[test]
+    fn calc_slippage_converts_price_impact_fraction_to_percent() {
+        // QM-1 regression: a real -4% price impact is reported by Jupiter as
+        // the fraction -0.04. Before the fix, calc_slippage returned -0.04
+        // verbatim (read as -0.04%, ~4 bps) instead of -4.0.
+        let order = jupiter::OrderResponse {
+            price_impact: Some(-0.04),
+            ..Default::default()
+        };
+        let slip = calc_slippage(&order).unwrap();
+        assert!((slip - (-4.0)).abs() < f64::EPSILON, "got {slip}");
+    }
+
+    #[test]
+    fn check_slippage_blocks_a_real_four_percent_metis_impact() {
+        // Behavioral: check_slippage (the actual trade-path consumer) must
+        // BLOCK a -0.04 price_impact fraction (a real -4% impact) at the 3%
+        // hard gate. Before the QM-1 fix this fraction was read as -0.04%
+        // and sailed straight through.
+        let order = jupiter::OrderResponse {
+            price_impact: Some(-0.04),
+            router: Some("metis-v1-lite".into()),
+            ..Default::default()
+        };
+        let err = check_slippage(&order, false).unwrap_err();
+        let te = err.downcast_ref::<GmTradeError>().expect("typed error");
+        assert_eq!(te.kind, GmTradeErrorKind::SlippageTooHigh);
     }
 
     #[test]
     fn slippage_from_usd_values() {
+        // Guard: the USD branch is untouched by the QM-1 fix and must keep
+        // returning a percent unchanged.
         let order = jupiter::OrderResponse {
             in_amount: "100".into(),
             out_amount: "97".into(),

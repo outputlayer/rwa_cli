@@ -722,6 +722,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metis_price_impact_fraction_blocks_the_3pct_slippage_gate() {
+        // QM-1 regression, confirmed-reachable path: Metis reports
+        // priceImpactPct as a decimal FRACTION ("-0.04" = a real -4%
+        // impact). Before the fix, the mapped OrderResponse.price_impact
+        // (also -0.04) was consumed by calc_slippage/check_slippage as if
+        // it were already a percent, so a real -4% impact read as -0.04%
+        // and sailed past the -3% hard block. This exercises the actual
+        // Metis mapper -> check_slippage chain (not a hand-built
+        // OrderResponse), matching how gm_internal::get_order_checked uses it.
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/swap/v1/quote");
+            then.status(200).json_body(serde_json::json!({
+                "inAmount": "5000000",
+                "outAmount": "11786465",
+                "priceImpactPct": "-0.04",
+                "slippageBps": 50
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).path("/swap/v1/swap");
+            then.status(200).json_body(serde_json::json!({
+                "swapTransaction": "AQAAAA==",
+                "lastValidBlockHeight": 12345
+            }));
+        }).await;
+
+        let base = format!("{}/swap/v1", server.base_url());
+        let order = get_order(
+            Some(&base),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "5000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(50),
+        ).await.unwrap();
+
+        // Sanity: the raw mapped field is the fraction, not a percent.
+        assert_eq!(order.price_impact, Some(-0.04));
+
+        let err = crate::usecases::gm_internal::check_slippage(&order, false).unwrap_err();
+        let te = err
+            .downcast_ref::<crate::usecases::gm::GmTradeError>()
+            .expect("typed error");
+        assert_eq!(te.kind, crate::usecases::gm::GmTradeErrorKind::SlippageTooHigh);
+    }
+
+    #[tokio::test]
     async fn metis_flow_surfaces_no_routes_error() {
         use httpmock::prelude::*;
         let server = MockServer::start_async().await;

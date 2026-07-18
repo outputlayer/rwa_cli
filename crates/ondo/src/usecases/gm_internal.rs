@@ -40,7 +40,13 @@ pub fn resolve_gm_mint(symbol: &Symbol, tokens: &[token_list::GmTokenEntry]) -> 
 /// otherwise the in/out USD value delta.
 pub(crate) fn calc_slippage(order: &jupiter::OrderResponse) -> Option<f64> {
     if let Some(pi) = order.price_impact {
-        return Some(pi);
+        // QM-1: `price_impact` is ALWAYS a decimal fraction by contract
+        // (types.rs: -0.001 = -0.1%), never a percent — convert here so this
+        // branch matches the USD branch below and every consumer
+        // (check_slippage, cost_exceeds_max_bps, previews). Confirmed
+        // reachable via the Metis fallback mapper (jupiter/order.rs), which
+        // sets this field straight from Jupiter's `priceImpactPct` fraction.
+        return Some(pi * 100.0);
     }
     match (order.in_usd_value, order.out_usd_value) {
         (Some(usd_in), Some(usd_out)) if usd_in > 0.0 => Some((usd_out - usd_in) / usd_in * 100.0),
@@ -58,17 +64,31 @@ pub(crate) fn slippage_block_hint(s: f64, order: &jupiter::OrderResponse) -> Str
 
 pub(crate) fn check_slippage(order: &jupiter::OrderResponse, json: bool) -> Result<Option<f64>> {
     let slip = calc_slippage(order);
-    if let Some(s) = slip {
-        if s < -MAX_SLIPPAGE_PCT {
-            return Err(GmTradeError::new(
-                GmTradeErrorKind::SlippageTooHigh,
-                slippage_block_hint(s, order),
-            )
-            .into());
+    match slip {
+        Some(s) => {
+            if s < -MAX_SLIPPAGE_PCT {
+                return Err(GmTradeError::new(
+                    GmTradeErrorKind::SlippageTooHigh,
+                    slippage_block_hint(s, order),
+                )
+                .into());
+            }
+            if s < -SLIPPAGE_RETRY_PCT && !json {
+                eprintln!("Warning: slippage {s:.2}%");
+            }
         }
-        if s < -SLIPPAGE_RETRY_PCT && !json {
-            eprintln!("Warning: slippage {s:.2}%");
+        // QM-2: neither price_impact nor in/out USD values were reported, so
+        // the -3% hard block above cannot be evaluated. Fail OPEN here — an
+        // honest thin-token quote can legitimately omit both fields, and
+        // hard-blocking would break real trades on nothing but missing
+        // metrics — but say so, since a silent pass would contradict the
+        // documented ">3% slippage is blocked" guarantee. Callers that set
+        // `--max-bps` get a stricter fail-closed gate instead (see
+        // `check_cost_gate`), since they explicitly asked for a verified cap.
+        None if !json => {
+            eprintln!("Warning: slippage could not be measured for this quote; the 3% guard was not applied.");
         }
+        None => {}
     }
     Ok(slip)
 }
@@ -97,7 +117,16 @@ pub(crate) async fn get_order_checked(
             order = jupiter::get_order(jupiter_url, input_mint, output_mint, amount, taker, slippage_bps).await?;
             continue;
         }
-        return Ok((order, slip));
+        // Below the retry threshold (or unmeasurable) — apply the policy
+        // (hard block, or QM-2's unmeasurable-slippage warning) before
+        // returning. Previously this early return skipped `check_slippage`
+        // entirely, so a quote that never reported slippage data returned
+        // silently: no warning, and (had it somehow been well below -3%) no
+        // hard block either. For a `Some` slip this is a no-op — the loop
+        // guard above already proved it's not worse than -SLIPPAGE_RETRY_PCT
+        // (1%), which is inside the -3% hard-block threshold too.
+        let slippage_pct = check_slippage(&order, json)?;
+        return Ok((order, slippage_pct));
     }
     // All retries exhausted — apply hard block if still above safety-net threshold.
     let slippage_pct = check_slippage(&order, json)?;
@@ -408,6 +437,18 @@ mod tests {
     fn check_buy_funds_errors_on_insufficient_usdc() {
         let err = super::check_buy_funds("50000000", 100_000_000).unwrap_err();
         assert!(err.to_string().contains("Insufficient USDC"));
+    }
+
+    #[test]
+    fn check_slippage_fails_open_when_unmeasurable() {
+        // QM-2: neither price_impact nor in/out USD values are reported —
+        // calc_slippage returns None, so the -3% hard block cannot be
+        // evaluated. Must fail OPEN (Ok(None), no error) rather than invent
+        // a block; the policy still emits a stderr warning (not asserted
+        // here) so the gap isn't silent.
+        let order = jupiter::OrderResponse::default();
+        let slip = check_slippage(&order, false).unwrap();
+        assert_eq!(slip, None);
     }
 
     #[test]
