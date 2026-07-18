@@ -176,6 +176,38 @@ fn parse_positive_raw(raw: &str, decimals: u8, base_msg: impl Fn() -> String) ->
         .map_err(|_| GmTradeError::new(GmTradeErrorKind::InvalidAmount, base_msg()).into())
 }
 
+/// Duplicate-detection key for a basket symbol: the resolved mint when the
+/// symbol resolves (so aliases like TSLA/TSLAon collide), else the uppercased
+/// raw symbol (an unknown symbol must NOT error here — it fails later per-item).
+fn basket_dup_key(sym: &str, tokens: &[token_list::GmTokenEntry]) -> String {
+    resolve_gm_mint(&Symbol::from(sym), tokens)
+        .map(|(_, mint)| mint.to_string())
+        .unwrap_or_else(|_| sym.to_uppercase())
+}
+
+/// Per-item 5 USDC floor for a computed split. `each_ctx(sym)` builds the
+/// per-symbol explanation appended to the error.
+fn check_split_minimums(
+    items: &[(String, u128)],
+    each_ctx: impl Fn(&str) -> String,
+) -> Result<()> {
+    let minimum = min_usdc_raw();
+    for (sym, raw) in items {
+        if *raw < minimum {
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::AmountBelowMinimum,
+                format!(
+                    "{sym} gets {} USDC {} — minimum is {MIN_USDC_AMOUNT} USDC per token",
+                    amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS),
+                    each_ctx(sym)
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Split a `--total` USDC amount across percent-weight basket pairs.
 ///
 /// Every pair amount must be a percentage (`NN%`, up to 6 decimal places, > 0)
@@ -209,12 +241,7 @@ pub fn split_total_by_weights(
     let mut weights: Vec<u128> = Vec::with_capacity(pairs.len());
     let mut seen: Vec<String> = Vec::with_capacity(pairs.len());
     for (sym, amt) in pairs {
-        // Dup key is the resolved mint when the symbol resolves (so aliases
-        // like TSLA/TSLAon collide), else the uppercased raw symbol — an
-        // unknown symbol must NOT error here, it fails later per-item as today.
-        let dup_key = resolve_gm_mint(&Symbol::from(sym.as_str()), tokens)
-            .map(|(_, mint)| mint.to_string())
-            .unwrap_or_else(|_| sym.to_uppercase());
+        let dup_key = basket_dup_key(sym, tokens);
         if seen.contains(&dup_key) {
             return Err(GmTradeError::new(
                 GmTradeErrorKind::InvalidAmount,
@@ -275,6 +302,50 @@ pub fn split_total_by_weights(
             .into());
         }
     }
+    Ok(out)
+}
+
+/// Split a `--total` USDC amount EQUALLY across `symbols` (the `--equal` mode).
+/// Each gets `total / N` floored to raw USDC; the rounding dust goes to the
+/// first symbol so the spent sum equals `total` exactly. Each computed amount
+/// must meet the per-item buy floor (`MIN_USDC_AMOUNT`). Duplicate symbols
+/// (by resolved mint) and an empty list are rejected. Pure — safe before any
+/// wallet/network access.
+pub fn split_total_equal(total: &str, symbols: &[String]) -> Result<Vec<(String, u128)>> {
+    if symbols.is_empty() {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InvalidAmount,
+            "no symbols given for --equal".to_string(),
+        )
+        .into());
+    }
+    let total_raw: u128 = parse_positive_raw(total, jupiter::USDC_DECIMALS, || {
+        format!("Invalid --total '{total}': use a positive USDC amount with up to 6 decimal places")
+    })?;
+
+    let tokens = token_list::get_token_list();
+    let mut seen: Vec<String> = Vec::with_capacity(symbols.len());
+    for sym in symbols {
+        let key = basket_dup_key(sym, tokens);
+        if seen.contains(&key) {
+            return Err(GmTradeError::new(
+                GmTradeErrorKind::InvalidAmount,
+                format!("Duplicate symbol '{sym}': each token may appear once with --equal"),
+            )
+            .into());
+        }
+        seen.push(key);
+    }
+
+    let n = symbols.len() as u128;
+    let each = total_raw / n;
+    let mut out: Vec<(String, u128)> = symbols.iter().map(|s| (s.clone(), each)).collect();
+    // Dust (total_raw - each*n, < n micro-USDC) to the first item.
+    out[0].1 += total_raw - each * n;
+
+    let n_disp = symbols.len();
+    let total_owned = total.to_string();
+    check_split_minimums(&out, move |_sym| format!("({n_disp} × {total_owned}/{n_disp})"))?;
     Ok(out)
 }
 
@@ -670,5 +741,48 @@ mod tests {
         assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
         let msg = err.to_string();
         assert!(msg.contains("Too many decimal places"), "{msg}");
+    }
+
+    fn syms(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn split_equal_divides_evenly_with_dust_to_first() {
+        // 1000 / 3 = 333.333333 each; dust (0.000001) to the first.
+        let out = split_total_equal("1000", &syms(&["TSLA", "NVDA", "SPY"])).unwrap();
+        assert_eq!(out.len(), 3);
+        let sum: u128 = out.iter().map(|(_, r)| r).sum();
+        assert_eq!(sum, 1_000_000_000, "spent sum must equal --total exactly");
+        assert_eq!(out[0].1, 333_333_334, "dust lands on the first item");
+        assert_eq!(out[1].1, 333_333_333);
+        assert_eq!(out[2].1, 333_333_333);
+    }
+
+    #[test]
+    fn split_equal_single_symbol_gets_whole_total() {
+        let out = split_total_equal("50", &syms(&["TSLA"])).unwrap();
+        assert_eq!(out, vec![("TSLA".to_string(), 50_000_000u128)]);
+    }
+
+    #[test]
+    fn split_equal_enforces_per_item_minimum() {
+        // 12 / 3 = 4 USDC each, below the 5 USDC floor.
+        let err = split_total_equal("12", &syms(&["TSLA", "NVDA", "SPY"])).unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("amount_below_minimum"));
+        assert!(err.to_string().contains("5"), "names the floor: {err}");
+    }
+
+    #[test]
+    fn split_equal_rejects_duplicate_symbols_by_mint() {
+        let err = split_total_equal("100", &syms(&["TSLA", "TSLAon"])).unwrap_err();
+        assert_eq!(super::super::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("Duplicate"), "{err}");
+    }
+
+    #[test]
+    fn split_equal_rejects_bad_total_and_empty() {
+        assert_eq!(super::super::gm::classify_error(&split_total_equal("0", &syms(&["TSLA"])).unwrap_err()), Some("invalid_amount"));
+        assert_eq!(super::super::gm::classify_error(&split_total_equal("100", &[]).unwrap_err()), Some("invalid_amount"));
     }
 }
