@@ -25,3 +25,5 @@ eyre.workspace = true
 httpmock.workspace = true
 serde_json.workspace = true
 rwa-ondo.workspace = true
+sha2.workspace = true
+hex.workspace = true

@@ -1317,6 +1317,39 @@ fn mock_rpc_for_transfers(server: &MockServer, usdc_raw: u64, token_accounts: se
     });
 }
 
+/// Same RPC surface as `mock_rpc_for_transfers`, but with a configurable SOL
+/// balance — the L8 auto-gas-reservation tests need SOL below
+/// `usecases::gm_gas::SOL_LOW_WATER_LAMPORTS` (0.003 SOL) to exercise
+/// `auto_gas`'s low-SOL branch at all.
+fn mock_rpc_for_transfers_with_sol(server: &MockServer, sol_lamports: u64, usdc_raw: u64) {
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value": sol_lamports }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value": [usdc_account_entry(usdc_raw)] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getRecentPrioritizationFees");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": []
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getMinimumBalanceForRentExemption");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": 2_039_280u64
+        }));
+    });
+}
+
 /// `gm send USDC <amt> <to> --dry-run --json` emits the SendJson dry_run shape
 /// and never submits a transaction (no sendTransaction call possible — the
 /// mock has no handler for it, so submission would fail loudly).
@@ -1446,6 +1479,112 @@ fn send_without_policy_is_unchanged() {
         .output().unwrap();
     let v = stdout_json(&out);
     assert_ne!(v["error_kind"], "recipient_not_allowed", "no policy → no gate: {v}");
+}
+
+// ── L8: USDC-send auto-gas reservation (exact vs. all/NN%) ─────────────────
+//
+// `send`'s consuming branch (crates/cli/src/cmd/gm/send.rs) is:
+//   match usdc_gas_reservation(amount) {
+//       Some(reserved) => auto_gas(&w, rpc_url, opts.yes, opts.json, reserved).await?,
+//       None => (None, None),
+//   }
+// The decision itself (`usdc_gas_reservation`) is unit-tested, but that
+// in-process unit test can't prove the CLI actually WIRES the branch this
+// way — a flipped match arm (`Some` skips, `None` calls `auto_gas`) or a
+// dropped reservation (`Some(_) => auto_gas(..., 0)`) would still pass every
+// existing `--dry-run` test, since `--dry-run` short-circuits before this
+// code even runs. These two tests drive a REAL (`-y`) send through the
+// branch and read its effect off `auto_gas`'s own stderr trace, since a full
+// on-chain transfer can't be driven to completion here (see the module doc
+// on hermeticity) — SOL stays below `send_usdc`'s own gas floor by design,
+// so the command fails with `insufficient_funds` right after the auto-gas
+// decision, which is exactly the observable point we need.
+//
+// `RWA_JUPITER_URL` is pinned at the mock server (with no `/order` handler
+// registered) even though the happy paths below never reach it: if a bug
+// DOES route a percentage amount into `auto_gas`, it must fail against this
+// local mock rather than reaching out to the real network — hermetic even
+// under the buggy behavior this test exists to catch.
+
+/// L8 (part 1): a balance-relative amount (`NN%`/`all`) has no fixed
+/// remainder, so `usdc_gas_reservation` returns `None` and `auto_gas` must
+/// never be called at all — not called-and-declined, literally skipped. SOL
+/// is below the low-water mark and USDC (20) comfortably clears the 5 USDC
+/// refuel minimum, so if `auto_gas` WERE consulted (the flipped-arm bug),
+/// `ensure_gas` would proceed far enough to leave a trace on stderr — either
+/// the "SOL is low ... can't cover" note (reservation wrongly computed as 0)
+/// or, since no Jupiter `/order` mock exists, a "SOL gas refuel failed"
+/// warning. Both contain "refuel"; this test pins that NEITHER appears.
+#[test]
+fn send_usdc_percent_amount_skips_auto_gas_reservation() {
+    let home = test_home("send-gas-percent-skip");
+    let server = MockServer::start();
+    mock_rpc_for_transfers_with_sol(&server, 1_000_000, 20_000_000);
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let recipient = "Dn9EqxugBePrno7gzCjbGeYxY3VJE9RB2WE2FH7t7qmH";
+    let out = rwa(&home)
+        .args(["--json", "gm", "send", "USDC", "50%", recipient, "-y"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    // Low SOL (0.001) is still below send_usdc's OWN gas floor
+    // (estimate_gas_needed(true, false) ≈ 0.00266 SOL), so the command fails
+    // downstream regardless — expected and orthogonal to what we're pinning.
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "insufficient_funds", "{v}");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("refuel"),
+        "a percentage amount must never trigger auto_gas at all: {stderr}"
+    );
+}
+
+/// L8 (part 2): an EXACT USDC amount must reserve exactly that raw amount
+/// before `auto_gas` decides whether to refuel. SOL is low, the wallet holds
+/// 10 USDC, and the send is for 8 USDC: correctly reserving 8 leaves only 2
+/// USDC available for gas — under the 5 USDC refuel minimum — so
+/// `ensure_gas` must decline with its specific "can't cover" note. A bug
+/// that drops the reservation (spends the `Some` branch but passes `0`
+/// instead of `amount`) would see the full 10 USDC, clear the minimum, and
+/// attempt a real refuel instead — which (no `/order` mock) fails with a
+/// DIFFERENT message ("SOL gas refuel failed"), not "can't cover". A bug
+/// that skips the branch entirely (treats "8" like a percentage) prints
+/// neither. Only a correctly reserved 8,000,000 raw produces exactly the
+/// text asserted below.
+#[test]
+fn send_usdc_exact_amount_reserves_the_requested_raw_amount() {
+    let home = test_home("send-gas-exact-reserve");
+    let server = MockServer::start();
+    mock_rpc_for_transfers_with_sol(&server, 1_000_000, 10_000_000);
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let recipient = "Dn9EqxugBePrno7gzCjbGeYxY3VJE9RB2WE2FH7t7qmH";
+    let out = rwa(&home)
+        .args(["--json", "gm", "send", "USDC", "8", recipient, "-y"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "insufficient_funds", "{v}");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("can't cover a 5 USDC gas refuel"),
+        "the exact 8 USDC send must be reserved, leaving only 2 of the 10 \
+         USDC balance for auto-gas — under the 5 USDC minimum: {stderr}"
+    );
 }
 
 /// `gm reclaim --json` with no empty token accounts: success, zero closed,
@@ -1869,6 +2008,119 @@ fn pnl_json_computes_from_the_ledger() {
     assert_eq!(v["totals"]["invested_usdc"], 12.0);
     assert_eq!(v["totals"]["realized_usdc"], 3.0);
     assert_eq!(v["totals"]["total_pnl_usdc"], 3.0);
+}
+
+// ── L9: gm pnl surfaces a tampered ledger chain ─────────────────────────────
+
+/// First 16 bytes of SHA-256 over `bytes`, lowercase hex — mirrors
+/// `rwa_ondo::ledger`'s private `hash16_hex` chain-link algorithm exactly.
+/// That helper (and the `record_at`/`verify_chain_at` functions that use it)
+/// is `pub(crate)` to `rwa-ondo`, and the public `ledger::record` always
+/// targets the REAL OS config dir (`dirs::config_dir()`), which this
+/// out-of-process test harness can't safely redirect without mutating the
+/// test binary's own env (racy under parallel tests). So the fixture below
+/// reproduces the on-disk format independently, byte for byte, rather than
+/// faking a `prev` value that happens to satisfy the verifier.
+fn chain_hash16(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    hex::encode(&digest[..16])
+}
+
+/// Serialize one `LedgerEvent` with its `prev` link set from the raw bytes of
+/// the PREVIOUS line (empty bytes for the first-ever entry) — exactly what
+/// `rwa_ondo::ledger::record_at` writes on a real append.
+fn chained_line(prev_raw: &[u8], mut event: rwa_ondo::ledger::LedgerEvent) -> String {
+    event.prev = Some(chain_hash16(prev_raw));
+    serde_json::to_string(&event).unwrap()
+}
+
+/// `gm pnl --json`'s `ledger_integrity` field must read `"broken@line N"`
+/// when the on-disk ledger has been tampered with — pinning the real
+/// end-to-end path (`ledger::verify_chain` → `pnl.rs`'s `ledger_integrity_str`
+/// → the JSON field), which no existing test drives: the only other `pnl`
+/// contract test hand-writes ledger lines with no `prev` field at all (reads
+/// as `"legacy"`, never exercises the hash-chain check), and the chain
+/// algorithm itself is only unit-tested inside `rwa-ondo` against its own
+/// `pub(crate)` helpers, never through the spawned `rwa` binary.
+///
+/// The fixture is a genuinely valid 3-entry chain (verified below BEFORE the
+/// tamper, so a broken-by-construction fixture can't produce a false pass);
+/// the tamper only changes line 2's `sig` string (`"s2"` → `"s2X"`), which
+/// stays valid JSON and leaves every quantity/kind field — and therefore the
+/// computed P&L numbers — untouched. That is the point: the chain link is
+/// the ONLY thing that catches this edit (matching the documented tamper
+/// model in `rwa_ondo::ledger::verify_chain_at`), so a broken-chain report
+/// with UNCHANGED P&L totals proves the two signals are independent, not a
+/// side effect of a parse failure.
+#[test]
+fn pnl_json_reports_broken_ledger_chain_at_the_tampered_line() {
+    let home = test_home("pnl-broken-chain");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let pubkey = lv["wallets"][0]["pubkey"].as_str().unwrap().to_string();
+    let key_path = PathBuf::from(lv["wallets"][0]["path"].as_str().unwrap());
+    let rwa_config_dir = key_path.parent().unwrap().to_path_buf();
+    let ledger_dir = rwa_config_dir.join("ledger");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+    let ledger_path = ledger_dir.join(format!("{pubkey}.jsonl"));
+
+    // Same trades as pnl_json_computes_from_the_ledger: buy 1@10, buy 1@14
+    // (avg 12), sell 1@15 (realized +3) — but chained with real `prev` links.
+    let e1 = rwa_ondo::ledger::LedgerEvent::now(
+        Some("s1".into()), "buy", "AALon", "1000000000", Some("10000000".into()),
+    );
+    let line1 = chained_line(b"", e1);
+    let e2 = rwa_ondo::ledger::LedgerEvent::now(
+        Some("s2".into()), "buy", "AALon", "1000000000", Some("14000000".into()),
+    );
+    let line2 = chained_line(line1.as_bytes(), e2);
+    let e3 = rwa_ondo::ledger::LedgerEvent::now(
+        Some("s3".into()), "sell", "AALon", "1000000000", Some("15000000".into()),
+    );
+    let line3 = chained_line(line2.as_bytes(), e3);
+
+    std::fs::write(&ledger_path, format!("{line1}\n{line2}\n{line3}\n")).unwrap();
+
+    // Sanity: the untampered fixture is a genuinely valid chain — rules out
+    // a fixture bug masquerading as the tamper detection under test.
+    let pre = rwa(&home)
+        .args(["--json", "gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(pre.status.success(), "stderr: {}", String::from_utf8_lossy(&pre.stderr));
+    let pv = stdout_json(&pre);
+    assert_eq!(pv["ledger_integrity"], "ok", "fixture must be a valid chain before the tamper: {pv}");
+    assert_eq!(pv["totals"]["realized_usdc"], 3.0);
+
+    // Tamper the MIDDLE line's `sig` only — kind/qty_raw/usdc_raw untouched.
+    assert!(line2.contains("\"s2\""), "fixture line2 must contain the sig to mutate");
+    let tampered_line2 = line2.replace("\"s2\"", "\"s2X\"");
+    std::fs::write(&ledger_path, format!("{line1}\n{tampered_line2}\n{line3}\n")).unwrap();
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    // pnl never fails on a broken chain (the signal IS the field) — exit 0.
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert_eq!(v["ledger_integrity"], "broken@line 3", "{v}");
+    // The tampered line still parses fine — only `sig` changed — so the P&L
+    // math is UNCHANGED. Proves the break is a chain-link mismatch, not a
+    // parse failure silently dropping a trade.
+    assert_eq!(v["trades_recorded"], 3, "{v}");
+    assert_eq!(v["totals"]["realized_usdc"], 3.0, "{v}");
 }
 
 /// `keys policy allow --json` headless (env passphrase set) → admin gate.
