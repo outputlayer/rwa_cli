@@ -20,6 +20,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - **`keys decrypt` and `keys export --reveal` are now admin-class**: the passphrase must be typed at a live terminal; `RWA_PASSPHRASE` and the keychain are deliberately not consulted (headless → `error_kind: interactive_required`, exit 1). Closes the "injected agent strips encryption / exfiltrates the key with a leaked env passphrase" hole. Requires a minor version bump at release.
 
+### Fixed
+
+- **Metis-fallback swaps no longer record a phantom trade.** A reverted transaction was previously scored as a success by the confirmation poll; a confirmation-poll timeout was also reported as success. Both paths now surface a typed failure and skip the ledger write instead of recording a trade that either didn't happen or isn't yet known to have happened. (M1)
+- **Transient `/execute` failures — including `route_unfillable` — now exit 75, not 1.** `is_transient_kind` now derives straight from `ExecuteFailureKind::retry_action()` instead of a hand-picked list: three kinds missed by the original list (`missing_cached_order`, `swap_rejected`, `route_unfillable`) move to transient alongside `failed_to_land`/`rfq_failed_to_land`/`internal_error`/`quote_expired`, consistent with `execute_unavailable`'s existing treatment. (M2)
+- **`buy-basket`/`sell-basket`/`close-all` now report `status: "partial"` (some items failed) or `"error"` (all items failed) with a non-zero exit code**, instead of `status: "success"` regardless of per-item failures — a caller polling only the top-level exit code could previously miss a fully- or partially-failed basket. The wallet key is now zeroized before the direct `process::exit` on the all-items-failed path (it previously exited before the drop that would have zeroized it). (M3)
+- **Off-list-send second factor is now pinned by a unit test.** The suffix+passphrase gate (`off_list_proceed`) has an injectable decision function so a future refactor that weakens it to suffix-only (or drops the passphrase factor) breaks a test instead of surfacing only in a live audit. No behavior change. (M4)
+- **Ledger head-truncation is now detected.** A tampered/truncated ledger file whose first surviving line's `prev` no longer chains to the genesis sentinel is now caught as `ledger_integrity: "broken@line N"`. The remaining undetectable case — dropping only the very LAST entry, which no later line references — is a documented known limit, not a gap this change closes. (L1)
+- **`sign_transaction`'s signer-slot lookup is now bounds-checked** against the (untrusted) transaction header instead of indexing directly — a malformed/adversarial transaction previously risked panicking the process instead of failing with a typed error. (L2)
+- **The BIP39 recovery mnemonic is now zeroized end-to-end.** It was the one wallet secret still carried as a bare `String` (`DecryptedWallet.mnemonic`, the age-payload struct, `generate_with_mnemonic`'s return, `keys.rs`'s imported-phrase path) — now `Zeroizing<String>` at every hop; the two discard-only passphrase-verification sites (the off-list-send re-check, `store-passphrase`) also route through the zeroizing payload loader instead of the `String`-materializing public boundary. (L3)
+- **`keys policy remove` now warns when it empties the allowed-recipient list.** Draining it (e.g. rotating out a retired address) silently re-disables the send gate; `--json` adds `policy_now_empty: true` and human mode prints a stderr warning on the remove that reaches zero — a remove that leaves entries behind, or any `allow`, never sets it. (L4)
+- **`buy TSLA 0` / `--limit-price 0` now type as `invalid_amount`** instead of `error_kind: null` — the all-zero-trims-to-empty branch in amount parsing used a bare untyped error; every other bad-amount case (negative, non-numeric, over-precision) was already typed. (L7)
+
+### Changed
+
+- **Agent-contract impact.** `route_unfillable` moves from exit 1 to exit 75 (transient, see M2 above). `buy-basket`/`sell-basket`/`close-all` gain a new `status: "partial"` value (some but not all items failed) alongside the existing `"success"`/`"error"`, and an all-items-failed basket now exits non-zero instead of 0 (M3). All 14 `ExecuteFailureKind` labels (Jupiter `/execute` failures, alongside the existing `GmTradeErrorKind` labels) are now documented in CLAUDE.md/llms.txt/README.md and pinned there by the `docs_sync::error_kinds_are_documented` CI guard (L6).
+
+### Security
+
+- **install.sh CRITICAL fail-open checksum bug, already shipped to `main` ahead of this branch.** `verify_checksum` ran as a bare statement inside `install_prebuilt`, itself called via `if ! install_prebuilt` — `set -e` is suppressed for that whole call tree, so a failing `sha256sum -c` printed `FAILED` but never aborted the install, letting a tampered/corrupt binary install anyway. `verify_checksum` now returns 1 on mismatch and the caller `exit 1`s explicitly; a hermetic fail-closed test (`scripts/test-install.sh`) plus a CI `install-script` job now guard the regression. The same hotfix also tightened the source-fallback path: it resolves and builds the actual latest release tag (`--tag`) instead of floating `main` HEAD, and the release-tag redirect is matched against the exact `github.com/<repo>/releases/tag/` prefix rather than a loose substring.
+
+### Known limitations (documented, not fixed on this branch)
+
+- **L5** — the pre-sign input-debit check reads two RPC values that can land on different slots; a concurrent same-ATA debit could theoretically under-report the debit between reads. A slot-equality guard was implemented and reverted (multi-provider RPC plus slower `simulateTransaction` make honest slot drift common, so it would refuse legitimate swaps); the correct fix (a post-sim ATA re-read) costs an extra RPC round-trip on every swap and is deferred rather than paid universally for this attacker-untriggerable, min-output-bounded race.
+
 ## [0.7.8] - 2026-07-16 — buy-basket --total weighted allocation
 
 ### Added
