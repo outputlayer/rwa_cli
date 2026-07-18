@@ -233,8 +233,14 @@ impl Wallet {
     }
 
     /// Load wallet from an age-encrypted file.
+    ///
+    /// Audit L3: routes through [`Self::load_encrypted_payload`] directly
+    /// (not [`Self::from_encrypted_file_full`]) so the `Zeroizing` mnemonic,
+    /// when present, is dropped (and zeroed) without ever being materialized
+    /// as a bare, un-zeroized `String` — this is the hot path hit by every
+    /// buy/sell/send/basket/close-all/keys-show on an encrypted wallet.
     pub fn from_encrypted_file(path: &Path, passphrase: &str) -> Result<Self> {
-        Ok(Self::from_encrypted_file_full(path, passphrase)?.0)
+        Ok(Self::load_encrypted_payload(path, passphrase)?.wallet)
     }
 
     /// Load an encrypted wallet plus its stored recovery mnemonic, when the

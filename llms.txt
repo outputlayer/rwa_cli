@@ -160,7 +160,7 @@ rwa --json gm buy-basket TSLA 100 AAPL 50 --sequential -y       # if rate-limite
 rwa --json gm buy-basket TSLA 50% NVDA 30% SPY 20% --total 1000 -y   # weighted allocation of one total
 ```
 
-IMPORTANT for baskets and close-all: the envelope `status` reflects the real-path outcome — `"success"` (everything landed, or nothing to do, e.g. an empty close-all), `"partial"` (some items landed, some in `failed[]`; exits 0), or `"error"` (every item landed in `failed[]`, nothing moved; exits non-zero). Per-item detail always lives in `failed[]` (and close-all's `skipped[]`, which is NOT a failure — tiny/non-tradable positions). ALWAYS inspect `failed[]` for the per-item reason even on `"partial"`; do not gate on the exit code alone for partial runs — do gate on it for all-failed ones.
+IMPORTANT for baskets and close-all: the envelope `status` reflects the real-path outcome — `"success"` (everything landed, or nothing to do, e.g. an empty close-all), `"partial"` (some items landed, some in `failed[]`; exits 0), or `"error"` (every item landed in `failed[]`, nothing moved; exits non-zero). Per-item detail always lives in `failed[]` (and close-all's `skipped[]`, which is NOT a failure — tiny/non-tradable positions). ALWAYS inspect `failed[]` for the per-item reason even on `"partial"`; do not gate on the exit code alone for partial runs — do gate on it for all-failed ones. Note: an all-failed basket/close-all always exits `1`, never `75`, regardless of which per-item kinds are inside `failed[]` — the aggregate exit carries no transient signal, so the retry decision must come from reading each item's `error_kind`, not from the process exit code.
 
 Full exit:
 
