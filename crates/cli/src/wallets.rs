@@ -237,43 +237,14 @@ pub fn ensure_legacy_registered(config_dir: &Path) -> Result<WalletRegistry> {
 
 /// Load the given target, calling `passphrase` only if the file is encrypted.
 /// `passphrase` is a closure so callers (and tests) control how it's obtained.
+/// Thin wrapper over [`load_target_payload`] (the single implementation of
+/// the Path/LegacyDefault + age/encrypted branch), dropping the mnemonic and
+/// send policy.
 pub fn load_target(
     target: &WalletTarget,
     passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
 ) -> Result<Wallet> {
-    match target {
-        WalletTarget::Path(path) => {
-            if !path.exists() {
-                return Err(eyre!(
-                    "Wallet key file not found: {}. Re-add it with `rwa keys add`.",
-                    path.display()
-                ));
-            }
-            if wallet::is_age_encrypted(path)? {
-                let pass = passphrase()?;
-                Wallet::from_encrypted_file(path, &pass)
-            } else {
-                Wallet::from_file(path)
-            }
-        }
-        WalletTarget::LegacyDefault => {
-            if wallet::is_wallet_encrypted() {
-                let pass = passphrase()?;
-                Wallet::load_default_encrypted(&pass)
-            } else {
-                Wallet::load_default().map_err(|_| {
-                    eyre!(
-                        "No wallet found.\n\n\
-                         Create or import one first:\n  \
-                         rwa keys generate                          Create a new wallet\n  \
-                         rwa keys import --seed-phrase \"word1 ...\"   Import from seed phrase\n  \
-                         rwa keys import --private-key <BASE58>     Import from private key\n  \
-                         rwa keys import --file <PATH>              Import from key file"
-                    )
-                })
-            }
-        }
-    }
+    load_target_payload(target, passphrase).map(|dw| dw.wallet)
 }
 
 /// Keychain account name for a wallet selection: explicit `selected` > registry
@@ -288,69 +259,42 @@ pub(crate) fn keychain_account(reg: &WalletRegistry, selected: Option<&str>) -> 
         .unwrap_or_else(|| "default".to_string())
 }
 
-/// Resolve the active/selected wallet under the real config dir and load it,
-/// reading the passphrase from `RWA_PASSPHRASE` or an interactive prompt.
-/// Single entry point for trading commands and `keys show`.
-pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
+/// Shared config→registry→resolve prelude: load the registry under the real
+/// config dir and resolve `selected` to a keychain account name plus a
+/// [`WalletTarget`], without loading (or decrypting) the wallet itself. Used
+/// by `load_selected*` here and by the `keys` admin handlers
+/// (`store-passphrase`, `forget-passphrase`, `keys show`) that need the
+/// target/account ahead of a conditional decrypt.
+pub(crate) fn resolve_wallet_account(selected: Option<&str>) -> Result<(String, WalletTarget)> {
     let config = dirs::config_dir()
         .ok_or_else(|| eyre!("Cannot determine config directory"))?;
     let reg = WalletRegistry::load(&config)?;
     let account = keychain_account(&reg, selected);
     let target = reg.resolve(selected)?;
-    // Track whether the passphrase came from the keychain (the closure runs
-    // at most once, inside `load_target`, only if the wallet is encrypted) so
-    // a decrypt failure right after can hint at a stale keychain entry rather
-    // than a generic error.
-    let from_keychain = std::cell::Cell::new(false);
-    let result = load_target(&target, || {
-        crate::passphrase::operational_passphrase(&account).map(|(pass, keychain)| {
-            from_keychain.set(keychain);
-            pass
-        })
-    });
-    result.map_err(|e| {
-        if from_keychain.get() {
-            e.wrap_err(
-                "Hint: this passphrase came from the OS keychain — if it's stale, run \
-                 `rwa keys forget-passphrase` and re-store it with `rwa keys store-passphrase`, \
-                 or set RWA_PASSPHRASE",
-            )
-        } else {
-            e
-        }
-    })
+    Ok((account, target))
+}
+
+/// Resolve the active/selected wallet under the real config dir and load it,
+/// reading the passphrase from `RWA_PASSPHRASE` or an interactive prompt.
+/// Single entry point for trading commands and `keys show`. Thin wrapper over
+/// [`load_selected_with_policy`], dropping the send policy and resolved
+/// target (the mnemonic, if any, is already zeroized on drop inside there).
+pub fn load_selected(selected: Option<&str>) -> Result<Wallet> {
+    load_selected_with_policy(selected).map(|(wallet, _policy, _target)| wallet)
 }
 
 /// Like `load_target`, but also returns the stored recovery mnemonic when the
-/// encrypted payload carries one (plaintext wallets never store it).
+/// encrypted payload carries one (plaintext wallets never store it). Thin
+/// wrapper over [`load_target_payload`]; this is the one intentional
+/// String-materialization boundary (audit L3 accepted it here) — callers
+/// like `keys export --reveal` need an owned `String`, not a `Zeroizing`
+/// handle, to print/serialize it.
 pub fn load_target_full(
     target: &WalletTarget,
     passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
 ) -> Result<(Wallet, Option<String>)> {
-    match target {
-        WalletTarget::Path(path) => {
-            if !path.exists() {
-                return Err(eyre!(
-                    "Wallet key file not found: {}. Re-add it with `rwa keys add`.",
-                    path.display()
-                ));
-            }
-            if wallet::is_age_encrypted(path)? {
-                let pass = passphrase()?;
-                Wallet::from_encrypted_file_full(path, &pass)
-            } else {
-                Ok((Wallet::from_file(path)?, None))
-            }
-        }
-        WalletTarget::LegacyDefault => {
-            if wallet::is_wallet_encrypted() {
-                let pass = passphrase()?;
-                Wallet::from_encrypted_file_full(&wallet::encrypted_key_path()?, &pass)
-            } else {
-                Ok((Wallet::load_default()?, None))
-            }
-        }
-    }
+    load_target_payload(target, passphrase)
+        .map(|dw| (dw.wallet, dw.mnemonic.map(|z| z.to_string())))
 }
 
 /// Like `load_selected`, but also returns the wallet's [`wallet::SendPolicy`]
@@ -362,11 +306,7 @@ pub fn load_target_full(
 pub fn load_selected_with_policy(
     selected: Option<&str>,
 ) -> Result<(Wallet, Option<wallet::SendPolicy>, WalletTarget)> {
-    let config = dirs::config_dir()
-        .ok_or_else(|| eyre!("Cannot determine config directory"))?;
-    let reg = WalletRegistry::load(&config)?;
-    let account = keychain_account(&reg, selected);
-    let target = reg.resolve(selected)?;
+    let (account, target) = resolve_wallet_account(selected)?;
     let from_keychain = std::cell::Cell::new(false);
     let result = load_target_payload(&target, || {
         crate::passphrase::operational_passphrase(&account).map(|(pass, keychain)| {
@@ -393,6 +333,13 @@ pub fn load_selected_with_policy(
 /// (wallet + mnemonic + [`wallet::SendPolicy`]) instead of dropping the
 /// policy. Plaintext wallets never carry a mnemonic or a policy, so both are
 /// `None` on that path.
+///
+/// This is the single implementation of the Path/LegacyDefault + age/encrypted
+/// branch — `load_target` and `load_target_full` are thin wrappers over this.
+/// On a `LegacyDefault` target with no key file present, this is also the one
+/// place that turns the terse "No wallet found" into the rich onboarding
+/// guide, so every caller (trading, `keys export`, `send`) gets the same
+/// first-run message.
 pub fn load_target_payload(
     target: &WalletTarget,
     passphrase: impl FnOnce() -> Result<Zeroizing<String>>,
@@ -417,7 +364,18 @@ pub fn load_target_payload(
                 let pass = passphrase()?;
                 Wallet::load_encrypted_payload(&wallet::encrypted_key_path()?, &pass)
             } else {
-                Ok(wallet::DecryptedWallet { wallet: Wallet::load_default()?, mnemonic: None, policy: None })
+                Wallet::load_default()
+                    .map(|wallet| wallet::DecryptedWallet { wallet, mnemonic: None, policy: None })
+                    .map_err(|_| {
+                        eyre!(
+                            "No wallet found.\n\n\
+                             Create or import one first:\n  \
+                             rwa keys generate                          Create a new wallet\n  \
+                             rwa keys import --seed-phrase \"word1 ...\"   Import from seed phrase\n  \
+                             rwa keys import --private-key <BASE58>     Import from private key\n  \
+                             rwa keys import --file <PATH>              Import from key file"
+                        )
+                    })
             }
         }
     }

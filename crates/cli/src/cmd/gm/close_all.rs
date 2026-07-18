@@ -254,17 +254,13 @@ pub async fn close_all(
             skipped,
             total_usdc: format!("{total_usdc:.2}"),
         })?;
-        // All items failed. Exit directly (rather than `return Err`) so main()
-        // doesn't print a SECOND, differently-shaped error JSON object after the
-        // envelope above — one JSON object per invocation. `process::exit` runs
-        // no destructors, but unlike the baskets there is no wallet on the stack
-        // to leak here: `wallet_arc` (an ed25519 SigningKey that zeroizes on
-        // Drop) is scoped INSIDE the `else` block above and was already dropped
-        // when that block ended — all run_swap_items tasks join before it does,
-        // so the key is zeroized well before this exit.
-        if status == "error" {
-            std::process::exit(1);
-        }
+        // Unlike the baskets there is no wallet on the stack to leak here:
+        // `wallet_arc` (an ed25519 SigningKey that zeroizes on Drop) is scoped
+        // INSIDE the `else` block above and was already dropped when that
+        // block ended — all run_swap_items tasks join before it does, so the
+        // key is zeroized well before the possible exit(1) in
+        // `exit_if_all_failed` (see its doc comment: no drop needed here).
+        exit_if_all_failed(status);
         return Ok(());
     }
 

@@ -633,20 +633,11 @@ async fn decrypt_wallet(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the (name, target) pair the same way `load_selected` does.
-fn resolve_wallet_account(selected: Option<&str>) -> Result<(String, crate::wallets::WalletTarget)> {
-    let cfg = config_dir()?;
-    let reg = crate::wallets::WalletRegistry::load(&cfg)?;
-    let account = crate::wallets::keychain_account(&reg, selected);
-    let target = reg.resolve(selected)?;
-    Ok((account, target))
-}
-
 /// Store the active/selected wallet's passphrase in the OS keychain. Only
 /// makes sense for encrypted wallets; verifies the passphrase by actually
 /// decrypting before touching the keychain, so a typo never gets stored.
 async fn store_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
-    let (account, target) = resolve_wallet_account(selected)?;
+    let (account, target) = crate::wallets::resolve_wallet_account(selected)?;
     // Only encrypted wallets have a passphrase to store.
     let encrypted = match &target {
         crate::wallets::WalletTarget::Path(p) => wallet::is_age_encrypted(p)?,
@@ -678,7 +669,7 @@ async fn store_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
 
 /// Remove the wallet's stored passphrase from the OS keychain, if any.
 async fn forget_passphrase(selected: Option<&str>, json: bool) -> Result<()> {
-    let (account, _) = resolve_wallet_account(selected)?;
+    let (account, _) = crate::wallets::resolve_wallet_account(selected)?;
     let existed = crate::passphrase::keyring_delete(&account)?;
     if json {
         println!(
@@ -716,7 +707,7 @@ fn target_path(target: &crate::wallets::WalletTarget) -> Result<std::path::PathB
 /// (`RWA_PASSPHRASE` -> OS keychain -> interactive prompt) since listing the
 /// allow list is not a sensitive-material reveal the way `export` is.
 async fn policy_show(selected: Option<&str>, json: bool) -> Result<()> {
-    let (account, target) = resolve_wallet_account(selected)?;
+    let (account, target) = crate::wallets::resolve_wallet_account(selected)?;
     if !target_is_encrypted(&target)? {
         if json {
             println!("{}", serde_json::json!({ "status": "ok", "policy": null }));
@@ -797,7 +788,7 @@ fn apply_policy_edit(dw: &wallet::DecryptedWallet, edit: &PolicyEdit) -> Result<
 /// send-policy allow list only takes a typed passphrase — env/keychain are
 /// deliberately not consulted, same as `store-passphrase`/`decrypt`/`export`.
 async fn policy_edit(selected: Option<&str>, json: bool, edit: PolicyEdit) -> Result<()> {
-    let (_account, target) = resolve_wallet_account(selected)?;
+    let (_account, target) = crate::wallets::resolve_wallet_account(selected)?;
     if !target_is_encrypted(&target)? {
         return Err(eyre::eyre!(
             "Send policy requires an encrypted wallet. Encrypt first: rwa keys encrypt"

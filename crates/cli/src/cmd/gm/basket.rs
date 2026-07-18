@@ -280,17 +280,15 @@ pub async fn buy_basket(
             skipped: vec![],
             total_usdc_spent: total_str,
         })?;
-        // All items failed. Exit directly (rather than `return Err`) so main()
-        // doesn't print a SECOND, differently-shaped error JSON object after the
-        // envelope above — one JSON object per invocation. But `process::exit`
-        // runs no destructors, and `wallet_arc` wraps an ed25519 SigningKey that
-        // zeroizes its secret on Drop; all run_swap_items tasks are joined by
-        // now, so this Arc is the sole strong ref — drop it explicitly to
-        // zeroize the key before exiting.
+        // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
+        // Drop; all run_swap_items tasks are joined by now, so this Arc is the
+        // sole strong ref — drop it explicitly to zeroize the key before the
+        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
-            std::process::exit(1);
         }
+        exit_if_all_failed(status);
         return Ok(());
     }
     let label = if parallel { "Buy-basket (parallel)" } else { "Buy-basket" };
@@ -435,17 +433,15 @@ pub async fn sell_basket(
             skipped: vec![],
             total_usdc_received: total_str,
         })?;
-        // All items failed. Exit directly (rather than `return Err`) so main()
-        // doesn't print a SECOND, differently-shaped error JSON object after the
-        // envelope above — one JSON object per invocation. But `process::exit`
-        // runs no destructors, and `wallet_arc` wraps an ed25519 SigningKey that
-        // zeroizes its secret on Drop; all run_swap_items tasks are joined by
-        // now, so this Arc is the sole strong ref — drop it explicitly to
-        // zeroize the key before exiting.
+        // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
+        // Drop; all run_swap_items tasks are joined by now, so this Arc is the
+        // sole strong ref — drop it explicitly to zeroize the key before the
+        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
-            std::process::exit(1);
         }
+        exit_if_all_failed(status);
         return Ok(());
     }
     let label = if parallel { "Sell-basket (parallel)" } else { "Sell-basket" };

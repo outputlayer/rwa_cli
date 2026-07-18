@@ -365,6 +365,24 @@ pub(super) fn multi_status(succeeded: usize, failed: usize) -> &'static str {
     }
 }
 
+/// After the multi-trade JSON envelope (close-all/buy-basket/sell-basket) has
+/// been printed, exit(1) directly when every item failed (`status ==
+/// "error"`) rather than `return Err(..)`, so `main()` doesn't print a
+/// SECOND, differently-shaped error JSON object after the envelope above —
+/// one JSON object per invocation.
+///
+/// `std::process::exit` runs no destructors. Close-all has no wallet on the
+/// stack at this point (its `wallet_arc` is scoped inside an inner block and
+/// already dropped), but the two basket call sites hold a live `wallet_arc`
+/// (an ed25519 SigningKey that zeroizes its secret on Drop) — callers there
+/// MUST `drop(wallet_arc)` themselves before calling this, since the exit
+/// below would otherwise leak an un-zeroized key in memory.
+pub(super) fn exit_if_all_failed(status: &str) {
+    if status == "error" {
+        std::process::exit(1);
+    }
+}
+
 pub(super) fn confirm(msg: &str) -> bool {
     print!("{msg} [y/N] ");
     io::stdout().flush().ok();
