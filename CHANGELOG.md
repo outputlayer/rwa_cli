@@ -9,7 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.9] - 2026-07-19 — agent-safe wallet (keychain + send policy), audit remediation, Metis slippage fix
 
 ### Added
 
@@ -18,7 +18,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Breaking
 
-- **`keys decrypt` and `keys export --reveal` are now admin-class**: the passphrase must be typed at a live terminal; `RWA_PASSPHRASE` and the keychain are deliberately not consulted (headless → `error_kind: interactive_required`, exit 1). Closes the "injected agent strips encryption / exfiltrates the key with a leaked env passphrase" hole. Requires a minor version bump at release.
+- **`keys decrypt` and `keys export --reveal` are now admin-class**: the passphrase must be typed at a live terminal; `RWA_PASSPHRASE` and the keychain are deliberately not consulted (headless → `error_kind: interactive_required`, exit 1). Closes the "injected agent strips encryption / exfiltrates the key with a leaked env passphrase" hole. NOTE: shipped in this 0.7.9 patch release as a deliberate maintainer decision despite the breaking nature — pin exactly if you script `keys decrypt` with `RWA_PASSPHRASE` or branch on the affected exit codes.
 
 ### Fixed
 
