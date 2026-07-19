@@ -187,7 +187,14 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
 /// truth so this can't drift from the retry loop as new codes are added.
 #[must_use]
 pub fn is_transient_kind(kind: &str) -> bool {
-    if matches!(kind, "rpc_unavailable" | "confirmation_timeout" | "lock_contention") {
+    // Blockhash kinds (`TransactionErrorKind`) are transient: a retry fetches
+    // a fresh blockhash and gets a new shot at the same transaction.
+    // `simulation_failure` is deliberately excluded — it means the tx would
+    // fail on-chain, which a fresh blockhash won't fix (F6).
+    if matches!(
+        kind,
+        "rpc_unavailable" | "confirmation_timeout" | "lock_contention" | "missing_blockhash" | "invalid_blockhash"
+    ) {
         return true;
     }
     jupiter::ExecuteFailureKind::ALL
@@ -747,10 +754,10 @@ mod tests {
 
     #[test]
     fn transient_kind_classification_for_exit_codes() {
-        for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout"] {
+        for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout", "missing_blockhash", "invalid_blockhash"] {
             assert!(is_transient_kind(k), "{k} must be transient");
         }
-        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused", "confirmation_required"] {
+        for k in ["market_closed", "insufficient_funds", "cost_too_high", "no_position", "slippage_too_high", "condition_not_met", "trading_paused", "confirmation_required", "simulation_failure", "on_chain_failure"] {
             assert!(!is_transient_kind(k), "{k} must be permanent");
         }
     }

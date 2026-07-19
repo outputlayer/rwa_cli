@@ -115,8 +115,11 @@ fn sim_failure_kind(err: &solana::SwapSimError) -> ExecuteFailureKind {
     match err {
         solana::SwapSimError::OnChainWouldFail(_)
         | solana::SwapSimError::OutputBelowQuote(_) => ExecuteFailureKind::RouteUnfillable,
-        solana::SwapSimError::UnsafeDelta(_)
-        | solana::SwapSimError::RpcUnavailable(_) => ExecuteFailureKind::Unknown,
+        // A sim that couldn't reach the RPC is a transient network failure —
+        // surface it as execute_unavailable (exit 75), not the permanent
+        // Unknown bucket used for the UnsafeDelta security refusal.
+        solana::SwapSimError::RpcUnavailable(_) => ExecuteFailureKind::Unavailable,
+        solana::SwapSimError::UnsafeDelta(_) => ExecuteFailureKind::Unknown,
     }
 }
 
@@ -367,7 +370,9 @@ mod tests {
         assert_eq!(sim_failure_kind(&E::OnChainWouldFail("x".into())), ExecuteFailureKind::RouteUnfillable);
         assert_eq!(sim_failure_kind(&E::OutputBelowQuote("x".into())), ExecuteFailureKind::RouteUnfillable);
         assert_eq!(sim_failure_kind(&E::UnsafeDelta("x".into())), ExecuteFailureKind::Unknown);
-        assert_eq!(sim_failure_kind(&E::RpcUnavailable("x".into())), ExecuteFailureKind::Unknown);
+        // A sim that couldn't reach the RPC is transient, not the permanent
+        // Unknown bucket used for the UnsafeDelta security refusal.
+        assert_eq!(sim_failure_kind(&E::RpcUnavailable("x".into())), ExecuteFailureKind::Unavailable);
     }
 
     fn refused_kind(err: eyre::Error) -> ExecuteFailureKind {
@@ -432,7 +437,7 @@ mod tests {
         );
         assert_eq!(
             refused_kind(interpret_sim_result(Err(E::RpcUnavailable("x".into()).into()), true).unwrap_err()),
-            ExecuteFailureKind::Unknown
+            ExecuteFailureKind::Unavailable
         );
     }
 

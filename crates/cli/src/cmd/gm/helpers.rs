@@ -365,11 +365,28 @@ pub(super) fn multi_status(succeeded: usize, failed: usize) -> &'static str {
     }
 }
 
+/// Exit code for an all-failed multi-trade envelope: 75 (transient, retry)
+/// iff EVERY failed item carries a transient error_kind, else 1. An empty or
+/// unclassifiable set is permanent (1) — conservative.
+pub(super) fn all_failed_exit_code(failed_kinds: &[Option<String>]) -> i32 {
+    if !failed_kinds.is_empty()
+        && failed_kinds.iter().all(|k| {
+            k.as_deref().is_some_and(rwa_ondo::usecases::gm::is_transient_kind)
+        })
+    {
+        75
+    } else {
+        1
+    }
+}
+
 /// After the multi-trade JSON envelope (close-all/buy-basket/sell-basket) has
-/// been printed, exit(1) directly when every item failed (`status ==
-/// "error"`) rather than `return Err(..)`, so `main()` doesn't print a
-/// SECOND, differently-shaped error JSON object after the envelope above —
-/// one JSON object per invocation.
+/// been printed, exit directly when every item failed (`status == "error"`)
+/// rather than `return Err(..)`, so `main()` doesn't print a SECOND,
+/// differently-shaped error JSON object after the envelope above — one JSON
+/// object per invocation. The exit code is derived from `failed_kinds` (the
+/// `failed[]` entries' `error_kind`s) via `all_failed_exit_code`: 75 when
+/// every failure was transient, else 1.
 ///
 /// `std::process::exit` runs no destructors. Close-all has no wallet on the
 /// stack at this point (its `wallet_arc` is scoped inside an inner block and
@@ -377,9 +394,30 @@ pub(super) fn multi_status(succeeded: usize, failed: usize) -> &'static str {
 /// (an ed25519 SigningKey that zeroizes its secret on Drop) — callers there
 /// MUST `drop(wallet_arc)` themselves before calling this, since the exit
 /// below would otherwise leak an un-zeroized key in memory.
-pub(super) fn exit_if_all_failed(status: &str) {
+pub(super) fn exit_if_all_failed(status: &str, failed_kinds: &[Option<String>]) {
     if status == "error" {
-        std::process::exit(1);
+        std::process::exit(all_failed_exit_code(failed_kinds));
+    }
+}
+
+/// Human-mode counterpart of `exit_if_all_failed`: build the all-failed error
+/// for close-all/buy-basket/sell-basket so `main()`'s `exit_code_for` (which
+/// reads `classify_error`) can tell transient from permanent — a bare
+/// `eyre!(msg)` carries no structured kind and always exits 1. When every
+/// failed item was transient (`all_failed_exit_code(..) == 75`), the message
+/// is wrapped in a `jupiter::ExecuteFailure` carrying a representative
+/// transient kind (`execute_unavailable`); otherwise it stays a plain
+/// (permanent, exit 1) error.
+pub(super) fn all_failed_error(msg: String, failed_kinds: &[Option<String>]) -> eyre::Error {
+    if all_failed_exit_code(failed_kinds) == 75 {
+        jupiter::ExecuteFailure {
+            kind: jupiter::ExecuteFailureKind::Unavailable,
+            code: None,
+            message: msg,
+        }
+        .into()
+    } else {
+        eyre::eyre!(msg)
     }
 }
 
@@ -481,6 +519,42 @@ mod tests {
         assert_eq!(multi_status(2, 1), "partial");
         assert_eq!(multi_status(0, 2), "error");
         assert_eq!(multi_status(0, 0), "success"); // nothing to do (empty close-all)
+    }
+
+    #[test]
+    fn all_failed_exit_code_all_transient_is_75() {
+        let kinds = vec![
+            Some("execute_unavailable".to_string()),
+            Some("rpc_unavailable".to_string()),
+        ];
+        assert_eq!(all_failed_exit_code(&kinds), 75);
+    }
+
+    #[test]
+    fn all_failed_exit_code_mixed_is_1() {
+        let kinds = vec![
+            Some("execute_unavailable".to_string()),
+            Some("market_closed".to_string()),
+        ];
+        assert_eq!(all_failed_exit_code(&kinds), 1);
+    }
+
+    #[test]
+    fn all_failed_exit_code_single_permanent_is_1() {
+        let kinds = vec![Some("market_closed".to_string())];
+        assert_eq!(all_failed_exit_code(&kinds), 1);
+    }
+
+    #[test]
+    fn all_failed_exit_code_empty_is_1() {
+        let kinds: Vec<Option<String>> = vec![];
+        assert_eq!(all_failed_exit_code(&kinds), 1);
+    }
+
+    #[test]
+    fn all_failed_exit_code_unclassifiable_none_is_1() {
+        let kinds = vec![None];
+        assert_eq!(all_failed_exit_code(&kinds), 1);
     }
 
     #[test]

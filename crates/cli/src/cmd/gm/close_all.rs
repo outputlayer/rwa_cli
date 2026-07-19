@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::Result;
 use rwa_ondo::{amounts, api, jupiter, solana, token_list, usecases};
 use std::sync::Arc;
 
@@ -245,6 +245,11 @@ pub async fn close_all(
     // Real path only — the dry-run status stays "dry_run" unconditionally
     // (a dry-run never "fails" the invocation; it only previews).
     let status = if dry_run { "dry_run" } else { multi_status(sold.len(), failed.len()) };
+    // Captured before `failed` is moved into the JSON envelope below — feeds
+    // `exit_if_all_failed`'s transient/permanent exit-code decision and the
+    // human-mode error typing further down.
+    let failed_kinds: Vec<Option<String>> =
+        failed.iter().map(|f| f.error_kind.map(str::to_string)).collect();
 
     if json {
         json_out(&CloseAllResultJson {
@@ -258,9 +263,9 @@ pub async fn close_all(
         // `wallet_arc` (an ed25519 SigningKey that zeroizes on Drop) is scoped
         // INSIDE the `else` block above and was already dropped when that
         // block ended — all run_swap_items tasks join before it does, so the
-        // key is zeroized well before the possible exit(1) in
+        // key is zeroized well before the possible exit in
         // `exit_if_all_failed` (see its doc comment: no drop needed here).
-        exit_if_all_failed(status);
+        exit_if_all_failed(status, &failed_kinds);
         return Ok(());
     }
 
@@ -290,7 +295,10 @@ pub async fn close_all(
         println!("  Failed:  {} positions", failed.len());
     }
     if status == "error" {
-        return Err(eyre!("close-all: all {} position(s) failed", failed.len()));
+        return Err(all_failed_error(
+            format!("close-all: all {} position(s) failed", failed.len()),
+            &failed_kinds,
+        ));
     }
     Ok(())
 }

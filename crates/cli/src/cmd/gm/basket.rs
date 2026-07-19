@@ -66,9 +66,12 @@ fn read_basket_tokens(argv: &[String], from_file: Option<&str>) -> eyre::Result<
             };
             let toks: Vec<String> = raw
                 .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .flat_map(|l| l.split_whitespace())
+                // Strip inline comments: everything from the first '#' on any line is a
+                // comment (GM symbols/amounts never contain '#'). A whole-line comment
+                // becomes empty and is dropped below.
+                .map(|l| l.split('#').next().unwrap_or("").trim())
+                .filter(|l| !l.is_empty())
+                .flat_map(str::split_whitespace)
                 .map(str::to_string)
                 .collect();
             if toks.is_empty() {
@@ -351,6 +354,11 @@ pub async fn buy_basket(
 
     let total_str = format!("{total_usdc_spent:.2}");
     let status = multi_status(bought.len(), failed.len());
+    // Captured before `failed` is moved into the JSON envelope below — feeds
+    // `exit_if_all_failed`'s transient/permanent exit-code decision and the
+    // human-mode error typing further down.
+    let failed_kinds: Vec<Option<String>> =
+        failed.iter().map(|f| f.error_kind.map(str::to_string)).collect();
     if json {
         json_out(&BuyBasketResultJson {
             gas_refuel,
@@ -364,12 +372,12 @@ pub async fn buy_basket(
         // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
         // Drop; all run_swap_items tasks are joined by now, so this Arc is the
         // sole strong ref — drop it explicitly to zeroize the key before the
-        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // possible exit below (see `exit_if_all_failed`'s doc comment:
         // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
         }
-        exit_if_all_failed(status);
+        exit_if_all_failed(status, &failed_kinds);
         return Ok(());
     }
     let label = if parallel { "Buy-basket (parallel)" } else { "Buy-basket" };
@@ -379,7 +387,10 @@ pub async fn buy_basket(
         println!("  Failed:  {} tokens", failed.len());
     }
     if status == "error" {
-        return Err(eyre!("buy-basket: all {} order(s) failed", failed.len()));
+        return Err(all_failed_error(
+            format!("buy-basket: all {} order(s) failed", failed.len()),
+            &failed_kinds,
+        ));
     }
     Ok(())
 }
@@ -506,6 +517,11 @@ pub async fn sell_basket(
 
     let total_str = format!("{total_usdc:.2}");
     let status = multi_status(sold.len(), failed.len());
+    // Captured before `failed` is moved into the JSON envelope below — feeds
+    // `exit_if_all_failed`'s transient/permanent exit-code decision and the
+    // human-mode error typing further down.
+    let failed_kinds: Vec<Option<String>> =
+        failed.iter().map(|f| f.error_kind.map(str::to_string)).collect();
     if json {
         json_out(&SellBasketResultJson {
             status,
@@ -517,12 +533,12 @@ pub async fn sell_basket(
         // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
         // Drop; all run_swap_items tasks are joined by now, so this Arc is the
         // sole strong ref — drop it explicitly to zeroize the key before the
-        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // possible exit below (see `exit_if_all_failed`'s doc comment:
         // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
         }
-        exit_if_all_failed(status);
+        exit_if_all_failed(status, &failed_kinds);
         return Ok(());
     }
     let label = if parallel { "Sell-basket (parallel)" } else { "Sell-basket" };
@@ -532,7 +548,10 @@ pub async fn sell_basket(
         println!("  Failed:  {} tokens", failed.len());
     }
     if status == "error" {
-        return Err(eyre!("sell-basket: all {} order(s) failed", failed.len()));
+        return Err(all_failed_error(
+            format!("sell-basket: all {} order(s) failed", failed.len()),
+            &failed_kinds,
+        ));
     }
     Ok(())
 }
@@ -911,5 +930,42 @@ mod tests {
     fn read_tokens_argv_passthrough() {
         let toks = read_basket_tokens(&["AAPL".to_string(), "10".to_string()], None).unwrap();
         assert_eq!(toks, vec!["AAPL", "10"]);
+    }
+
+    // F10: an inline `#` mid-line must be stripped, not just whole-line comments —
+    // otherwise "# skip SPY" tokenizes into ["#","skip","SPY"] and SPY gets bought.
+    #[test]
+    fn read_tokens_strips_inline_comments() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-inline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "TSLA NVDA # skip SPY\nAAPL # trailing\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "NVDA", "AAPL"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Regression guard: whole-line comments and blank lines are still dropped
+    // after the inline-comment fix.
+    #[test]
+    fn read_tokens_whole_line_and_blank_still_dropped() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-wholeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "# header\n\nTSLA 50%\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "50%"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_hash_only_line_dropped() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-hashonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "TSLA\n#\nNVDA\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "NVDA"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
