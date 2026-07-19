@@ -66,9 +66,12 @@ fn read_basket_tokens(argv: &[String], from_file: Option<&str>) -> eyre::Result<
             };
             let toks: Vec<String> = raw
                 .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .flat_map(|l| l.split_whitespace())
+                // Strip inline comments: everything from the first '#' on any line is a
+                // comment (GM symbols/amounts never contain '#'). A whole-line comment
+                // becomes empty and is dropped below.
+                .map(|l| l.split('#').next().unwrap_or("").trim())
+                .filter(|l| !l.is_empty())
+                .flat_map(str::split_whitespace)
                 .map(str::to_string)
                 .collect();
             if toks.is_empty() {
@@ -911,5 +914,42 @@ mod tests {
     fn read_tokens_argv_passthrough() {
         let toks = read_basket_tokens(&["AAPL".to_string(), "10".to_string()], None).unwrap();
         assert_eq!(toks, vec!["AAPL", "10"]);
+    }
+
+    // F10: an inline `#` mid-line must be stripped, not just whole-line comments —
+    // otherwise "# skip SPY" tokenizes into ["#","skip","SPY"] and SPY gets bought.
+    #[test]
+    fn read_tokens_strips_inline_comments() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-inline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "TSLA NVDA # skip SPY\nAAPL # trailing\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "NVDA", "AAPL"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Regression guard: whole-line comments and blank lines are still dropped
+    // after the inline-comment fix.
+    #[test]
+    fn read_tokens_whole_line_and_blank_still_dropped() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-wholeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "# header\n\nTSLA 50%\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "50%"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_hash_only_line_dropped() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-hashonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "TSLA\n#\nNVDA\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "NVDA"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
