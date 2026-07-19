@@ -2290,6 +2290,120 @@ fn buy_basket_from_file_reads_tokens() {
     assert!(v["error"].as_str().unwrap().contains("--from-file"), "{v}");
 }
 
+/// `--from-file` alone (no positional tokens) actually gets read and threaded
+/// through the real buy-basket flow: this is the end-to-end counterpart to
+/// `buy_basket_from_file_reads_tokens` above, which only exercises the
+/// both-sources-rejected branch and never proves the file source itself is
+/// consumed. Mock block copied from `buy_basket_equal_dry_run_echoes_even_allocation`.
+#[test]
+fn buy_basket_from_file_alone_dry_run() {
+    let home = test_home("basket-from-file-alone");
+    let basket = home.join("b.txt");
+    std::fs::create_dir_all(&home).unwrap();
+    // Whitespace/blank lines and a `#` comment must be ignored by the file reader.
+    std::fs::write(&basket, "# sector picks\nAAL\n").unwrap();
+    let server = MockServer::start();
+
+    // check_tradable's trading-paused gate: empty list keeps every symbol
+    // (including live-paused ones) resolved as "not found" == not paused.
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
+    // preflight_basket_buy: SOL via getBalance, USDC via getTokenAccountsByOwner.
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!(
+                { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+            ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 }, "value": [{
+                    "pubkey": "SomePubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "owner": WALLET,
+                                    "tokenAmount": {
+                                        "amount": "1000000000",
+                                        "decimals": 6,
+                                        "uiAmount": 1000.0,
+                                        "uiAmountString": "1000"
+                                    }
+                                },
+                                "type": "account"
+                            },
+                            "program": "spl-token",
+                            "space": 165
+                        },
+                        "executable": false,
+                        "lamports": 2039280,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "rentEpoch": 0
+                    }
+                }] }
+            }));
+    });
+    // Deterministic session fixture (AAL tradable in EVERY session) instead of a
+    // 500: a 500 relies on the fail-open path, which only applies OUTSIDE the
+    // Closed session — so when this test ran during a real "Closed" wall-clock it
+    // failed closed with `market_closed` instead of reaching the cost gate. The
+    // fixture makes the assertion wall-clock-independent.
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-1",
+                "inAmount": "10000000",
+                "outAmount": "1000000000",
+                "inUsdValue": 10.0,
+                "outUsdValue": 9.95,
+                "feeBps": 50,
+                "router": "iris",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    let out = rwa(&home)
+        .args([
+            "--json", "gm", "buy-basket",
+            "--from-file", basket.to_str().unwrap(),
+            "--total", "10", "--equal", "--dry-run",
+        ])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output().unwrap();
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "dry_run", "{v}");
+    assert_eq!(v["allocation"]["total"], "10");
+    assert_eq!(v["allocation"]["weights"]["AAL"], "100.0000");
+    let bought = v["bought"].as_array().unwrap();
+    assert_eq!(bought.len(), 1, "{v}");
+    assert_eq!(bought[0]["token"], "AALon");
+}
+
 /// `--equal` without `--total` → invalid_amount, pre-network (no mocks).
 #[test]
 fn buy_basket_equal_without_total_errors() {
