@@ -47,18 +47,20 @@ fn every_command_is_documented() {
     );
 }
 
-/// Drift guard for the AGENT CONTRACT: every `GmTradeErrorKind` label AND
+/// Drift guard for the AGENT CONTRACT: every `GmTradeErrorKind` label,
 /// every `ExecuteFailureKind` label (Jupiter `/execute` failures — also
-/// surfaced via `classify_error` into the `error_kind` JSON field, see M2/L6)
-/// must be documented in llms.txt (the agent manual), README.md, and
+/// surfaced via `classify_error` into the `error_kind` JSON field, see M2/L6),
+/// AND every `TransactionErrorKind` label (Solana transaction-layer errors —
+/// see F6) must be documented in llms.txt (the agent manual), README.md, and
 /// CLAUDE.md. Seven kinds were added in 0.7.2 alone; before this guard a new
 /// one reached agents undocumented if the author forgot the three prose
-/// lists. The source lists are `GmTradeErrorKind::ALL` and
-/// `ExecuteFailureKind::ALL`, each kept exhaustive by a compile-time tripwire
-/// in the ondo crate.
+/// lists. The source lists are `GmTradeErrorKind::ALL`, `ExecuteFailureKind::ALL`,
+/// and `TransactionErrorKind::ALL`, each kept exhaustive by a compile-time
+/// tripwire in the ondo crate.
 #[test]
 fn error_kinds_are_documented() {
     use rwa_ondo::jupiter::ExecuteFailureKind;
+    use rwa_ondo::solana::TransactionErrorKind;
     use rwa_ondo::usecases::gm::GmTradeErrorKind;
     let docs = [
         ("llms.txt", doc("llms.txt")),
@@ -68,6 +70,7 @@ fn error_kinds_are_documented() {
     let mut missing = Vec::new();
     let mut labels: Vec<&'static str> = GmTradeErrorKind::ALL.iter().map(|k| k.label()).collect();
     labels.extend(ExecuteFailureKind::ALL.iter().map(|k| k.label()));
+    labels.extend(TransactionErrorKind::ALL.iter().map(|k| k.label()));
     for label in labels {
         // A plain `contains` is a weak check for labels that are substrings of
         // OTHER documented labels — `unknown` lives inside `unknown_wallet`,

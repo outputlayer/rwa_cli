@@ -45,6 +45,16 @@ impl TransactionErrorKind {
             Self::SimulationFailure => "simulation_failure",
         }
     }
+
+    /// Every variant — kept exhaustive by the tripwire test below and consumed
+    /// by the docs-sync agent-contract guard (`crates/cli/tests/docs_sync.rs`).
+    pub const ALL: [Self; 5] = [
+        Self::ConfirmationTimeout,
+        Self::OnChainFailure,
+        Self::MissingBlockhash,
+        Self::InvalidBlockhash,
+        Self::SimulationFailure,
+    ];
 }
 
 impl std::fmt::Display for TransactionErrorKind {
@@ -853,6 +863,28 @@ mod tests {
             confirmed: false,
         };
         assert!(!r.confirmed);
+    }
+
+    #[test]
+    fn all_transaction_error_kinds_listed_with_unique_labels() {
+        // Compile-time tripwire: adding a variant breaks this exhaustive match
+        // (and `label()`'s), a reminder to add it to `ALL` and document it —
+        // the cli-crate `error_kinds_are_documented` guard then checks the docs.
+        for k in TransactionErrorKind::ALL {
+            match k {
+                TransactionErrorKind::ConfirmationTimeout
+                | TransactionErrorKind::OnChainFailure
+                | TransactionErrorKind::MissingBlockhash
+                | TransactionErrorKind::InvalidBlockhash
+                | TransactionErrorKind::SimulationFailure => {}
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for k in TransactionErrorKind::ALL {
+            let l = k.label();
+            assert!(!l.is_empty(), "empty label for {k:?}");
+            assert!(seen.insert(l), "duplicate error_kind label: {l}");
+        }
     }
 
     #[test]
