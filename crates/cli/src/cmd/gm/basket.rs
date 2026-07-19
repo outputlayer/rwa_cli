@@ -126,7 +126,7 @@ fn resolve_equal_items(symbols: &[String], total: Option<&str>) -> eyre::Result<
     })?;
     for s in symbols {
         let t = s.trim();
-        if t.ends_with('%') || t.parse::<f64>().is_ok() {
+        if t.eq_ignore_ascii_case("all") || t.ends_with('%') || t.parse::<f64>().is_ok() {
             return Err(usecases::gm::GmTradeError::new(
                 usecases::gm::GmTradeErrorKind::InvalidAmount,
                 format!("--equal takes bare symbols, not amounts; got '{s}'"),
@@ -868,6 +868,13 @@ mod tests {
     fn resolve_equal_items_rejects_amounts_in_tokens() {
         // With --equal the tokens are bare symbols; a "50%" or number is an error.
         let err = resolve_equal_items(&["TSLA".to_string(), "50%".to_string()], Some("100")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+    }
+
+    #[test]
+    fn resolve_equal_items_rejects_all_keyword() {
+        // "all" is reserved amount syntax, not a bare symbol; reject pre-network.
+        let err = resolve_equal_items(&["TSLA".to_string(), "all".to_string()], Some("12")).unwrap_err();
         assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
     }
 

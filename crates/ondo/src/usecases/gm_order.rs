@@ -345,7 +345,7 @@ pub fn split_total_equal(total: &str, symbols: &[String]) -> Result<Vec<(String,
 
     let n_disp = symbols.len();
     let total_owned = total.to_string();
-    check_split_minimums(&out, move |_sym| format!("({n_disp} × {total_owned}/{n_disp})"))?;
+    check_split_minimums(&out, move |_sym| format!("({total_owned} USDC / {n_disp} tokens)"))?;
     Ok(out)
 }
 
