@@ -9,11 +9,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.10] - 2026-07-19 — buy-basket bulk input (`--equal`, `--from-file`/stdin)
 
 ### Added
 
-- **`buy-basket --equal` and `--from-file`** — `--equal` (with `--total`) splits the total evenly across bare symbols (the only clean equal-weight for an arbitrary N under the exact-100 `--total` rule); `--from-file <path>` reads tokens from a file or stdin (`-`), mutually exclusive with positional args. Together they enable filter-driven bulk buys by composition: `search --tradable-only --sector X | jq -r '.items[].symbol' | xargs buy-basket --total N --equal`. No new error kinds; `allocation` echo carries the computed equal weights.
+- **`buy-basket --equal` and `--from-file`** — `--equal` (with `--total`) splits the total evenly across bare symbols (the only clean equal-weight for an arbitrary N under the exact-100 `--total` rule; floor + dust-to-first, same 5 USDC/item minimum). `--from-file <path>` reads tokens from a file or stdin (`-`; whitespace/newline separated, `#` comment and blank lines ignored), mutually exclusive with positional args. Together they enable filter-driven bulk buys by composition: `search --tradable-only --sector X | jq -r '.items[].symbol' | xargs buy-basket --total N --equal`. No new error kinds (reuses `invalid_amount`/`amount_below_minimum`, both enforced pre-network); `allocation` echo carries the computed equal weights. Additive only — no breaking changes.
 
 ---
 
