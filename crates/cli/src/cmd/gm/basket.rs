@@ -34,6 +34,52 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
     Ok(pairs)
 }
 
+/// Resolve the basket token source: positional argv XOR `--from-file <path>`
+/// (`-` = stdin). Files/stdin are tokenized on whitespace after dropping blank
+/// lines and `#` comment lines. Exactly one source must be present.
+fn read_basket_tokens(argv: &[String], from_file: Option<&str>) -> eyre::Result<Vec<String>> {
+    let invalid = |msg: String| {
+        eyre::Report::from(usecases::gm::GmTradeError::new(
+            usecases::gm::GmTradeErrorKind::InvalidAmount,
+            msg,
+        ))
+    };
+    match (argv.is_empty(), from_file) {
+        (false, Some(_)) => Err(invalid(
+            "pass tokens as arguments OR --from-file, not both".to_string(),
+        )),
+        (true, None) => Err(invalid(
+            "no tokens given: pass SYMBOL AMOUNT pairs (or bare symbols with --equal), or --from-file <path>".to_string(),
+        )),
+        (false, None) => Ok(argv.to_vec()),
+        (true, Some(path)) => {
+            let raw = if path == "-" {
+                use std::io::Read as _;
+                let mut s = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut s)
+                    .map_err(|e| invalid(format!("failed to read tokens from stdin: {e}")))?;
+                s
+            } else {
+                std::fs::read_to_string(path)
+                    .map_err(|e| invalid(format!("failed to read --from-file '{path}': {e}")))?
+            };
+            let toks: Vec<String> = raw
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .flat_map(|l| l.split_whitespace())
+                .map(str::to_string)
+                .collect();
+            if toks.is_empty() {
+                let src = if path == "-" { "stdin".to_string() } else { format!("--from-file '{path}'") };
+                return Err(invalid(format!("no tokens read from {src}")));
+            }
+            Ok(toks)
+        }
+    }
+}
+
 /// Strip the trailing `%` (and any surrounding whitespace) from a `--total`
 /// weight for the JSON `allocation.weights` echo, e.g. `"50 %"` -> `"50"`.
 fn echo_weight(amt: &str) -> String {
@@ -216,6 +262,7 @@ pub async fn buy_basket(
     tokens: &[String],
     total: Option<&str>,
     equal: bool,
+    from_file: Option<&str>,
     opts: ExecOpts,
     parallel: bool,
     tuning: TradeTuning,
@@ -224,10 +271,11 @@ pub async fn buy_basket(
 ) -> Result<()> {
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
+    let tokens: Vec<String> = read_basket_tokens(tokens, from_file)?;
 
     // Resolve items + the JSON `allocation` echo per mode.
     let (items, allocation): (Vec<(String, u128)>, Option<AllocationJson>) = if equal {
-        let items = resolve_equal_items(tokens, total)?;
+        let items = resolve_equal_items(&tokens, total)?;
         let n = items.len();
         let each_pct = if n > 0 { 100.0 / n as f64 } else { 0.0 };
         let weights = items
@@ -237,7 +285,7 @@ pub async fn buy_basket(
         let alloc = total.map(|t| AllocationJson { total: t.to_string(), weights });
         (items, alloc)
     } else {
-        let pairs = parse_basket_pairs(tokens)?;
+        let pairs = parse_basket_pairs(&tokens)?;
         let items = resolve_buy_items(&pairs, total)?;
         let alloc = total.map(|t| AllocationJson {
             total: t.to_string(),
@@ -821,5 +869,40 @@ mod tests {
         // With --equal the tokens are bare symbols; a "50%" or number is an error.
         let err = resolve_equal_items(&["TSLA".to_string(), "50%".to_string()], Some("100")).unwrap_err();
         assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+    }
+
+    #[test]
+    fn read_tokens_from_file_strips_comments_and_blanks() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "# my basket\nTSLA 50%\n\n  NVDA 50%  \n# trailing comment\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "50%", "NVDA", "50%"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_rejects_both_sources() {
+        let err = read_basket_tokens(&["TSLA".to_string(), "10".to_string()], Some("basket.txt")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--from-file"), "{err}");
+    }
+
+    #[test]
+    fn read_tokens_empty_file_is_error() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("empty.txt");
+        std::fs::write(&p, "# only a comment\n\n").unwrap();
+        let err = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_argv_passthrough() {
+        let toks = read_basket_tokens(&["AAPL".to_string(), "10".to_string()], None).unwrap();
+        assert_eq!(toks, vec!["AAPL", "10"]);
     }
 }
