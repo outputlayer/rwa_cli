@@ -145,6 +145,10 @@ make install-hooks     # optional: pre-push hook that runs `make ci` automatical
 
 CI treats warnings as errors (`-Dwarnings`), so `make ci` — not a plain `cargo test`/`clippy` — is what keeps `main` green.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — in short: `make ci` before every push, and money-path changes need live validation.
+
 ## License
 
 MIT
