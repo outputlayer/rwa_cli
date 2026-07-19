@@ -67,6 +67,30 @@ fn resolve_buy_items(
     Ok(items)
 }
 
+/// Resolve bare symbols into per-item raw USDC by splitting `--total` evenly
+/// (the `--equal` mode). Rejects a missing `--total` and any token that carries
+/// an amount/percent (with `--equal` the tokens must be bare symbols). Pure —
+/// runs before wallet load.
+fn resolve_equal_items(symbols: &[String], total: Option<&str>) -> eyre::Result<Vec<(String, u128)>> {
+    let total = total.ok_or_else(|| {
+        eyre::Report::from(usecases::gm::GmTradeError::new(
+            usecases::gm::GmTradeErrorKind::InvalidAmount,
+            "--equal requires --total (e.g. --total 1000 --equal TSLA NVDA SPY)".to_string(),
+        ))
+    })?;
+    for s in symbols {
+        let t = s.trim();
+        if t.ends_with('%') || t.parse::<f64>().is_ok() {
+            return Err(usecases::gm::GmTradeError::new(
+                usecases::gm::GmTradeErrorKind::InvalidAmount,
+                format!("--equal takes bare symbols, not amounts; got '{s}'"),
+            )
+            .into());
+        }
+    }
+    usecases::gm::split_total_equal(total, symbols)
+}
+
 // ── Per-item processors ─────────────────────────────────────
 //
 // One processor per operation. Each does fetch + execute and returns either
@@ -187,9 +211,11 @@ async fn process_sell_item(
 
 // ── Buy basket ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn buy_basket(
     tokens: &[String],
     total: Option<&str>,
+    equal: bool,
     opts: ExecOpts,
     parallel: bool,
     tuning: TradeTuning,
@@ -198,16 +224,28 @@ pub async fn buy_basket(
 ) -> Result<()> {
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
-    let pairs = parse_basket_pairs(tokens)?;
-    let items = resolve_buy_items(&pairs, total)?;
-    let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
-    let allocation = total.map(|t| AllocationJson {
-        total: t.to_string(),
-        weights: pairs
+
+    // Resolve items + the JSON `allocation` echo per mode.
+    let (items, allocation): (Vec<(String, u128)>, Option<AllocationJson>) = if equal {
+        let items = resolve_equal_items(tokens, total)?;
+        let n = items.len();
+        let each_pct = if n > 0 { 100.0 / n as f64 } else { 0.0 };
+        let weights = items
             .iter()
-            .map(|(sym, amt)| (sym.clone(), echo_weight(amt)))
-            .collect(),
-    });
+            .map(|(sym, _)| (sym.clone(), format!("{each_pct:.4}")))
+            .collect();
+        let alloc = total.map(|t| AllocationJson { total: t.to_string(), weights });
+        (items, alloc)
+    } else {
+        let pairs = parse_basket_pairs(tokens)?;
+        let items = resolve_buy_items(&pairs, total)?;
+        let alloc = total.map(|t| AllocationJson {
+            total: t.to_string(),
+            weights: pairs.iter().map(|(sym, amt)| (sym.clone(), echo_weight(amt))).collect(),
+        });
+        (items, alloc)
+    };
+    let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
@@ -224,21 +262,16 @@ pub async fn buy_basket(
     if !json {
         let mode = if parallel { " (parallel)" } else { "" };
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
-        println!("Buying {} tokens = {} USDC total{}", pairs.len(), total_display, mode);
-        for ((sym, raw), (_, amt)) in items.iter().zip(&pairs) {
-            if total.is_some() {
-                let usdc = amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS);
-                println!("  {sym}: {usdc} USDC ({amt})");
-            } else {
-                println!("  {sym}: {amt} USDC");
-            }
+        println!("Buying {} tokens = {} USDC total{}", items.len(), total_display, mode);
+        for (sym, raw) in &items {
+            println!("  {sym}: {} USDC", amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS));
         }
         println!();
     }
 
     if !dry_run {
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
-        let prompt = format!("Buy {} tokens for {} USDC total?", pairs.len(), total_display);
+        let prompt = format!("Buy {} tokens for {} USDC total?", items.len(), total_display);
         if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
@@ -763,5 +796,30 @@ mod tests {
         let items = resolve_buy_items(&pairs, None).unwrap();
         assert_eq!(items[0].1, 4_000_000u128);
         assert_eq!(items[1].1, 3_500_000u128);
+    }
+
+    #[test]
+    fn resolve_equal_items_splits_total_evenly() {
+        let out = resolve_equal_items(
+            &["TSLA".to_string(), "NVDA".to_string(), "SPY".to_string()],
+            Some("999"),
+        )
+        .unwrap();
+        assert_eq!(out.iter().map(|(_, r)| *r).sum::<u128>(), 999_000_000);
+        assert_eq!(out[0].0, "TSLA");
+    }
+
+    #[test]
+    fn resolve_equal_items_requires_total() {
+        let err = resolve_equal_items(&["TSLA".to_string()], None).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--total"), "{err}");
+    }
+
+    #[test]
+    fn resolve_equal_items_rejects_amounts_in_tokens() {
+        // With --equal the tokens are bare symbols; a "50%" or number is an error.
+        let err = resolve_equal_items(&["TSLA".to_string(), "50%".to_string()], Some("100")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
     }
 }
