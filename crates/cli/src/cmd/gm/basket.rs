@@ -354,6 +354,11 @@ pub async fn buy_basket(
 
     let total_str = format!("{total_usdc_spent:.2}");
     let status = multi_status(bought.len(), failed.len());
+    // Captured before `failed` is moved into the JSON envelope below — feeds
+    // `exit_if_all_failed`'s transient/permanent exit-code decision and the
+    // human-mode error typing further down.
+    let failed_kinds: Vec<Option<String>> =
+        failed.iter().map(|f| f.error_kind.map(str::to_string)).collect();
     if json {
         json_out(&BuyBasketResultJson {
             gas_refuel,
@@ -367,12 +372,12 @@ pub async fn buy_basket(
         // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
         // Drop; all run_swap_items tasks are joined by now, so this Arc is the
         // sole strong ref — drop it explicitly to zeroize the key before the
-        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // possible exit below (see `exit_if_all_failed`'s doc comment:
         // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
         }
-        exit_if_all_failed(status);
+        exit_if_all_failed(status, &failed_kinds);
         return Ok(());
     }
     let label = if parallel { "Buy-basket (parallel)" } else { "Buy-basket" };
@@ -382,7 +387,10 @@ pub async fn buy_basket(
         println!("  Failed:  {} tokens", failed.len());
     }
     if status == "error" {
-        return Err(eyre!("buy-basket: all {} order(s) failed", failed.len()));
+        return Err(all_failed_error(
+            format!("buy-basket: all {} order(s) failed", failed.len()),
+            &failed_kinds,
+        ));
     }
     Ok(())
 }
@@ -509,6 +517,11 @@ pub async fn sell_basket(
 
     let total_str = format!("{total_usdc:.2}");
     let status = multi_status(sold.len(), failed.len());
+    // Captured before `failed` is moved into the JSON envelope below — feeds
+    // `exit_if_all_failed`'s transient/permanent exit-code decision and the
+    // human-mode error typing further down.
+    let failed_kinds: Vec<Option<String>> =
+        failed.iter().map(|f| f.error_kind.map(str::to_string)).collect();
     if json {
         json_out(&SellBasketResultJson {
             status,
@@ -520,12 +533,12 @@ pub async fn sell_basket(
         // `wallet_arc` wraps an ed25519 SigningKey that zeroizes its secret on
         // Drop; all run_swap_items tasks are joined by now, so this Arc is the
         // sole strong ref — drop it explicitly to zeroize the key before the
-        // possible exit(1) below (see `exit_if_all_failed`'s doc comment:
+        // possible exit below (see `exit_if_all_failed`'s doc comment:
         // `process::exit` runs no destructors, so this MUST happen first).
         if status == "error" {
             drop(wallet_arc);
         }
-        exit_if_all_failed(status);
+        exit_if_all_failed(status, &failed_kinds);
         return Ok(());
     }
     let label = if parallel { "Sell-basket (parallel)" } else { "Sell-basket" };
@@ -535,7 +548,10 @@ pub async fn sell_basket(
         println!("  Failed:  {} tokens", failed.len());
     }
     if status == "error" {
-        return Err(eyre!("sell-basket: all {} order(s) failed", failed.len()));
+        return Err(all_failed_error(
+            format!("sell-basket: all {} order(s) failed", failed.len()),
+            &failed_kinds,
+        ));
     }
     Ok(())
 }
