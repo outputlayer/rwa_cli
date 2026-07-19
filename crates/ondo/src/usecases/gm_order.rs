@@ -1,3 +1,8 @@
+//! Order acquisition and pre-trade gates: `fetch_buy_order`/`fetch_sell_order`
+//! (checked Jupiter quotes), the `--max-bps` cost gate and `--limit-price`
+//! gate, and `--total` basket splitting (`split_total_by_weights`,
+//! `split_total_equal`) with exact-sum dust handling.
+
 use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, jupiter, solana, token_list};

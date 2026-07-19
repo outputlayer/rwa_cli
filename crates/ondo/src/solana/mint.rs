@@ -1,3 +1,8 @@
+//! Token-2022 scaled-UI multiplier: reads a mint's `shares_per_token`
+//! multiplier from its account data (`None` when the mint has no scaled-UI
+//! extension; errors — fails closed — when the account can't be read). Used
+//! for share-frame limit prices and display conversions.
+
 use eyre::{Result, eyre};
 use serde::Deserialize;
 

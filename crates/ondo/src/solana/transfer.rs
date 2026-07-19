@@ -1,3 +1,8 @@
+//! SOL and SPL transfers plus rent reclaim: builds, signs and sends transfer
+//! transactions locally (always needs SOL for fees; confirms at `confirmed`),
+//! and `get_empty_token_accounts`/`close_empty_accounts` batch-close empty
+//! ATAs for `reclaim` (confirmed at `processed`).
+
 use eyre::{Result, eyre};
 
 use crate::wallet::Wallet;

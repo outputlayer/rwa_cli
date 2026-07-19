@@ -1,3 +1,7 @@
+//! Fee and rent estimation: base + priority fee (recent-fees RPC, 10s cache)
+//! and ATA rent exemption (5-min cache with hardcoded fallbacks), feeding gas
+//! estimates for sends and auto-refuel sizing.
+
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 

@@ -1,3 +1,7 @@
+//! `--limit-price` gating: converts a limit given per raw token or per
+//! underlying share (`LimitFrame`, via the mint's scaled-UI multiplier) into
+//! a raw-USDC threshold and decides whether a quote's implied price violates it.
+
 use eyre::{Result, eyre};
 
 /// Price frame of a `--limit-price` value. `Token` = per raw GM token (the

@@ -1,3 +1,9 @@
+//! Shared preflight internals for buy/sell/basket paths: slippage measurement
+//! and the 3% block (`calc_slippage`/`check_slippage`), tradability and
+//! trading-pause checks, gasless-route SOL requirements, minimum-amount
+//! enforcement, and the checked order fetch. Also home of the retry and
+//! slippage tuning constants.
+
 use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, api, jupiter, solana, symbol_resolve, token_list};

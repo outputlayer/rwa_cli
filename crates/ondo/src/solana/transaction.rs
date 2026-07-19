@@ -1,3 +1,9 @@
+//! Transaction pipeline: blockhash fetch, pre-send simulation with fail-closed
+//! CU tightening, signed submit, and confirmation polling.
+//! `TransactionErrorKind` classifies failures for the exit-code contract
+//! (`missing_blockhash`/`invalid_blockhash` transient, `simulation_failure`
+//! permanent). The live send path is not covered by CI — see CLAUDE.md.
+
 use eyre::Result;
 
 use crate::wallet::Wallet;

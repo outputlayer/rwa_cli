@@ -1,3 +1,9 @@
+//! Live Jupiter `/execute` submission: `execute_with_retry` drives the
+//! submit-and-retry loop (transient kinds resubmit or refetch per `retry_action`),
+//! `finalize_execution` settles the outcome, and `record_swap_outcome` appends
+//! the ledger entry. CI never exercises this path — validate changes with a
+//! live `--dry-run` plus a small real trade (see CLAUDE.md).
+
 use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, audit, jupiter, solana, wallet};

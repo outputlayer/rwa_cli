@@ -1,3 +1,8 @@
+//! Balance reads over JSON-RPC: SOL and USDC (UI + raw), single-token and
+//! whole-portfolio queries (Token and Token-2022 program scans), with a
+//! Jupiter Ultra holdings fallback when the RPC is unavailable
+//! (`BalanceSource` marks which source answered).
+
 use eyre::{Result, eyre};
 use serde::Deserialize;
 

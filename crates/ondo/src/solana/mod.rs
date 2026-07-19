@@ -1,3 +1,8 @@
+//! Solana RPC layer facade: re-exports balances, the Token-2022 scaled-UI
+//! multiplier, fee/rent estimation, transaction send/confirm, transfers +
+//! rent reclaim, and pre-sign swap verification from private submodules;
+//! `rpc` underneath provides the retrying JSON-RPC client.
+
 mod balance;
 mod mint;
 mod rpc;

@@ -1,3 +1,9 @@
+//! Public facade for GM trading: `prepare_buy`/`prepare_sell` build a checked
+//! `SwapPlan` (tradability, slippage, cost and limit gates), `execute_swap`
+//! runs it, and `GmTradeErrorKind` maps failures onto the CLI's `error_kind`
+//! contract. The heavy lifting lives in the `gm_*` sibling modules re-exported
+//! at the top of this file.
+
 use eyre::{Result, WrapErr, eyre};
 
 use crate::{amounts, api, jupiter, solana, token_list, wallet};
