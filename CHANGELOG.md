@@ -9,6 +9,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.11] - 2026-07-19 — post-audit fixes: F10 mis-allocation + exit-code contract
+
+### Fixed
+
+- **`buy-basket --from-file` strips inline `#` comments (F10)** — previously only whole `#` lines were dropped; an inline `TSLA NVDA # skip SPY` survived, and under `--equal` the leftover words inflated N (mis-dividing `--total`) and a commented real symbol (`SPY`) got bought. Now each line is cut at its first `#` before tokenizing. Prevents silent real-money mis-allocation on a documented happy path.
+- **Pre-sign-simulation RPC failure is transient (F8/F2)** — an `RpcUnavailable` during the pre-sign swap simulation now surfaces as `execute_unavailable` (exit 75, retryable) instead of the permanent `unknown` (exit 1); the security refusal itself is unchanged (an unreachable-RPC sim is still refused, only its `error_kind` is corrected).
+- **All-failed baskets/close-all exit 75 when every item was transient (F7)** — `buy-basket`/`sell-basket`/`close-all` where every leg failed for a transient reason (e.g. `execute_unavailable`) now exit 75 (retry) instead of always 1; JSON and human modes agree. A mix, or any permanent kind, still exits 1.
+- **`TransactionErrorKind` labels documented + guarded (F6)** — `missing_blockhash`, `invalid_blockhash`, and `simulation_failure` reach the JSON `error_kind` field but were undocumented and unguarded; they are now in the docs-sync agent-contract guard and documented in llms.txt/README/CLAUDE.md. The two blockhash kinds are reclassified transient (exit 75 — a fresh blockhash on retry fixes them); `simulation_failure` stays permanent (exit 1).
+
+All from the v0.7.10 post-release multi-agent audit (19 confirmed findings, 0 critical/high). No new `error_kind` variants; only additive documentation and corrected exit-code classification. Agents that branch on exit codes for the affected transient paths now see 75 where they previously saw 1.
+
+---
+
 ## [0.7.10] - 2026-07-19 — buy-basket bulk input (`--equal`, `--from-file`/stdin)
 
 ### Added
