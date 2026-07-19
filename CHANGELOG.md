@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`buy-basket --equal` and `--from-file`** — `--equal` (with `--total`) splits the total evenly across bare symbols (the only clean equal-weight for an arbitrary N under the exact-100 `--total` rule); `--from-file <path>` reads tokens from a file or stdin (`-`), mutually exclusive with positional args. Together they enable filter-driven bulk buys by composition: `search --tradable-only --sector X | jq -r '.items[].symbol' | xargs buy-basket --total N --equal`. No new error kinds; `allocation` echo carries the computed equal weights.
+
+---
+
 ## [0.7.9] - 2026-07-19 — agent-safe wallet (keychain + send policy), audit remediation, Metis slippage fix
 
 ### Added

@@ -62,6 +62,8 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `rwa --json gm buy-basket <SYM AMT ...> --dry-run` — preview basket buy quotes (SYMBOL AMOUNT pairs)
 - `rwa --json gm buy-basket <SYM AMT ...> -y` — buy multiple tokens (parallel by default; `--sequential` if rate-limited)
 - `rwa --json gm buy-basket <SYM PCT% ...> --total <USDC> -y` — split one USDC total by percent weights (weights must sum to exactly 100; every item ≥ 5 USDC; JSON echoes `allocation: {total, weights}`)
+- `rwa --json gm buy-basket --total <USDC> --equal <SYM ...> -y` — split one USDC total EVENLY across bare symbols (no per-token amounts/percents); requires `--total`; same `allocation` JSON echo. The only clean way to equal-weight an arbitrary N under the exact-100 `--total` rule
+- `rwa --json gm buy-basket --from-file <path> --total <USDC> ... -y` — read the token list from a file instead of argv (`--from-file -` = stdin); mutually exclusive with positional tokens; composes with all three amount modes (exact/percent/`--equal`)
 - `rwa --json gm sell-basket <SYM AMT ...> --dry-run` — preview basket sell quotes
 - `rwa --json gm sell-basket <SYM AMT ...> -y` — sell multiple tokens (parallel by default; `--sequential` if rate-limited)
 
@@ -158,6 +160,14 @@ rwa --json gm buy-basket TSLA 100 AAPL 50 NVDA 25 -y            # different amou
 rwa --json gm sell-basket SPY 5 TSLA 3 NVDA all -y              # partial sells
 rwa --json gm buy-basket TSLA 100 AAPL 50 --sequential -y       # if rate-limited
 rwa --json gm buy-basket TSLA 50% NVDA 30% SPY 20% --total 1000 -y   # weighted allocation of one total
+rwa --json gm buy-basket --total 1000 --equal TSLA NVDA SPY -y       # even split across N bare symbols
+rwa --json gm buy-basket --from-file basket.txt --total 500 -y       # tokens from a file (- = stdin)
+```
+
+Filter-driven bulk buy: compose `search` with `buy-basket --equal` instead of adding filter flags to `buy-basket` itself — pipe a filtered symbol list straight in:
+
+```bash
+rwa --json gm search --tradable-only --sector Technology | jq -r '.items[].symbol' | xargs rwa gm buy-basket --total 1000 --equal -y
 ```
 
 IMPORTANT for baskets and close-all: the envelope `status` reflects the real-path outcome — `"success"` (everything landed, or nothing to do, e.g. an empty close-all), `"partial"` (some items landed, some in `failed[]`; exits 0), or `"error"` (every item landed in `failed[]`, nothing moved; exits non-zero). Per-item detail always lives in `failed[]` (and close-all's `skipped[]`, which is NOT a failure — tiny/non-tradable positions). ALWAYS inspect `failed[]` for the per-item reason even on `"partial"`; do not gate on the exit code alone for partial runs — do gate on it for all-failed ones. Note: an all-failed basket/close-all always exits `1`, never `75`, regardless of which per-item kinds are inside `failed[]` — the aggregate exit carries no transient signal, so the retry decision must come from reading each item's `error_kind`, not from the process exit code.

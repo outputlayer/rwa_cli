@@ -204,13 +204,22 @@ pub enum GmAction {
     /// Buy multiple GM tokens with USDC in one go (basket buy).
     /// Syntax: SYMBOL AMOUNT [SYMBOL AMOUNT ...], e.g. AAPL 4 TSLA 3 NVDA 5
     BuyBasket {
-        /// Alternating symbol/amount pairs: AAPL 4 TSLA 3 NVDA 5
-        #[arg(required = true, num_args = 2..)]
+        /// Alternating symbol/amount pairs: AAPL 4 TSLA 3 NVDA 5 (or bare
+        /// symbols with --equal). Omit when using --from-file.
+        #[arg(num_args = 0..)]
         tokens: Vec<String>,
         /// Split this USDC total across the pairs by percent weights
         /// (e.g. TSLA 50% NVDA 30% SPY 20% --total 1000; weights must sum to 100)
         #[arg(long)]
         total: Option<String>,
+        /// Split --total EQUALLY across the given bare symbols (no per-token
+        /// amounts; requires --total). E.g. --total 1000 --equal TSLA NVDA SPY
+        #[arg(long)]
+        equal: bool,
+        /// Read tokens from a file instead of arguments; `-` reads stdin.
+        /// Whitespace/newline separated; blank and `#` comment lines ignored.
+        #[arg(long)]
+        from_file: Option<String>,
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
@@ -313,9 +322,9 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
         }
         GmAction::Pnl => pnl::pnl(json, selected).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
-        GmAction::BuyBasket { tokens, total, yes, dry_run, sequential, slippage, max_bps } => {
+        GmAction::BuyBasket { tokens, total, equal, from_file, yes, dry_run, sequential, slippage, max_bps } => {
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
-            basket::buy_basket(&tokens, total.as_deref(), ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
+            basket::buy_basket(&tokens, total.as_deref(), equal, from_file.as_deref(), ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
         GmAction::SellBasket { tokens, yes, dry_run, sequential, slippage, max_bps } => {
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };

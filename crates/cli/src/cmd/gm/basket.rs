@@ -34,6 +34,52 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
     Ok(pairs)
 }
 
+/// Resolve the basket token source: positional argv XOR `--from-file <path>`
+/// (`-` = stdin). Files/stdin are tokenized on whitespace after dropping blank
+/// lines and `#` comment lines. Exactly one source must be present.
+fn read_basket_tokens(argv: &[String], from_file: Option<&str>) -> eyre::Result<Vec<String>> {
+    let invalid = |msg: String| {
+        eyre::Report::from(usecases::gm::GmTradeError::new(
+            usecases::gm::GmTradeErrorKind::InvalidAmount,
+            msg,
+        ))
+    };
+    match (argv.is_empty(), from_file) {
+        (false, Some(_)) => Err(invalid(
+            "pass tokens as arguments OR --from-file, not both".to_string(),
+        )),
+        (true, None) => Err(invalid(
+            "no tokens given: pass SYMBOL AMOUNT pairs (or bare symbols with --equal), or --from-file <path>".to_string(),
+        )),
+        (false, None) => Ok(argv.to_vec()),
+        (true, Some(path)) => {
+            let raw = if path == "-" {
+                use std::io::Read as _;
+                let mut s = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut s)
+                    .map_err(|e| invalid(format!("failed to read tokens from stdin: {e}")))?;
+                s
+            } else {
+                std::fs::read_to_string(path)
+                    .map_err(|e| invalid(format!("failed to read --from-file '{path}': {e}")))?
+            };
+            let toks: Vec<String> = raw
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .flat_map(|l| l.split_whitespace())
+                .map(str::to_string)
+                .collect();
+            if toks.is_empty() {
+                let src = if path == "-" { "stdin".to_string() } else { format!("--from-file '{path}'") };
+                return Err(invalid(format!("no tokens read from {src}")));
+            }
+            Ok(toks)
+        }
+    }
+}
+
 /// Strip the trailing `%` (and any surrounding whitespace) from a `--total`
 /// weight for the JSON `allocation.weights` echo, e.g. `"50 %"` -> `"50"`.
 fn echo_weight(amt: &str) -> String {
@@ -65,6 +111,30 @@ fn resolve_buy_items(
         items.push((sym.clone(), raw_u));
     }
     Ok(items)
+}
+
+/// Resolve bare symbols into per-item raw USDC by splitting `--total` evenly
+/// (the `--equal` mode). Rejects a missing `--total` and any token that carries
+/// an amount/percent (with `--equal` the tokens must be bare symbols). Pure —
+/// runs before wallet load.
+fn resolve_equal_items(symbols: &[String], total: Option<&str>) -> eyre::Result<Vec<(String, u128)>> {
+    let total = total.ok_or_else(|| {
+        eyre::Report::from(usecases::gm::GmTradeError::new(
+            usecases::gm::GmTradeErrorKind::InvalidAmount,
+            "--equal requires --total (e.g. --total 1000 --equal TSLA NVDA SPY)".to_string(),
+        ))
+    })?;
+    for s in symbols {
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("all") || t.ends_with('%') || t.parse::<f64>().is_ok() {
+            return Err(usecases::gm::GmTradeError::new(
+                usecases::gm::GmTradeErrorKind::InvalidAmount,
+                format!("--equal takes bare symbols, not amounts; got '{s}'"),
+            )
+            .into());
+        }
+    }
+    usecases::gm::split_total_equal(total, symbols)
 }
 
 // ── Per-item processors ─────────────────────────────────────
@@ -187,9 +257,12 @@ async fn process_sell_item(
 
 // ── Buy basket ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn buy_basket(
     tokens: &[String],
     total: Option<&str>,
+    equal: bool,
+    from_file: Option<&str>,
     opts: ExecOpts,
     parallel: bool,
     tuning: TradeTuning,
@@ -198,16 +271,29 @@ pub async fn buy_basket(
 ) -> Result<()> {
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
-    let pairs = parse_basket_pairs(tokens)?;
-    let items = resolve_buy_items(&pairs, total)?;
-    let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
-    let allocation = total.map(|t| AllocationJson {
-        total: t.to_string(),
-        weights: pairs
+    let tokens: Vec<String> = read_basket_tokens(tokens, from_file)?;
+
+    // Resolve items + the JSON `allocation` echo per mode.
+    let (items, allocation): (Vec<(String, u128)>, Option<AllocationJson>) = if equal {
+        let items = resolve_equal_items(&tokens, total)?;
+        let n = items.len();
+        let each_pct = if n > 0 { 100.0 / n as f64 } else { 0.0 };
+        let weights = items
             .iter()
-            .map(|(sym, amt)| (sym.clone(), echo_weight(amt)))
-            .collect(),
-    });
+            .map(|(sym, _)| (sym.clone(), format!("{each_pct:.4}")))
+            .collect();
+        let alloc = total.map(|t| AllocationJson { total: t.to_string(), weights });
+        (items, alloc)
+    } else {
+        let pairs = parse_basket_pairs(&tokens)?;
+        let items = resolve_buy_items(&pairs, total)?;
+        let alloc = total.map(|t| AllocationJson {
+            total: t.to_string(),
+            weights: pairs.iter().map(|(sym, amt)| (sym.clone(), echo_weight(amt))).collect(),
+        });
+        (items, alloc)
+    };
+    let total_raw: u128 = items.iter().map(|(_, r)| r).sum();
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();
@@ -224,21 +310,16 @@ pub async fn buy_basket(
     if !json {
         let mode = if parallel { " (parallel)" } else { "" };
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
-        println!("Buying {} tokens = {} USDC total{}", pairs.len(), total_display, mode);
-        for ((sym, raw), (_, amt)) in items.iter().zip(&pairs) {
-            if total.is_some() {
-                let usdc = amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS);
-                println!("  {sym}: {usdc} USDC ({amt})");
-            } else {
-                println!("  {sym}: {amt} USDC");
-            }
+        println!("Buying {} tokens = {} USDC total{}", items.len(), total_display, mode);
+        for (sym, raw) in &items {
+            println!("  {sym}: {} USDC", amounts::format_amount(&raw.to_string(), jupiter::USDC_DECIMALS));
         }
         println!();
     }
 
     if !dry_run {
         let total_display = amounts::format_amount(&total_raw.to_string(), jupiter::USDC_DECIMALS);
-        let prompt = format!("Buy {} tokens for {} USDC total?", pairs.len(), total_display);
+        let prompt = format!("Buy {} tokens for {} USDC total?", items.len(), total_display);
         if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
@@ -763,5 +844,72 @@ mod tests {
         let items = resolve_buy_items(&pairs, None).unwrap();
         assert_eq!(items[0].1, 4_000_000u128);
         assert_eq!(items[1].1, 3_500_000u128);
+    }
+
+    #[test]
+    fn resolve_equal_items_splits_total_evenly() {
+        let out = resolve_equal_items(
+            &["TSLA".to_string(), "NVDA".to_string(), "SPY".to_string()],
+            Some("999"),
+        )
+        .unwrap();
+        assert_eq!(out.iter().map(|(_, r)| *r).sum::<u128>(), 999_000_000);
+        assert_eq!(out[0].0, "TSLA");
+    }
+
+    #[test]
+    fn resolve_equal_items_requires_total() {
+        let err = resolve_equal_items(&["TSLA".to_string()], None).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--total"), "{err}");
+    }
+
+    #[test]
+    fn resolve_equal_items_rejects_amounts_in_tokens() {
+        // With --equal the tokens are bare symbols; a "50%" or number is an error.
+        let err = resolve_equal_items(&["TSLA".to_string(), "50%".to_string()], Some("100")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+    }
+
+    #[test]
+    fn resolve_equal_items_rejects_all_keyword() {
+        // "all" is reserved amount syntax, not a bare symbol; reject pre-network.
+        let err = resolve_equal_items(&["TSLA".to_string(), "all".to_string()], Some("12")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+    }
+
+    #[test]
+    fn read_tokens_from_file_strips_comments_and_blanks() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("basket.txt");
+        std::fs::write(&p, "# my basket\nTSLA 50%\n\n  NVDA 50%  \n# trailing comment\n").unwrap();
+        let toks = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap();
+        assert_eq!(toks, vec!["TSLA", "50%", "NVDA", "50%"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_rejects_both_sources() {
+        let err = read_basket_tokens(&["TSLA".to_string(), "10".to_string()], Some("basket.txt")).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        assert!(err.to_string().contains("--from-file"), "{err}");
+    }
+
+    #[test]
+    fn read_tokens_empty_file_is_error() {
+        let dir = std::env::temp_dir().join(format!("rwa-basket-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("empty.txt");
+        std::fs::write(&p, "# only a comment\n\n").unwrap();
+        let err = read_basket_tokens(&[], Some(p.to_str().unwrap())).unwrap_err();
+        assert_eq!(usecases::gm::classify_error(&err), Some("invalid_amount"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_tokens_argv_passthrough() {
+        let toks = read_basket_tokens(&["AAPL".to_string(), "10".to_string()], None).unwrap();
+        assert_eq!(toks, vec!["AAPL", "10"]);
     }
 }

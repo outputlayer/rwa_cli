@@ -36,6 +36,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm close-all [<PCT>] [-y]` | Sell every position (or a % of each) |
 | `rwa gm buy-basket <SYM AMT ...> [-y]` | Buy multiple tokens at once |
 | `rwa gm buy-basket <SYM PCT% ...> --total <USDC> [-y]` | Split a USDC total across percent weights |
+| `rwa gm buy-basket --total N --equal <SYM...>` | Even-weight basket / bulk buy |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
 | `rwa gm pnl` | Avg entry price + realized/unrealized P&L (from your CLI trades) |
@@ -61,6 +62,7 @@ Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger with a tamper-evident hash chain; `rwa gm pnl` shows average entry price, realized and unrealized P&L (built from your trades only) plus `ledger_integrity` (`ok`/`legacy`/`broken@line N`) so a corrupted ledger is visible instead of silently mispricing.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.
+- **`buy-basket --from-file -`** reads the token list from stdin instead of a file, so it composes with `search`/`jq`: pipe a filtered symbol list straight into a bulk buy.
 - **Slippage**: 1% default, hard-blocked above 3%; unfillable routes are retried through another market maker automatically.
 - **Liquidity is market-maker-driven.** These tokens trade only against USDC, filled by Ondo's RFQ makers (who mint just-in-time). Thin single-name tokens depend on a maker being able to fill *right now* — a rare `route_unfillable` (exit 75, transient) means none could; retry shortly. Under a keyless wallet, Jupiter's per-wallet rate limit also bounds throughput (set `RWA_JUPITER_API_KEY` to raise it).
 - **Back up your wallet.** `keys generate` derives from a BIP39 phrase (works in Phantom/Solflare) and shows it once; encrypted wallets keep it — reveal anytime with `keys export --reveal`.
