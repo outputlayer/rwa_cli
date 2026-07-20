@@ -228,6 +228,37 @@ fn ledger_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("rwa").join("ledger"))
 }
 
+/// Absolute path of a wallet's ledger file (whether or not it exists yet) —
+/// the single source of `pnl` numbers; deleting it resets trade history.
+#[must_use]
+pub fn ledger_path(taker: &str) -> Option<PathBuf> {
+    ledger_dir().map(|d| d.join(format!("{taker}.jsonl")))
+}
+
+/// Pubkeys of every wallet that has a ledger file, sorted. Reads only the
+/// ledger directory — no key material is touched, so wallets whose keys were
+/// removed (or never registered on this machine) still appear.
+#[must_use]
+pub fn list_ledger_wallets() -> Vec<String> {
+    ledger_dir().map(|d| list_ledger_wallets_at(&d)).unwrap_or_default()
+}
+
+#[must_use]
+pub(crate) fn list_ledger_wallets_at(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut wallets: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_suffix(".jsonl").map(str::to_string)
+        })
+        .collect();
+    wallets.sort();
+    wallets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +290,20 @@ mod tests {
 
         // Other wallets don't see these events.
         assert!(read_all_at(&dir, "OtherWallet").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_ledger_wallets_at_returns_sorted_stems_ignoring_foreign_files() {
+        let dir = std::env::temp_dir().join(format!("rwa-ledger-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("WalletB.jsonl"), "").unwrap();
+        std::fs::write(dir.join("WalletA.jsonl"), "").unwrap();
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+        assert_eq!(list_ledger_wallets_at(&dir), vec!["WalletA", "WalletB"]);
+        // A missing directory is an empty list, not an error.
+        assert!(list_ledger_wallets_at(&dir.join("missing")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

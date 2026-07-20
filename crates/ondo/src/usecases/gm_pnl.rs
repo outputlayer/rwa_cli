@@ -1,14 +1,17 @@
 //! P&L engine over the trade ledger — pure math, no I/O.
 //!
-//! Deliberately built from `buy`/`sell` events ONLY: entry prices, average
-//! cost, realized and total P&L all derive from the CLI's own trades.
-//! Deposits, withdrawals, transfers and gas are ignored by design — they are
-//! cash movements, not trading results. Average-cost method in raw integer
-//! units: each buy adds quantity and cost basis; each sell realizes
-//! `proceeds − avg_cost × qty` and reduces the basis proportionally. Sells
-//! beyond the ledger-known position (acquired outside the CLI) are tracked as
-//! `oversold_qty_raw` and excluded from realized P&L rather than silently
-//! mispriced.
+//! Prices and P&L derive from the CLI's own `buy`/`sell` trades. Cash
+//! movements (deposits, USDC/SOL transfers, gas) are ignored by design —
+//! they are not trading results. A `send_out` of a GM token, however,
+//! reduces the position at average cost with no realized impact: the CLI
+//! recorded that transfer itself, and keeping the qty would show phantom
+//! holdings (and "unrealized" P&L) on tokens the wallet no longer holds.
+//! Inbound transfers stay invisible — the CLI cannot see them or price
+//! their basis. Average-cost method in raw integer units: each buy adds
+//! quantity and cost basis; each sell realizes `proceeds − avg_cost × qty`
+//! and reduces the basis proportionally. Sells beyond the ledger-known
+//! position (acquired outside the CLI) are tracked as `oversold_qty_raw`
+//! and excluded from realized P&L rather than silently mispriced.
 
 use crate::ledger::LedgerEvent;
 use std::collections::BTreeMap;
@@ -111,8 +114,23 @@ pub fn compute_pnl(events: &[LedgerEvent]) -> PnlSummary {
                 }
                 t.oversold_qty_raw += oversold;
             }
-            // Everything else (gas refuels, transfers, reclaims, deposits) is
-            // ignored by design: P&L is built from trades alone.
+            // A GM token leaving via the CLI's own `send` is no longer held:
+            // shrink the position at average cost, realize nothing (a
+            // transfer is not a sale). Without this the row shows phantom
+            // qty and "unrealized" P&L on tokens the wallet doesn't hold.
+            // USDC/SOL sends stay ignored below — those are cash movements.
+            "send_out" if e.token != "SOL" && e.token != "USDC" => {
+                if let Some(t) = tokens.get_mut(&e.token) {
+                    let matched = qty.min(t.qty_raw);
+                    if matched > 0 {
+                        let cost_of_matched = t.invested_usdc_raw * matched / t.qty_raw;
+                        t.invested_usdc_raw -= cost_of_matched;
+                        t.qty_raw -= matched;
+                    }
+                }
+            }
+            // Everything else (gas refuels, cash transfers, reclaims,
+            // deposits) is ignored by design: P&L is built from trades alone.
             _ => {}
         }
     }
@@ -192,19 +210,63 @@ mod tests {
     }
 
     #[test]
-    fn non_trade_events_are_ignored_by_design() {
+    fn cash_movements_are_ignored_by_design() {
+        // USDC/SOL legs (gas, cash transfers, reclaimed rent) are cash
+        // movements, not trading results — they must not shape P&L.
         let events = vec![
             ev("buy", "TSLAon", "1000000000", Some("5000000")),
             ev("gas_refuel", "SOL", "25000000", Some("5000000")),
             ev("send_out", "USDC", "10000000", None),
-            ev("send_out", "TSLAon", "500000000", None),
             ev("reclaim", "SOL", "4273440", None),
         ];
         let s = compute_pnl(&events);
         assert_eq!(s.tokens.len(), 1, "only the trade shapes P&L");
         let t = &s.tokens[0];
-        assert_eq!(t.qty_raw, 1_000_000_000, "transfers don't touch the position");
+        assert_eq!(t.qty_raw, 1_000_000_000, "cash legs don't touch the position");
         assert_eq!(t.invested_usdc_raw, 5_000_000);
+    }
+
+    #[test]
+    fn send_out_of_gm_token_reduces_position_at_avg_cost() {
+        // Buy 2.0 for 10 (avg 5), send 0.5 away via the CLI's own `send`:
+        // the wallet no longer holds it, so the position must shrink — qty
+        // 1.5, basis 7.5 — with NO realized P&L (a transfer is not a sale).
+        // Phantom-holdings regression: pnl used to keep qty at 2.0 and show
+        // "unrealized" on tokens the wallet no longer held.
+        let events = vec![
+            ev("buy", "PFEon", "2000000000", Some("10000000")),
+            ev("send_out", "PFEon", "500000000", None),
+        ];
+        let s = compute_pnl(&events);
+        let t = &s.tokens[0];
+        assert_eq!(t.qty_raw, 1_500_000_000);
+        assert_eq!(t.invested_usdc_raw, 7_500_000);
+        assert_eq!(t.realized_usdc_raw, 0, "a transfer must not realize P&L");
+        assert_eq!(t.avg_cost_usdc_raw_per_token(9), Some(5_000_000), "avg cost unchanged");
+    }
+
+    #[test]
+    fn send_out_beyond_ledger_position_clamps_to_zero() {
+        // Ledger knows 1.0 bought for 5; 3.0 leaves (2.0 acquired outside
+        // the CLI). The known position closes cleanly; the excess has no
+        // basis to remove and must not underflow or realize anything.
+        let events = vec![
+            ev("buy", "TSLAon", "1000000000", Some("5000000")),
+            ev("send_out", "TSLAon", "3000000000", None),
+        ];
+        let s = compute_pnl(&events);
+        let t = &s.tokens[0];
+        assert_eq!(t.qty_raw, 0);
+        assert_eq!(t.invested_usdc_raw, 0);
+        assert_eq!(t.realized_usdc_raw, 0);
+    }
+
+    #[test]
+    fn send_out_of_unknown_token_creates_no_position() {
+        // Sending a token the ledger never bought must not invent a row.
+        let events = vec![ev("send_out", "AAPLon", "1000000000", None)];
+        let s = compute_pnl(&events);
+        assert!(s.tokens.is_empty());
     }
 
     #[test]

@@ -312,6 +312,35 @@ pub struct PnlJson {
     /// Always present — chain problems never fail `pnl`, they're surfaced
     /// here (and warned to stderr in human output) so callers can decide.
     pub ledger_integrity: String,
+    /// Absolute path of the wallet's ledger file — the single source of the
+    /// numbers above (CLI trades only). Delete the file to reset history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger_path: Option<String>,
+}
+
+/// One wallet's row in the `pnl --all` comparison.
+#[derive(Serialize)]
+pub struct PnlWalletSummaryJson {
+    pub wallet: String,
+    pub trades_recorded: usize,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub invested_usdc: f64,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub market_value_usdc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub unrealized_usdc: Option<f64>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub realized_usdc: f64,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
+    pub total_pnl_usdc: Option<f64>,
+    pub ledger_integrity: String,
+}
+
+/// `pnl --all`: every wallet that ever traded through the CLI (one row per
+/// ledger file, no key material required), sorted by total P&L descending.
+#[derive(Serialize)]
+pub struct PnlAllJson {
+    pub wallets: Vec<PnlWalletSummaryJson>,
 }
 
 #[derive(Serialize)]

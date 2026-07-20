@@ -64,19 +64,19 @@ fn fold_market_value(acc: Option<f64>, qty_raw: u128, market_value: Option<f64>)
     }
 }
 
-pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
-    let w = load_wallet(selected)?;
-    let pubkey = w.pubkey();
-
-    let events = ledger::read_all(&pubkey);
+/// One wallet's full pnl view, computed from its ledger file alone (no key
+/// material): shaped token rows, wallet totals, trade count, chain status.
+fn wallet_pnl_view(
+    pubkey: &str,
+    assets: &[api::OndoAsset],
+) -> (Vec<PnlTokenJson>, PnlTotalsJson, usize, ledger::ChainStatus) {
+    let events = ledger::read_all(pubkey);
     let trades_recorded = events
         .iter()
         .filter(|e| e.kind == "buy" || e.kind == "sell")
         .count();
-    let chain_status = ledger::verify_chain(&pubkey);
-    let ledger_integrity = ledger_integrity_str(chain_status);
+    let chain_status = ledger::verify_chain(pubkey);
     let summary = usecases::gm::compute_pnl(&events);
-    let assets = api::fetch_assets().await.unwrap_or_default();
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
     let mut tokens = Vec::new();
@@ -86,7 +86,7 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
         if t.qty_raw == 0 && t.realized_usdc_raw == 0 && t.oversold_qty_raw == 0 {
             continue;
         }
-        let market_price = api::market_snapshot_for_symbol(&t.token, &assets)
+        let market_price = api::market_snapshot_for_symbol(&t.token, assets)
             .ok()
             .map(|(price, _)| price);
         let shaped = shape_token_pnl(t, market_price, gm_dec);
@@ -104,6 +104,20 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
         realized_usdc: realized_total,
         total_pnl_usdc: unrealized_total.map(|u| u + realized_total),
     };
+    (tokens, totals, trades_recorded, chain_status)
+}
+
+pub async fn pnl(json: bool, selected: Option<&str>, all: bool) -> Result<()> {
+    if all {
+        return pnl_all(json).await;
+    }
+    let w = load_wallet(selected)?;
+    let pubkey = w.pubkey();
+
+    let assets = api::fetch_assets().await.unwrap_or_default();
+    let (tokens, totals, trades_recorded, chain_status) = wallet_pnl_view(&pubkey, &assets);
+    let ledger_integrity = ledger_integrity_str(chain_status);
+    let ledger_path = ledger::ledger_path(&pubkey).map(|p| p.display().to_string());
 
     if json {
         return json_out(&PnlJson {
@@ -112,6 +126,7 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
             tokens,
             totals,
             ledger_integrity,
+            ledger_path,
         });
     }
 
@@ -119,9 +134,17 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
         eprintln!("Warning: trade ledger integrity: broken@line {n} (history may be modified)");
     }
 
+    let print_scope_note = |ledger_path: &Option<String>| {
+        println!("\nNote: P&L covers only trades made through this CLI; transfers move qty, not P&L.");
+        if let Some(path) = ledger_path {
+            println!("Ledger: {path} — delete this file to reset history.");
+        }
+    };
+
     println!("P&L for {pubkey} (from {trades_recorded} CLI trades)\n");
     if tokens.is_empty() {
         println!("No trades recorded yet — P&L starts with your first `rwa gm buy`.");
+        print_scope_note(&ledger_path);
         return Ok(());
     }
     println!(
@@ -163,6 +186,70 @@ pub async fn pnl(json: bool, selected: Option<&str>) -> Result<()> {
     );
     if let Some(total) = totals.total_pnl_usdc {
         println!("\nTotal P&L (unrealized + realized): {total:+.2} USDC");
+    }
+    print_scope_note(&ledger_path);
+    Ok(())
+}
+
+/// `pnl --all`: compare every wallet that ever traded through the CLI — one
+/// row per ledger file, no key material required, sorted by total P&L
+/// descending (unknowable totals last).
+async fn pnl_all(json: bool) -> Result<()> {
+    let assets = api::fetch_assets().await.unwrap_or_default();
+    let mut rows: Vec<PnlWalletSummaryJson> = ledger::list_ledger_wallets()
+        .into_iter()
+        .map(|pubkey| {
+            let (_, totals, trades_recorded, chain_status) = wallet_pnl_view(&pubkey, &assets);
+            PnlWalletSummaryJson {
+                wallet: pubkey,
+                trades_recorded,
+                invested_usdc: totals.invested_usdc,
+                market_value_usdc: totals.market_value_usdc,
+                unrealized_usdc: totals.unrealized_usdc,
+                realized_usdc: totals.realized_usdc,
+                total_pnl_usdc: totals.total_pnl_usdc,
+                ledger_integrity: ledger_integrity_str(chain_status),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        // Descending by total P&L; wallets whose total is unknowable
+        // (an open position without market data) sink to the bottom.
+        b.total_pnl_usdc
+            .unwrap_or(f64::NEG_INFINITY)
+            .partial_cmp(&a.total_pnl_usdc.unwrap_or(f64::NEG_INFINITY))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if json {
+        return json_out(&PnlAllJson { wallets: rows });
+    }
+
+    if rows.is_empty() {
+        println!("No trade ledgers found — P&L starts with your first `rwa gm buy`.");
+        return Ok(());
+    }
+    println!("P&L by wallet (CLI trades only)\n");
+    println!(
+        "{:<14} {:>7} {:>11} {:>11} {:>10} {:>11}",
+        "WALLET", "TRADES", "INVESTED", "UNREALIZED", "REALIZED", "TOTAL P&L"
+    );
+    println!("{}", "-".repeat(70));
+    for r in &rows {
+        let short = if r.wallet.len() > 12 {
+            format!("{}…{}", &r.wallet[..4], &r.wallet[r.wallet.len() - 4..])
+        } else {
+            r.wallet.clone()
+        };
+        println!(
+            "{:<14} {:>7} {:>11.2} {:>11} {:>+10.2} {:>11}",
+            short,
+            r.trades_recorded,
+            r.invested_usdc,
+            r.unrealized_usdc.map_or("-".into(), |v| format!("{v:+.2}")),
+            r.realized_usdc,
+            r.total_pnl_usdc.map_or("-".into(), |v| format!("{v:+.2}")),
+        );
     }
     Ok(())
 }

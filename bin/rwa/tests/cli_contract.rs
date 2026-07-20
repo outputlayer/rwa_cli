@@ -2147,6 +2147,173 @@ fn pnl_json_computes_from_the_ledger() {
     assert_eq!(v["totals"]["total_pnl_usdc"], 3.0);
 }
 
+/// A CLI-recorded `send_out` of a GM token shrinks the pnl position at
+/// average cost with no realized impact (phantom-holdings regression: pnl
+/// used to keep the full qty and show "unrealized" P&L on tokens the wallet
+/// no longer held). USDC `send_out` legs stay ignored as cash movements.
+#[test]
+fn pnl_json_reduces_position_for_ledger_send_out() {
+    let home = test_home("pnl-send-out");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon", "assetName": "American Airlines",
+                "primaryMarket": { "price": "12", "priceChangePct24h": "0" }
+            }]
+        }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let pubkey = lv["wallets"][0]["pubkey"].as_str().unwrap().to_string();
+    let key_path = PathBuf::from(lv["wallets"][0]["path"].as_str().unwrap());
+    let rwa_config_dir = key_path.parent().unwrap().to_path_buf();
+
+    // Buy 2.0 @ 24 total (avg 12), send 0.5 away, plus a USDC send that must
+    // stay invisible: position 1.5, invested 18, realized 0, market 12 →
+    // unrealized 0. Before the fix qty stayed 2 and invested 24.
+    let ledger_dir = rwa_config_dir.join("ledger");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+    std::fs::write(
+        ledger_dir.join(format!("{pubkey}.jsonl")),
+        concat!(
+            "{\"ts\":\"2026-07-01T00:00:00Z\",\"sig\":\"s1\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"2000000000\",\"usdc_raw\":\"24000000\"}\n",
+            "{\"ts\":\"2026-07-01T01:00:00Z\",\"sig\":\"s2\",\"kind\":\"send_out\",\"token\":\"AALon\",\"qty_raw\":\"500000000\"}\n",
+            "{\"ts\":\"2026-07-01T02:00:00Z\",\"sig\":\"s3\",\"kind\":\"send_out\",\"token\":\"USDC\",\"qty_raw\":\"1000000\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let v = stdout_json(&out);
+    let t = &v["tokens"][0];
+    assert_eq!(t["token"], "AALon");
+    assert_eq!(t["qty"], "1.5", "send_out must shrink the position");
+    assert_eq!(t["avg_cost"], 12.0, "average cost is unchanged by a transfer");
+    assert_eq!(t["invested_usdc"], 18.0, "basis leaves with the tokens");
+    assert_eq!(t["unrealized_usdc"], 0.0);
+    assert_eq!(t["realized_usdc"], 0.0, "a transfer is not a sale");
+    assert_eq!(v["totals"]["invested_usdc"], 18.0);
+    assert_eq!(v["totals"]["total_pnl_usdc"], 0.0);
+}
+
+/// `pnl` must say WHERE its numbers come from: JSON carries `ledger_path`
+/// (the per-wallet file an agent/user can inspect or delete to reset), and
+/// human mode prints a note that P&L covers only CLI trades plus that path.
+#[test]
+fn pnl_discloses_cli_only_scope_and_ledger_path() {
+    let home = test_home("pnl-ledger-path");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let pubkey = lv["wallets"][0]["pubkey"].as_str().unwrap().to_string();
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v = stdout_json(&out);
+    let path = v["ledger_path"].as_str().expect("ledger_path present");
+    assert!(path.ends_with(&format!("{pubkey}.jsonl")), "path names the wallet ledger: {path}");
+
+    let human = rwa(&home)
+        .args(["gm", "pnl"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains("only trades made through this CLI"),
+        "human note about CLI-only scope: {text}"
+    );
+    assert!(text.contains(&format!("{pubkey}.jsonl")), "human note names the ledger file: {text}");
+    assert!(text.to_lowercase().contains("delete"), "human note explains how to reset: {text}");
+}
+
+/// `pnl --all` compares every wallet that ever traded through the CLI:
+/// one row per ledger file (no key material needed — a wallet with no key
+/// registered still shows), sorted by total P&L descending.
+#[test]
+fn pnl_all_json_compares_wallets_across_ledgers() {
+    let home = test_home("pnl-all");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon", "assetName": "American Airlines",
+                "primaryMarket": { "price": "12", "priceChangePct24h": "0" }
+            }]
+        }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let pubkey = lv["wallets"][0]["pubkey"].as_str().unwrap().to_string();
+    let key_path = PathBuf::from(lv["wallets"][0]["path"].as_str().unwrap());
+    let ledger_dir = key_path.parent().unwrap().join("ledger");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+
+    // Own wallet: buy 1.0 @ 10, sell 1.0 @ 15 → realized +5, position closed.
+    std::fs::write(
+        ledger_dir.join(format!("{pubkey}.jsonl")),
+        concat!(
+            "{\"ts\":\"2026-07-01T00:00:00Z\",\"sig\":\"a1\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"10000000\"}\n",
+            "{\"ts\":\"2026-07-01T01:00:00Z\",\"sig\":\"a2\",\"kind\":\"sell\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"15000000\"}\n",
+        ),
+    )
+    .unwrap();
+    // A second wallet KNOWN ONLY BY ITS LEDGER: buy 1.0 @ 10, market 12 →
+    // unrealized +2. No key file exists for it anywhere.
+    let other = "FakeWa11etPubkey1111111111111111111111111111";
+    std::fs::write(
+        ledger_dir.join(format!("{other}.jsonl")),
+        "{\"ts\":\"2026-07-01T00:00:00Z\",\"sig\":\"b1\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"10000000\"}\n",
+    )
+    .unwrap();
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "pnl", "--all"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let wallets = v["wallets"].as_array().expect("wallets array");
+    assert_eq!(wallets.len(), 2, "one row per ledger file: {v}");
+    // Sorted by total P&L descending: +5 realized beats +2 unrealized.
+    assert_eq!(wallets[0]["wallet"], pubkey);
+    assert_eq!(wallets[0]["realized_usdc"], 5.0);
+    assert_eq!(wallets[0]["total_pnl_usdc"], 5.0);
+    assert_eq!(wallets[0]["trades_recorded"], 2);
+    assert_eq!(wallets[1]["wallet"], other);
+    assert_eq!(wallets[1]["invested_usdc"], 10.0);
+    assert_eq!(wallets[1]["unrealized_usdc"], 2.0);
+    assert_eq!(wallets[1]["total_pnl_usdc"], 2.0);
+}
+
 // ── L9: gm pnl surfaces a tampered ledger chain ─────────────────────────────
 
 /// First 16 bytes of SHA-256 over `bytes`, lowercase hex — mirrors

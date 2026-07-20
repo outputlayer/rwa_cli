@@ -29,7 +29,7 @@ pub(super) use types::{
     ExecOpts, TradeTuning,
     AllocationJson, BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
     CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
-    PnlJson, PnlTokenJson, PnlTotalsJson,
+    PnlAllJson, PnlJson, PnlTokenJson, PnlTotalsJson, PnlWalletSummaryJson,
     PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,
     SellBasketItemJson, SellBasketResultJson, SendJson, TradeJson, TradableItemJson,
     TradableResultJson,
@@ -192,7 +192,12 @@ pub enum GmAction {
     },
 
     /// Cost basis and P&L from your CLI trades (average entry, realized/unrealized)
-    Pnl,
+    Pnl {
+        /// Compare every wallet that ever traded through this CLI (one row
+        /// per ledger file), sorted by total P&L
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Close empty token accounts and reclaim SOL rent
     Reclaim {
@@ -320,7 +325,7 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
             close_all::close_all(amount.as_deref(), ExecOpts { yes, dry_run, json }, !sequential, tuning, rpc_url, selected).await
         }
-        GmAction::Pnl => pnl::pnl(json, selected).await,
+        GmAction::Pnl { all } => pnl::pnl(json, selected, all).await,
         GmAction::Reclaim { token } => reclaim::reclaim(token.as_deref(), json, rpc_url, selected).await,
         GmAction::BuyBasket { tokens, total, equal, from_file, yes, dry_run, sequential, slippage, max_bps } => {
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
