@@ -2314,6 +2314,55 @@ fn pnl_all_json_compares_wallets_across_ledgers() {
     assert_eq!(wallets[1]["total_pnl_usdc"], 2.0);
 }
 
+/// Human `pnl --all` must not launder a tampered ledger into the ranking:
+/// a wallet whose chain fails verification gets the same stderr warning the
+/// single-wallet view prints (naming the wallet) and an inline integrity
+/// marker on its row — parity with single `pnl`, where JSON callers already
+/// see `ledger_integrity` per row.
+#[test]
+fn pnl_all_human_surfaces_broken_ledger_chains() {
+    let home = test_home("pnl-all-broken");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+
+    let generated = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(generated.status.success());
+    let list = rwa(&home).args(["keys", "list", "--json"]).output().unwrap();
+    let lv = stdout_json(&list);
+    let key_path = PathBuf::from(lv["wallets"][0]["path"].as_str().unwrap());
+    let ledger_dir = key_path.parent().unwrap().join("ledger");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+
+    // A ledger whose FIRST line carries a bogus `prev` link: verify_chain
+    // reports BrokenAt(1) (a chained file must start at the genesis hash).
+    let broken = "BrokenWa11etPubkey11111111111111111111111111";
+    std::fs::write(
+        ledger_dir.join(format!("{broken}.jsonl")),
+        "{\"ts\":\"2026-07-01T00:00:00Z\",\"sig\":\"x1\",\"kind\":\"buy\",\"token\":\"AALon\",\"qty_raw\":\"1000000000\",\"usdc_raw\":\"10000000\",\"prev\":\"deadbeefdeadbeefdeadbeefdeadbeef\"}\n",
+    )
+    .unwrap();
+
+    let out = rwa(&home)
+        .args(["gm", "pnl", "--all"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("broken@line 1") && stderr.contains("Broke"),
+        "stderr warning names the broken wallet: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("broken@line 1"),
+        "table marks the broken row inline: {stdout}"
+    );
+}
+
 // ── L9: gm pnl surfaces a tampered ledger chain ─────────────────────────────
 
 /// First 16 bytes of SHA-256 over `bytes`, lowercase hex — mirrors

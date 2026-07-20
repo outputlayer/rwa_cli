@@ -229,6 +229,17 @@ async fn pnl_all(json: bool) -> Result<()> {
         println!("No trade ledgers found — P&L starts with your first `rwa gm buy`.");
         return Ok(());
     }
+    // Same tamper-evidence contract as single-wallet `pnl`: a broken chain
+    // warns on stderr (naming the wallet) and the row is marked inline —
+    // a tampered history must not rank as authoritative-looking numbers.
+    for r in &rows {
+        if r.ledger_integrity.starts_with("broken") {
+            eprintln!(
+                "Warning: trade ledger integrity for {}: {} (history may be modified)",
+                r.wallet, r.ledger_integrity
+            );
+        }
+    }
     println!("P&L by wallet (CLI trades only)\n");
     println!(
         "{:<14} {:>7} {:>11} {:>11} {:>10} {:>11}",
@@ -250,6 +261,9 @@ async fn pnl_all(json: bool) -> Result<()> {
             r.realized_usdc,
             r.total_pnl_usdc.map_or("-".into(), |v| format!("{v:+.2}")),
         );
+        if r.ledger_integrity.starts_with("broken") {
+            println!("  note: ledger integrity {} — numbers may be modified", r.ledger_integrity);
+        }
     }
     Ok(())
 }
