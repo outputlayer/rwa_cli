@@ -438,16 +438,18 @@ async fn fetch_metis_quote(
         .as_str()
         .ok_or_else(|| eyre!("Metis quote missing outAmount"))?
         .to_string();
-    // Jupiter's `priceImpactPct` is a decimal FRACTION (0..1; "0.01" = 1%) —
-    // normalize to a PERCENT here so `OrderResponse.price_impact` carries the
-    // same unit the swap/v2 backend already uses and every consumer expects
-    // (calc_slippage/check_slippage/cost gates treat it as a percent). Without
-    // the ×100 a real -4% Metis impact ("-0.04") would read as -0.04% and sail
-    // past the -3% block.
+    // Metis's `priceImpactPct` is a decimal FRACTION (0..1; "0.01" = 1%) and
+    // — unlike swap/v2's `priceImpact` — it is NON-NEGATIVE for an ADVERSE
+    // impact (live-verified: a fill 71.8% worse than spot comes back as
+    // "+0.7176..."; Metis never sends a minus sign). Every consumer
+    // (calc_slippage/check_slippage/cost gates) uses the swap/v2 convention:
+    // a PERCENT where negative = adverse. Normalize both unit and sign here —
+    // treat the value as an adverse magnitude — or a real -N% impact reads as
+    // +N, sails past the -3% block, and counts as a DISCOUNT under --max-bps.
     let price_impact = quote_json["priceImpactPct"]
         .as_str()
         .and_then(|value| value.parse::<f64>().ok())
-        .map(|fraction| fraction * 100.0);
+        .map(|fraction| -(fraction.abs() * 100.0));
     let slippage_bps = quote_json["slippageBps"]
         .as_u64()
         .and_then(|value| u32::try_from(value).ok())
@@ -730,14 +732,14 @@ mod tests {
 
     #[tokio::test]
     async fn metis_price_impact_fraction_blocks_the_3pct_slippage_gate() {
-        // QM-1 regression, confirmed-reachable path: Metis reports
-        // priceImpactPct as a decimal FRACTION ("-0.04" = a real -4%
-        // impact). Before the fix, the mapped OrderResponse.price_impact
-        // (also -0.04) was consumed by calc_slippage/check_slippage as if
-        // it were already a percent, so a real -4% impact read as -0.04%
-        // and sailed past the -3% hard block. This exercises the actual
-        // Metis mapper -> check_slippage chain (not a hand-built
-        // OrderResponse), matching how gm_internal::get_order_checked uses it.
+        // QM-1 regression (units) + defensive sign handling: Metis reports
+        // priceImpactPct as a decimal FRACTION, and the live API sends it
+        // NON-NEGATIVE (see metis_positive_price_impact_fraction_is_adverse_
+        // and_blocks). Should Metis ever send a minus sign, the magnitude is
+        // still an adverse impact — the mapper must normalize "-0.04" to the
+        // same -4.0 percent, not let it slip through as -0.04%. This
+        // exercises the actual Metis mapper -> check_slippage chain (not a
+        // hand-built OrderResponse), matching gm_internal::get_order_checked.
         use httpmock::prelude::*;
         let server = MockServer::start_async().await;
         server.mock_async(|when, then| {
@@ -770,6 +772,58 @@ mod tests {
         // The Metis mapper normalizes Jupiter's "-0.04" fraction to a PERCENT
         // (-4.0), unit-consistent with the swap/v2 backend and every consumer.
         assert_eq!(order.price_impact, Some(-4.0));
+
+        let err = crate::usecases::gm_internal::check_slippage(&order, false).unwrap_err();
+        let te = err
+            .downcast_ref::<crate::usecases::gm::GmTradeError>()
+            .expect("typed error");
+        assert_eq!(te.kind, crate::usecases::gm::GmTradeErrorKind::SlippageTooHigh);
+    }
+
+    #[tokio::test]
+    async fn metis_positive_price_impact_fraction_is_adverse_and_blocks() {
+        // Live-API shape (verified 2026-07-19): Metis swap/v1 reports
+        // `priceImpactPct` as a NON-NEGATIVE fraction for an ADVERSE impact
+        // ("0.04" = the fill is 4% worse than spot) — it never sends a minus
+        // sign. The rest of the codebase uses the swap/v2 convention
+        // (negative percent = adverse), so the mapper must flip the sign:
+        // preserving it would turn a real -4% impact into +4.0, which sails
+        // past the -3% hard block, reads as a DISCOUNT under --max-bps
+        // (all_in_cost_bps = fee − s·100), and is printed as "in your favor".
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(GET).path("/swap/v1/quote");
+            then.status(200).json_body(serde_json::json!({
+                "inAmount": "5000000",
+                "outAmount": "11786465",
+                "priceImpactPct": "0.04",
+                "slippageBps": 50
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).path("/swap/v1/swap");
+            then.status(200).json_body(serde_json::json!({
+                "swapTransaction": "AQAAAA==",
+                "lastValidBlockHeight": 12345
+            }));
+        }).await;
+
+        let base = format!("{}/swap/v1", server.base_url());
+        let order = get_order(
+            Some(&base),
+            USDC_MINT,
+            "So11111111111111111111111111111112",
+            "5000000",
+            "FakeWallet111111111111111111111111111111",
+            Some(50),
+        ).await.unwrap();
+
+        assert_eq!(
+            order.price_impact,
+            Some(-4.0),
+            "a positive Metis fraction is an adverse impact and must map to a negative percent"
+        );
 
         let err = crate::usecases::gm_internal::check_slippage(&order, false).unwrap_err();
         let te = err

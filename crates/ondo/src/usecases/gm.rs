@@ -389,6 +389,12 @@ pub async fn prepare_sell(
     max_bps: Option<u32>,
     limit_price: Option<(u128, LimitFrame)>,
 ) -> Result<SwapPlan> {
+    // Always quote with a LOCAL slippage tolerance (the documented 100-bps
+    // default): omitting `slippageBps` lets Jupiter pick dynamic slippage and
+    // echo it back, and that echo is what the pre-sign under-delivery floor
+    // clamps against — an unclamped echo could slacken or disable the floor.
+    // Mirrors the buy side (cmd/gm/mod.rs Buy dispatch, fetch_buy_order).
+    let slippage_bps = Some(slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS));
     let tokens = token_list::get_token_list();
     let (symbol, gm_mint) = resolve_gm_mint(symbol, tokens)?;
     let taker = wallet.pubkey();

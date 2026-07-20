@@ -84,6 +84,10 @@ pub async fn fetch_sell_order(
     slippage_bps: Option<u32>,
     max_bps: Option<u32>,
 ) -> Result<SellOrderReady> {
+    // Same contract as `fetch_buy_order`: never omit the request slippage —
+    // the response echo feeds the pre-sign under-delivery floor, so it must
+    // stay clamped by a locally-chosen value.
+    let slippage_bps = Some(slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS));
     let display_amount = amounts::format_amount(raw_amount, jupiter::GM_SOL_DECIMALS);
     let (order, slippage_pct) = get_order_checked(
         mint,

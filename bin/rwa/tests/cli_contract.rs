@@ -1724,6 +1724,143 @@ fn sell_all_dry_run_emits_trade_json_shape() {
     order.assert_hits(1);
 }
 
+/// `gm sell` without `--slippage` must thread the documented default
+/// (100 bps) into the `/order` request, exactly like `buy` does. A request
+/// with no `slippageBps` lets Jupiter pick dynamic slippage AND echo it back,
+/// and the echoed value is what the pre-sign under-delivery floor uses — so an
+/// unclamped sell would let a hostile/widened echo slacken or disable the
+/// floor. The mock matches ONLY when `slippageBps=100` is present.
+#[test]
+fn sell_dry_run_threads_default_slippage_to_the_quote() {
+    let home = test_home("sell-default-slippage");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 },
+                        "value": [token_entry(AAL_MINT, 2.0, "2000000000")] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+    let order = server.mock(|when, then| {
+        when.method(GET)
+            .path("/order")
+            .query_param("inputMint", AAL_MINT)
+            // The contract under test: the CLI must request its own local
+            // slippage tolerance instead of deferring to Jupiter's echo.
+            .query_param("slippageBps", "100");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-sell-slip-1",
+                "inAmount": "2000000000",
+                "outAmount": "25000000",
+                "inUsdValue": 25.0,
+                "outUsdValue": 24.97,
+                "feeBps": 10,
+                "gasless": false,
+                "router": "jupiterz",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "sell", "AAL", "all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "sell without --slippage must quote with the 100-bps default; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "dry_run");
+    order.assert_hits(1);
+}
+
+/// Same contract for the basket path (`fetch_sell_order`, shared by
+/// `sell-basket` and `close-all`): without `--slippage` the `/order` request
+/// must carry the 100-bps default, not omit `slippageBps`.
+#[test]
+fn sell_basket_dry_run_threads_default_slippage_to_the_quote() {
+    let home = test_home("sell-basket-default-slippage");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({ "assets": [] }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 },
+                        "value": [token_entry(AAL_MINT, 2.0, "2000000000")] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+    let order = server.mock(|when, then| {
+        when.method(GET)
+            .path("/order")
+            .query_param("inputMint", AAL_MINT)
+            .query_param("slippageBps", "100");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-sellb-slip-1",
+                "inAmount": "2000000000",
+                "outAmount": "25000000",
+                "inUsdValue": 25.0,
+                "outUsdValue": 24.97,
+                "feeBps": 10,
+                "gasless": false,
+                "router": "jupiterz",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "sell-basket", "AAL", "all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "sell-basket without --slippage must quote with the 100-bps default; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    order.assert_hits(1);
+}
+
 // ── keys export round trip ───────────────────────────────────────────────────
 
 /// The full key lifecycle contract: generate (mnemonic-first) → export

@@ -58,9 +58,9 @@ bench "gm buy NVDA 40 (dry)" "$RWA" --json gm buy NVDA 40 --dry-run
 bench "gm portfolio"         "$RWA" --json gm portfolio
 echo
 
-echo "Basket dry-run — sequential vs --parallel (3 tokens):"
-bench "buy-basket seq (dry)" "$RWA" --json gm buy-basket AAPL 10 TSLA 10 NVDA 10 --dry-run
-bench "buy-basket par (dry)" "$RWA" --json gm buy-basket AAPL 10 TSLA 10 NVDA 10 --parallel --dry-run
+echo "Basket dry-run — parallel default vs --sequential (3 tokens):"
+bench "buy-basket par (dry)" "$RWA" --json gm buy-basket AAPL 10 TSLA 10 NVDA 10 --dry-run
+bench "buy-basket seq (dry)" "$RWA" --json gm buy-basket AAPL 10 TSLA 10 NVDA 10 --sequential --dry-run
 echo
-echo "Done. (Parallel basket should show lower p50 than sequential when the"
-echo " network round-trips dominate.)"
+echo "Done. (The parallel default should show lower p50 than --sequential when"
+echo " the network round-trips dominate.)"
