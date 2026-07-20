@@ -6,6 +6,7 @@
 
 use eyre::Result;
 
+use super::gm::DEFAULT_SLIPPAGE_BPS;
 use super::gm_execute::{execute_with_retry, finalize_execution, SwapParams};
 use super::gm_internal::get_order_checked;
 use crate::types::Mint;
@@ -150,13 +151,15 @@ async fn refuel(
     let target = gas_target_lamports(fee_per_tx, ata_rent);
     let missing = target.saturating_sub(sol_lamports);
 
+    // Never omit the request slippage (same rule as the trade paths): the
+    // response echo feeds the pre-sign under-delivery floor.
     let probe_raw = REFUEL_USDC_RAW.to_string();
     let (probe, _slippage) = get_order_checked(
         jupiter::USDC_MINT,
         jupiter::SOL_MINT,
         &probe_raw,
         taker,
-        None,
+        Some(DEFAULT_SLIPPAGE_BPS),
         json,
         None,
     )
@@ -178,7 +181,7 @@ async fn refuel(
             jupiter::SOL_MINT,
             &refuel_raw,
             taker,
-            None,
+            Some(DEFAULT_SLIPPAGE_BPS),
             json,
             None,
         )
@@ -202,7 +205,7 @@ async fn refuel(
         output_mint: &output_mint,
         raw_amount: &refuel_raw,
         taker,
-        slippage_bps: None,
+        slippage_bps: Some(DEFAULT_SLIPPAGE_BPS),
     };
     let result = execute_with_retry(w, &order, json, &params).await?;
     let exec = finalize_execution(&order, &result, jupiter::GM_SOL_DECIMALS);
