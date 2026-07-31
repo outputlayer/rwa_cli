@@ -8,6 +8,7 @@ mod reclaim;
 mod send;
 mod trade;
 mod types;
+mod view;
 
 use clap::Subcommand;
 use eyre::Result;
