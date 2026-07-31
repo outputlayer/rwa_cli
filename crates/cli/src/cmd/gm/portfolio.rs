@@ -200,6 +200,15 @@ fn render_portfolio(
     o
 }
 
+/// A percentage computed as `value / total * 100.0` can land on IEEE754
+/// negative zero (e.g. a zero numerator divided by any total): mathematically
+/// equal to positive zero, but `{:.1}`/`{:.2}` renders it as "-0.0", which
+/// reads as a real (if tiny) negative to a human. Normalise every percentage
+/// this renderer prints so a zero always prints as a plain, unsigned zero.
+fn norm_zero(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { x }
+}
+
 /// Human-readable rendering of a `--view` result. Three shapes in one function
 /// because they share every invariant: GM % is always portfolio-relative, GM
 /// TOTAL appears exactly once, and the echo line always names the terms.
@@ -220,9 +229,11 @@ fn render_view(
 
     let mut echo = format!("view: {}", view.terms.join(", "));
     if let Some(by) = &view.split_by {
-        let _ = write!(echo, " · split by {by} · {} groups", groups.len());
+        let n = groups.len();
+        let word = if n == 1 { "group" } else { "groups" };
+        let _ = write!(echo, " · split by {by} · {n} {word}");
     }
-    let _ = write!(echo, " · {} positions · {:.1}% of GM", view.matched_positions, view.matched_pct_of_gm);
+    let _ = write!(echo, " · {} positions · {:.1}% of GM", view.matched_positions, norm_zero(view.matched_pct_of_gm));
     if view.overlapping {
         let _ = write!(echo, " · positions appear in more than one group");
     }
@@ -230,14 +241,14 @@ fn render_view(
 
     if groups.is_empty() {
         let _ = writeln!(o, "No positions match this view.");
-        let _ = writeln!(o, "{:<10} {:>36.2} {:>+16.2}%", "GM TOTAL", gm_total, gm_change_pct);
+        let _ = writeln!(o, "{:<10} {:>36.2} {:>8} {:>+7.2}%", "GM TOTAL", gm_total, "", norm_zero(gm_change_pct));
         return o;
     }
 
     let split = view.split_by.is_some();
     for g in groups {
         if let Some(name) = &g.group {
-            let _ = writeln!(o, "\n═══ {name} ═══ {:.2} · {:.1}% of GM ═══", g.value_usd, g.gm_alloc_pct);
+            let _ = writeln!(o, "\n═══ {name} ═══ {:.2} · {:.1}% of GM ═══", g.value_usd, norm_zero(g.gm_alloc_pct));
         }
         let pct_header = if split { "GRP %" } else { "GM %" };
         let _ = writeln!(o, "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
@@ -246,11 +257,11 @@ fn render_view(
         for p in &g.positions {
             let pct = if split { p.group_alloc_pct.unwrap_or(0.0) } else { p.gm_alloc_pct };
             let _ = writeln!(o, "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
-                             p.token, p.balance, p.price, p.value_usd, pct, p.change_pct_24h);
+                             p.token, p.balance, p.price, p.value_usd, norm_zero(pct), norm_zero(p.change_pct_24h));
         }
         let _ = writeln!(o, "{}", "-".repeat(64));
         if split {
-            let _ = writeln!(o, "{:<10} {:>36.2} {:>8} {:>+7.2}%", "SUBTOTAL", g.value_usd, "100.0%", g.change_24h_pct);
+            let _ = writeln!(o, "{:<10} {:>36.2} {:>8} {:>+7.2}%", "SUBTOTAL", g.value_usd, "100.0%", norm_zero(g.change_24h_pct));
         }
     }
 
@@ -258,10 +269,13 @@ fn render_view(
     // duplicate GM TOTAL line for line.
     if !split && view.matched_value_usd < gm_total - 0.005 {
         let _ = writeln!(o, "{:<10} {:>36.2} {:>7.1}% {:>+7.2}%",
-                         "MATCHED", view.matched_value_usd, view.matched_pct_of_gm,
-                         groups.first().map_or(0.0, |g| g.change_24h_pct));
+                         "MATCHED", view.matched_value_usd, norm_zero(view.matched_pct_of_gm),
+                         norm_zero(groups.first().map_or(0.0, |g| g.change_24h_pct)));
     }
-    let _ = writeln!(o, "{:<10} {:>36.2} {:>16}{:>+7.2}%", "GM TOTAL", gm_total, "", gm_change_pct);
+    // Same column layout as MATCHED above (value field, then a blank
+    // pct-width spacer, then the 24h change) so the two trailing percentages
+    // line up in every rendering — see `norm_zero`'s sibling defect notes.
+    let _ = writeln!(o, "{:<10} {:>36.2} {:>8} {:>+7.2}%", "GM TOTAL", gm_total, "", norm_zero(gm_change_pct));
     let _ = writeln!(o, "  Cash balances shown above are separate from GM position totals.");
     o
 }
@@ -441,6 +455,70 @@ mod tests {
         let full = render_view("W", 0.0, 0.0, &groups,
                                &view_json(&["Healthcare"], None, false, 1, 1000.0, 100.0), 1000.0, 0.0);
         assert!(!full.contains("MATCHED"), "100% match must not duplicate the total:\n{full}");
+    }
+
+    /// breaks if: MATCHED and GM TOTAL put their trailing 24h percentage in
+    /// different columns — the visible defect this pins was a straight
+    /// literal shift (GM TOTAL's `%` landing several columns right of
+    /// MATCHED's), caused by GM TOTAL's blank spacer field using a different
+    /// width with no separating space before the change field. Comparing raw
+    /// containment (`contains("%")`) wouldn't catch a shift since both lines
+    /// still end in "...NN.NN%" — this instead finds the start of each
+    /// line's LAST whitespace-separated field (the 24h number) and asserts
+    /// the two columns coincide. Verified by mutation: temporarily restoring
+    /// the old `{:>16}` (no space) GM TOTAL format makes this assertion fail.
+    #[test]
+    fn matched_and_gm_total_align_their_trailing_pct_column() {
+        let groups = vec![GroupJson { group: None, value_usd: 300.0, gm_alloc_pct: 30.0,
+                                      change_24h_pct: -1.39, positions: vec![position("Aon", 300.0, 30.0, Some(100.0))] }];
+        let out = render_view("W", 0.0, 0.0, &groups,
+                              &view_json(&["Dividend"], None, false, 1, 300.0, 30.0), 1000.0, -1.64);
+
+        let matched_line = out.lines().find(|l| l.starts_with("MATCHED")).expect("MATCHED row present");
+        let total_line = out.lines().find(|l| l.starts_with("GM TOTAL")).expect("GM TOTAL row present");
+        let matched_offset = matched_line.rfind(' ').expect("MATCHED row has a trailing field");
+        let total_offset = total_line.rfind(' ').expect("GM TOTAL row has a trailing field");
+        assert_eq!(matched_offset, total_offset,
+            "24h field must start at the same column in MATCHED and GM TOTAL:\nMATCHED:  {matched_line:?}\nGM TOTAL: {total_line:?}");
+    }
+
+    /// breaks if: a percentage that's mathematically zero but carries the
+    /// IEEE754 negative-zero sign bit (e.g. a 0.0 numerator divided by the
+    /// portfolio total) prints as "-0.0%" — `{:.1}` does not normalise the
+    /// sign on its own, so `norm_zero` must. The fixture feeds an explicit
+    /// `-0.0` (asserted via `is_sign_negative` so the test itself can't be
+    /// fooled by a plain `0.0` literal) through both the echo line's
+    /// matched-pct and the GM TOTAL row's 24h change.
+    #[test]
+    fn zero_pct_never_prints_a_negative_sign() {
+        let neg_zero: f64 = -0.0;
+        assert!(neg_zero.is_sign_negative(), "fixture must actually carry the sign bit");
+        let out = render_view("W", 0.0, 0.0, &[],
+                              &view_json(&["Energy"], None, false, 0, 0.0, neg_zero), 1000.0, neg_zero);
+        assert!(out.contains("0.0% of GM"), "must normalise to a plain zero:\n{out}");
+        assert!(!out.contains("-0.0"), "must never show a negative sign on zero:\n{out}");
+    }
+
+    /// breaks if: the group count in the `--view` echo line is not
+    /// grammatically pluralised — "1 groups" reads as broken English.
+    #[test]
+    fn group_count_is_pluralised_correctly() {
+        let one_group = vec![GroupJson { group: Some("Value".into()), value_usd: 1000.0, gm_alloc_pct: 100.0,
+                                         change_24h_pct: 0.0, positions: vec![position("Aon", 1000.0, 100.0, Some(100.0))] }];
+        let out = render_view("W", 0.0, 0.0, &one_group,
+                              &view_json(&["sector"], Some("sector"), false, 1, 1000.0, 100.0), 1000.0, 0.0);
+        assert!(out.contains("1 group "), "singular for exactly one group:\n{out}");
+        assert!(!out.contains("1 groups"), "must not say '1 groups':\n{out}");
+
+        let two_groups = vec![
+            GroupJson { group: Some("Value".into()), value_usd: 600.0, gm_alloc_pct: 60.0,
+                        change_24h_pct: 0.0, positions: vec![position("Aon", 600.0, 60.0, Some(100.0))] },
+            GroupJson { group: Some("Growth".into()), value_usd: 400.0, gm_alloc_pct: 40.0,
+                        change_24h_pct: 0.0, positions: vec![position("Bon", 400.0, 40.0, Some(100.0))] },
+        ];
+        let out2 = render_view("W", 0.0, 0.0, &two_groups,
+                               &view_json(&["sector"], Some("sector"), false, 2, 1000.0, 100.0), 1000.0, 0.0);
+        assert!(out2.contains("2 groups"), "plural for two groups:\n{out2}");
     }
 
     /// breaks if: an empty view renders a phantom table instead of saying so.
