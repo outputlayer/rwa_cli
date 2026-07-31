@@ -575,6 +575,24 @@ mod tests {
         assert_eq!(spec(&["MRNA", "mrnaon"]).unwrap().tokens.len(), 1);
     }
 
+    /// breaks if: repeating the SAME category starts erroring like two
+    /// different ones. `--view sector,sector` is idempotent by design, and the
+    /// only thing separating it from `--view sector,region` is the
+    /// `existing != cat` match guard — a mutation of that guard to a constant
+    /// is invisible to every other test.
+    #[test]
+    fn repeating_the_same_category_is_idempotent() {
+        let s = spec(&["sector", "sector"]).unwrap();
+        assert_eq!(s.split, Some(Category::Sector), "same category twice must parse");
+        assert!(s.tags.is_empty() && s.tokens.is_empty(), "a category must not filter");
+
+        // The guard must stay narrow: two DIFFERENT categories are still an error.
+        assert!(
+            spec(&["sector", "region"]).is_err(),
+            "widening the guard would let two dimensions through"
+        );
+    }
+
     /// breaks if: two categories are silently accepted — the output can only
     /// be split along one dimension.
     #[test]
@@ -813,6 +831,40 @@ mod tests {
         // Value-weighted: 900 grew 10%, 100 fell 10% → prev = 818.18 + 111.11
         // → 1000/929.29 - 1 = +7.61%, NOT the naive average of 0%.
         assert!((g.change_24h_pct - 7.61).abs() < 0.05, "got {}", g.change_24h_pct);
+    }
+
+    /// breaks if: a group's share of the WHOLE portfolio is computed with the
+    /// wrong operator. This is the `· 75.2% of GM` figure in every block
+    /// header, and no other test reads `GroupJson.gm_alloc_pct` — so swapping
+    /// `/` for `*`, `*` for `+`, or `/` for `%` in build_group survives
+    /// silently. Deliberately uses three positions in two groups so the
+    /// group's own value (1000) differs from the portfolio total (1500);
+    /// with one group covering everything the two divisors coincide and the
+    /// mutation is undetectable.
+    #[test]
+    fn group_gm_alloc_pct_is_the_groups_share_of_the_whole_portfolio() {
+        let positions = vec![
+            pos("Big", 900.0, 0.0, &["Growth"]),
+            pos("Small", 100.0, 0.0, &["Growth"]),
+            pos("Third", 500.0, 0.0, &["Value"]),
+        ];
+        let (_, groups, _) = apply_view(positions, &split_spec(Category::Factor));
+        let growth = groups.iter().find(|g| g.group.as_deref() == Some("Growth")).unwrap();
+        let value = groups.iter().find(|g| g.group.as_deref() == Some("Value")).unwrap();
+
+        // gm_total = 1500: Growth 1000 → 66.67%, Value 500 → 33.33%.
+        assert!(
+            (growth.gm_alloc_pct - 66.666_666).abs() < 1e-4,
+            "group share of the portfolio, got {}",
+            growth.gm_alloc_pct
+        );
+        assert!(
+            (value.gm_alloc_pct - 33.333_333).abs() < 1e-4,
+            "group share of the portfolio, got {}",
+            value.gm_alloc_pct
+        );
+        // Non-overlapping split: the shares account for the whole portfolio.
+        assert!((growth.gm_alloc_pct + value.gm_alloc_pct - 100.0).abs() < 1e-4);
     }
 
     /// breaks if: an empty result is turned into an error or a phantom group.
