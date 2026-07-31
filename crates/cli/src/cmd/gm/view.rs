@@ -72,6 +72,15 @@ pub(super) struct ViewSpec {
     pub(super) split: Option<Category>,
 }
 
+impl ViewSpec {
+    /// True when nothing was actually resolved — e.g. every raw term trimmed
+    /// to empty and was skipped. `parse_view` uses this to fail closed rather
+    /// than silently rendering the whole portfolio in `--view` output shape.
+    pub(super) fn is_empty(&self) -> bool {
+        self.tags.is_empty() && self.tokens.is_empty() && self.split.is_none()
+    }
+}
+
 fn invalid_view(detail: impl Into<String>) -> eyre::Report {
     GmTradeError::new(GmTradeErrorKind::InvalidView, detail).into()
 }
@@ -165,6 +174,14 @@ pub(super) fn parse_view(terms: &[String], assets: &[OndoAsset]) -> Result<ViewS
         }
 
         return Err(invalid_view(unknown_term_msg(term, &labels, assets)));
+    }
+
+    // Every raw term trimmed to empty and was skipped (e.g. `--view ""` from
+    // an unset shell variable). The flag was passed, so the caller asked for
+    // a slice — silently returning the whole portfolio in --view's output
+    // shape would be the misleading outcome; fail closed instead.
+    if spec.is_empty() {
+        return Err(invalid_view("empty view term — expected a category, tag or ticker"));
     }
 
     Ok(spec)
@@ -492,6 +509,26 @@ mod tests {
         let err = spec(&["sector", "region"]).unwrap_err().to_string();
         assert!(err.contains("invalid_view"), "must be the typed kind: {err}");
         assert!(err.contains("one dimension"), "message must say why: {err}");
+    }
+
+    /// breaks if: a term that trims to empty (e.g. `--view ""` from an unset
+    /// shell variable) is silently skipped and parse_view returns Ok with an
+    /// empty spec — apply_view would then treat that as "no filter" and
+    /// render the WHOLE portfolio as one anonymous group under --view's
+    /// output shape, which looks like a slice but isn't one. Also pins that
+    /// a legitimate term alongside blanks is still accepted (the guard must
+    /// fire only when NOTHING resolved, not whenever any term is blank).
+    #[test]
+    fn all_blank_terms_fail_closed_but_a_real_term_among_blanks_still_works() {
+        let err = spec(&[""]).unwrap_err().to_string();
+        assert!(err.contains("invalid_view"), "must be the typed kind: {err}");
+        assert!(err.contains("empty view term"), "message must name the problem: {err}");
+
+        let err = spec(&["  "]).unwrap_err().to_string();
+        assert!(err.contains("invalid_view"), "whitespace-only must fail too: {err}");
+
+        let s = spec(&["", "sector"]).unwrap();
+        assert_eq!(s.split, Some(Category::Sector), "a real term among blanks must still parse");
     }
 
     /// breaks if: unknown terms are swallowed as empty filters instead of
