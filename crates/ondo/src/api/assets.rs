@@ -60,17 +60,6 @@ impl OndoAsset {
         self.tags.iter().map(|t| t.tag_label.as_str())
     }
 
-    /// Every label this asset carries in one tag category, in catalog order.
-    /// Unlike `tag()`, this does not collapse to the first match: factor tags
-    /// are genuinely multi-valued (a live catalog snapshot has 333 of 444
-    /// assets carrying two or more).
-    pub fn tags_in_category<'a>(&'a self, slug: &'a str) -> impl Iterator<Item = &'a str> {
-        self.tags
-            .iter()
-            .filter(move |t| t.category_slug == slug)
-            .map(|t| t.tag_label.as_str())
-    }
-
     /// Extract instrument type from tags ("Stock" or "ETF").
     pub fn instrument_type(&self) -> Option<&str> {
         self.tags
@@ -396,35 +385,6 @@ mod tests {
         })).unwrap();
         assert!(!quiet.is_trading_paused);
         assert!(!is_trading_paused("NVDAon", &[quiet]));
-    }
-
-    /// breaks if: tags_in_category returns only the first match (like `tag()`)
-    /// or ignores the category filter — factor tags are multi-valued in the
-    /// live catalog (333/444 assets carry 2+).
-    #[test]
-    fn tags_in_category_returns_every_label_of_that_category_only() {
-        let asset = OndoAsset {
-            symbol: "PFEon".into(),
-            asset_name: "Pfizer".into(),
-            tags: vec![
-                OndoAssetTag { category_slug: "sector-industry".into(), tag_label: "Healthcare".into() },
-                OndoAssetTag { category_slug: "type-factor-risk-profile".into(), tag_label: "Dividend".into() },
-                OndoAssetTag { category_slug: "type-factor-risk-profile".into(), tag_label: "High Yield".into() },
-                OndoAssetTag { category_slug: "type-factor-risk-profile".into(), tag_label: "Large Cap".into() },
-            ],
-            primary_market: None,
-            is_trading_paused: false,
-            is_offhours_tradable: false,
-        };
-
-        let factors: Vec<&str> = asset.tags_in_category("type-factor-risk-profile").collect();
-        assert_eq!(factors, vec!["Dividend", "High Yield", "Large Cap"]);
-
-        let sectors: Vec<&str> = asset.tags_in_category("sector-industry").collect();
-        assert_eq!(sectors, vec!["Healthcare"]);
-
-        let missing: Vec<&str> = asset.tags_in_category("region-market-exposure").collect();
-        assert!(missing.is_empty(), "absent category must yield nothing, got {missing:?}");
     }
 
     #[test]
