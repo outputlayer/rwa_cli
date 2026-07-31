@@ -52,6 +52,12 @@ impl Category {
     fn from_term(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|c| c.term().eq_ignore_ascii_case(s))
     }
+
+    /// Reverse of `slug()` — used to name the ACTUAL category a label
+    /// belongs to when a `<category>:<label>` prefix names the wrong one.
+    fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.slug() == slug)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +147,7 @@ pub(super) fn parse_view(terms: &[String], assets: &[OndoAsset]) -> Result<ViewS
             && let Some(cat) = Category::from_term(prefix)
         {
             let f = find_label(rest, &labels, Some(cat))
-                .ok_or_else(|| invalid_view(unknown_term_msg(rest, &labels, assets)))?;
+                .ok_or_else(|| invalid_view(prefixed_term_msg(term, rest, cat, &labels, assets)))?;
             push_tag(&mut spec, f);
             continue;
         }
@@ -199,6 +205,33 @@ fn push_token(spec: &mut ViewSpec, raw: &str, assets: &[OndoAsset]) -> Result<()
 fn push_tag(spec: &mut ViewSpec, f: TagFilter) {
     if !spec.tags.contains(&f) {
         spec.tags.push(f);
+    }
+}
+
+/// Message for a `<category>:<label>` prefix when the label doesn't belong
+/// to that category. Running the generic did-you-mean over ALL labels here
+/// would suggest the label itself (`'Dividend'. Did you mean 'Dividend'?`) —
+/// nonsense, in exactly the case the prefix exists to disambiguate. So: if
+/// the label exists under a DIFFERENT category, name that category instead
+/// of guessing; only fall back to the generic message when the label truly
+/// doesn't exist anywhere (and echo the full typed term, prefix included, so
+/// the error names what the user actually wrote).
+fn prefixed_term_msg(raw: &str, rest: &str, cat: Category, labels: &[TagFilter], assets: &[OndoAsset]) -> String {
+    match find_label(rest, labels, None) {
+        Some(actual) => {
+            let actual_term = Category::from_slug(&actual.slug).map(Category::term);
+            match actual_term {
+                Some(actual_term) => format!(
+                    "'{rest}' is not a {} label (it is a {actual_term} label — use '{actual_term}:{rest}', or a bare '{rest}')",
+                    cat.term()
+                ),
+                // The label's slug isn't one of ours (shouldn't happen —
+                // every catalog label comes from Ondo's own categories —
+                // but fall back rather than assert).
+                None => unknown_term_msg(raw, labels, assets),
+            }
+        }
+        None => unknown_term_msg(raw, labels, assets),
     }
 }
 
@@ -292,6 +325,18 @@ fn build_group(name: Option<String>, mut positions: Vec<PositionJson>, gm_total:
 
 /// Labels this position carries in one category. Sector/class/region/type live
 /// in their own fields; factor labels are whatever remains in `tags`.
+///
+/// Deliberately NOT built by reading the Ondo catalog's asset-class tags
+/// directly (category membership, all-of-them): 9 live assets (`QLTAon`,
+/// `BRHYon`, …) carry the `asset-class` tag TWICE with an identical label
+/// (`["Fixed Income", "Fixed Income"]`). A category-membership read would
+/// push a position into the same bucket twice, doubling that group's
+/// `value_usd` and flipping `overlapping` to `true` for a category that is
+/// actually single-valued. Reading `p.sector`/`p.asset_class`/`p.region`/
+/// `p.kind` — set from `OndoAsset::sector()`/`asset_class()`/… , which
+/// collapse to the FIRST tag of that slug — sidesteps the duplicate
+/// entirely. This is why `OndoAsset::tags_in_category` was deleted rather
+/// than reused here.
 fn labels_of(p: &PositionJson, cat: Category) -> Vec<String> {
     match cat {
         Category::Sector => p.sector.clone().into_iter().collect(),
@@ -492,6 +537,34 @@ mod tests {
     fn explicit_prefix_matches_auto_detection() {
         assert_eq!(spec(&["sector:Healthcare"]).unwrap().tags, spec(&["Healthcare"]).unwrap().tags);
         assert_eq!(spec(&["token:MRNA"]).unwrap().tokens, spec(&["MRNA"]).unwrap().tokens);
+    }
+
+    /// breaks if: `sector:Dividend` (Dividend is a FACTOR label, not a sector
+    /// label) reverts to running did-you-mean over ALL labels — which finds
+    /// "Dividend" itself and prints the self-contradicting "unknown view term
+    /// 'Dividend'. Did you mean 'Dividend'?". The message must instead name
+    /// the label's real category so the fix is obvious. A test that merely
+    /// checked `.is_err()` would pass on the old nonsense message too — the
+    /// assertions below pin the wording that proves the category was found.
+    #[test]
+    fn prefixed_term_names_the_labels_real_category() {
+        let err = spec(&["sector:Dividend"]).unwrap_err().to_string();
+        assert!(err.contains("invalid_view"), "must be the typed kind: {err}");
+        assert!(!err.contains("Did you mean 'Dividend'"),
+                "must not suggest the exact label the user already typed: {err}");
+        assert!(err.contains("not a sector label"), "must say what's wrong: {err}");
+        assert!(err.contains("factor label"), "must name the label's real category: {err}");
+        assert!(err.contains("factor:Dividend"), "must show the fix: {err}");
+    }
+
+    /// breaks if: a `<category>:<label>` where the label exists in NO
+    /// category at all is silently accepted instead of rejected — the
+    /// "found in a different category" branch must not swallow this case.
+    #[test]
+    fn prefixed_term_for_a_label_that_exists_nowhere_is_rejected() {
+        let err = spec(&["sector:NoSuchLabel"]).unwrap_err().to_string();
+        assert!(err.contains("invalid_view"), "must be the typed kind: {err}");
+        assert!(err.contains("sector:NoSuchLabel"), "must echo what was actually typed: {err}");
     }
 
     /// breaks if: duplicates accumulate (would double-apply a filter and skew
@@ -769,20 +842,43 @@ mod tests {
         assert_eq!(groups[0].positions.len(), 1);
     }
 
-    /// Not part of `make ci` (network). The whole `--view` grammar rests on
-    /// three dictionaries never colliding — a live snapshot on 2026-07-31 had
-    /// 5 categories × 51 labels × 444 tickers with zero overlap. A fixture
-    /// cannot notice when Ondo introduces a colliding label; this can.
+    /// Not part of `make ci` (network). "Live" is approximate: `fetch_assets`
+    /// reads through a disk cache (fresh ≤60s, stale fallback ≤1h — see
+    /// `crates/ondo/src/api/assets.rs`), so this can pass against a cached
+    /// snapshot rather than a true live read; it still catches drift faster
+    /// than a hand-maintained fixture would.
+    ///
+    /// The whole `--view` grammar rests on THREE assumptions the code never
+    /// checks at runtime — a fixture can't notice any of them drifting, only
+    /// a live/cached read can:
+    ///   1. no Ondo label or ticker collides with a reserved category name
+    ///      (5 categories × 51 labels × 444 tickers had zero overlap on
+    ///      2026-07-31);
+    ///   2. no label appears under two different category slugs — `find_label`
+    ///      binds to the FIRST match and `matches`'s `slug_of` looks up a
+    ///      label's slug with no category context, so a label living in two
+    ///      categories would silently bind to the wrong facet;
+    ///   3. no asset carries a factor label textually equal to one of its own
+    ///      sector/class/region/type labels — `labels_of(Factor)` derives the
+    ///      factor set by SUBTRACTING those four strings from `tags`, so an
+    ///      asset whose factor label matches its own sector/class/region/type
+    ///      label would lose that factor label from the split, silently.
+    /// Both (2) and (3) hold today (verified: 0 and 0) but nothing enforces
+    /// them going forward except this alarm.
     /// Run: cargo test -p rwa-cli -- --ignored view_dictionaries_do_not_collide
     #[test]
-    #[ignore = "hits the live Ondo catalog"]
+    #[ignore = "hits the live (or cached) Ondo catalog"]
     fn view_dictionaries_do_not_collide() {
+        use std::collections::{HashMap, HashSet};
+
         let assets = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(rwa_ondo::api::fetch_assets())
             .expect("live catalog");
 
         let categories: Vec<&str> = Category::ALL.iter().map(|c| c.term()).collect();
+
+        // (1) no label/ticker collides with a reserved category name.
         for a in &assets {
             for t in &a.tags {
                 assert!(
@@ -799,6 +895,53 @@ mod tests {
                 "ticker '{}' collides with a reserved category name",
                 a.symbol
             );
+        }
+
+        // (2) no label appears under two different category slugs.
+        let mut slugs_by_label: HashMap<String, HashSet<String>> = HashMap::new();
+        for a in &assets {
+            for t in &a.tags {
+                slugs_by_label
+                    .entry(t.tag_label.to_lowercase())
+                    .or_default()
+                    .insert(t.category_slug.clone());
+            }
+        }
+        for (label, slugs) in &slugs_by_label {
+            assert!(
+                slugs.len() == 1,
+                "label '{label}' now appears under multiple categories ({slugs:?}) — \
+                 `find_label`'s first-match binding and `matches`'s `slug_of` would bind \
+                 it to the wrong facet, degrading into silently wrong groups. Give the \
+                 label-to-category lookup an explicit category argument instead of \
+                 assuming uniqueness."
+            );
+        }
+
+        // (3) no factor label textually equals its own asset's
+        // sector/class/region/type label (labels_of(Factor) subtracts those).
+        for a in &assets {
+            let singles: Vec<&str> =
+                [a.sector(), a.asset_class(), a.region(), a.instrument_type()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            for t in &a.tags {
+                if t.category_slug == Category::Factor.slug() {
+                    for s in &singles {
+                        assert!(
+                            !s.eq_ignore_ascii_case(&t.tag_label),
+                            "asset '{}' carries factor label '{}' textually equal to its \
+                             own {s} label — labels_of(Factor) derives the factor set by \
+                             subtracting sector/class/region/type strings from `tags`, so \
+                             this asset would silently lose that factor label from any \
+                             `--view factor` split.",
+                            a.symbol,
+                            t.tag_label
+                        );
+                    }
+                }
+            }
         }
     }
 }
