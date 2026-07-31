@@ -3,7 +3,13 @@ use rwa_ondo::{api, solana, token_list, usecases};
 
 use super::*;
 
-pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
+pub async fn portfolio(
+    wallet_addr: Option<&str>,
+    view_terms: &[String],
+    json: bool,
+    rpc_url: Option<&str>,
+    selected: Option<&str>,
+) -> Result<()> {
     let tokens = token_list::get_token_list();
     let pubkey = match wallet_addr {
         Some(w) => {
@@ -65,6 +71,43 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let gm_positions_change = summary.change_24h_usd;
     let gm_positions_change_pct = summary.change_24h_pct;
 
+    // `--view`: parse against the catalog we already fetched, then filter/split.
+    // Parsing deliberately happens after the fetch — the catalog IS the
+    // dictionary, and `portfolio` cannot run without it anyway (prices).
+    //
+    // `positions` is consumed exactly once here, in either arm, and rebound
+    // to whichever position list downstream should use (unfiltered, or the
+    // view's filtered subset) — so neither branch below has to reason about
+    // a conditional move of the original vector. Widening the match's own
+    // arms to build the *outputs* both branches need (instead of trying to
+    // resurrect `positions` after a partial move inside a `Some`/`None`
+    // wrapper) is what keeps this a rebind rather than a clone.
+    let (positions, view, groups): (Vec<PositionJson>, Option<ViewJson>, Option<Vec<GroupJson>>) =
+        if view_terms.is_empty() {
+            (positions, None, None)
+        } else {
+            let spec = view::parse_view(view_terms, &assets)?;
+            let (filtered, groups, overlapping) = view::apply_view(positions, &spec);
+            let matched_value: f64 = filtered.iter().map(|p| p.value_usd).sum();
+            let view_json = ViewJson {
+                terms: spec.terms.clone(),
+                filters: ViewFiltersJson {
+                    tags: spec.tags.iter().map(|f| f.label.clone()).collect(),
+                    tokens: spec.tokens.clone(),
+                },
+                split_by: spec.split.map(|c| c.term().to_string()),
+                overlapping,
+                matched_positions: filtered.len(),
+                matched_value_usd: matched_value,
+                matched_pct_of_gm: if gm_positions_value.abs() > f64::EPSILON {
+                    matched_value / gm_positions_value * 100.0
+                } else {
+                    0.0
+                },
+            };
+            (filtered, Some(view_json), Some(groups))
+        };
+
     let source = if balance_source == solana::BalanceSource::Jupiter {
         if !json {
             eprintln!("Note: Solana RPC unavailable — balances via Jupiter holdings.");
@@ -86,16 +129,20 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
                 value_usd: gm_positions_value,
                 change_24h_usd: gm_positions_change,
                 change_24h_pct: gm_positions_change_pct,
-                // Not wired yet — task 6 threads --view through this command.
-                view: None,
-                groups: None,
+                view,
+                groups,
             },
             unavailable,
             source,
         });
     }
 
-    print!("{}", render_portfolio(&pubkey, sol_bal, usdc_bal, &positions, gm_positions_value, gm_positions_change_pct));
+    match (view, groups) {
+        (Some(v), Some(groups)) => print!("{}", render_view(&pubkey, sol_bal, usdc_bal, &groups, &v,
+                                                              gm_positions_value, gm_positions_change_pct)),
+        _ => print!("{}", render_portfolio(&pubkey, sol_bal, usdc_bal, &positions,
+                                            gm_positions_value, gm_positions_change_pct)),
+    }
     Ok(())
 }
 

@@ -72,12 +72,6 @@ pub(super) struct ViewSpec {
     pub(super) split: Option<Category>,
 }
 
-impl ViewSpec {
-    pub(super) fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.tokens.is_empty() && self.split.is_none()
-    }
-}
-
 fn invalid_view(detail: impl Into<String>) -> eyre::Report {
     GmTradeError::new(GmTradeErrorKind::InvalidView, detail).into()
 }

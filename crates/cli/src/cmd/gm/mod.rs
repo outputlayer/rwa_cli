@@ -112,6 +112,12 @@ pub enum GmAction {
     Portfolio {
         /// Wallet address (default: local wallet)
         wallet: Option<String>,
+        /// Slice the portfolio: a category to split by (sector, region, class,
+        /// type, factor), an Ondo tag label to filter by (Dividend, Healthcare,
+        /// ETF, …), or a ticker (MRNA). Repeatable and comma-separated; prefix
+        /// with `tag:`/`token:`/`sector:` to skip auto-detection.
+        #[arg(long, value_delimiter = ',', value_name = "TERM")]
+        view: Vec<String>,
     },
 
     /// Price history for a GM token (1D, 1W, 1M, 3M, 1Y, ALL)
@@ -284,8 +290,8 @@ pub async fn execute(action: GmAction, json: bool, rpc_url: Option<&str>, select
             let tuning = TradeTuning { slippage, max_bps: effective_max_bps(max_bps) };
             trade::sell(&symbol, &amount, opts, tuning, limit_price.as_deref(), rpc_url, selected).await
         }
-        GmAction::Portfolio { wallet } => {
-            portfolio::portfolio(wallet.as_deref(), json, rpc_url, selected).await
+        GmAction::Portfolio { wallet, view } => {
+            portfolio::portfolio(wallet.as_deref(), &view, json, rpc_url, selected).await
         }
         GmAction::History { symbol, range } => portfolio::history(&symbol, &range, json).await,
         GmAction::List => list::list(json).await,
@@ -655,6 +661,33 @@ mod tests {
         // positional portfolio address still works and is distinct from --wallet
         let c = crate::Cli::try_parse_from(["rwa", "gm", "portfolio", "SomeAddress"]);
         assert!(c.is_ok(), "positional wallet address: {:?}", c.err());
+    }
+
+    /// breaks if: --view stops splitting on commas or stops being repeatable —
+    /// both forms are documented and used in composed shell pipelines.
+    #[test]
+    fn view_flag_accepts_commas_and_repeats() {
+        let cli = crate::Cli::try_parse_from([
+            "rwa", "gm", "portfolio", "--view", "Dividend,sector", "--view", "MRNA",
+        ])
+        .expect("must parse");
+        let crate::Commands::Gm { action } = cli.command else { panic!("expected gm") };
+        let GmAction::Portfolio { view, wallet } = action else { panic!("expected portfolio") };
+        assert_eq!(view, vec!["Dividend", "sector", "MRNA"]);
+        assert!(wallet.is_none(), "a bare --view must not swallow the positional wallet");
+    }
+
+    /// breaks if: the positional wallet and --view start competing for tokens.
+    #[test]
+    fn view_flag_coexists_with_the_positional_wallet() {
+        let cli = crate::Cli::try_parse_from([
+            "rwa", "gm", "portfolio", "SomeWalletAddress", "--view", "factor",
+        ])
+        .expect("must parse");
+        let crate::Commands::Gm { action } = cli.command else { panic!("expected gm") };
+        let GmAction::Portfolio { view, wallet } = action else { panic!("expected portfolio") };
+        assert_eq!(wallet.as_deref(), Some("SomeWalletAddress"));
+        assert_eq!(view, vec!["factor"]);
     }
 
     #[test]
