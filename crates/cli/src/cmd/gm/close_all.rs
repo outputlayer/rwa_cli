@@ -409,20 +409,23 @@ fn close_status(sold: usize, failed: usize, skipped: &[CloseSkipJson]) -> CloseO
         return CloseOutcome { status: base, exit_code: 0, incomplete_reason: None };
     }
 
-    // `error` (nothing sold, everything failed) stays error — its own exit
-    // path already classifies transient vs permanent.
+    // The reason is computed unconditionally once a retryable skip exists —
+    // an agent reading `incomplete_reason` must learn the portfolio isn't
+    // empty regardless of whether this run also happened to fail everything
+    // it attempted. Only the status/exit DECISION is gated on `base` below.
+    let plural = if retryable == 1 { "position" } else { "positions" };
+    let incomplete_reason = Some(format!(
+        "{retryable} {plural} temporarily unsellable — retry later"
+    ));
+
+    // `error` (nothing sold, everything failed) stays error/exit 0 — its own
+    // exit path (`exit_if_all_failed`) already classifies transient vs
+    // permanent for that case — but the reason is still reported.
     if base == "error" {
-        return CloseOutcome { status: base, exit_code: 0, incomplete_reason: None };
+        return CloseOutcome { status: base, exit_code: 0, incomplete_reason };
     }
 
-    let plural = if retryable == 1 { "position" } else { "positions" };
-    CloseOutcome {
-        status: "partial",
-        exit_code: 75,
-        incomplete_reason: Some(format!(
-            "{retryable} {plural} temporarily unsellable — retry later"
-        )),
-    }
+    CloseOutcome { status: "partial", exit_code: 75, incomplete_reason }
 }
 
 /// Skips grouped by their real reason, in first-seen order:
@@ -551,12 +554,22 @@ mod tests {
     /// top of a totally-failed run must NOT turn "error" into "partial" — the
     /// error path's own exit classification (`exit_if_all_failed`) already
     /// owns transient-vs-permanent here, so this function must stay out of it.
+    /// It ALSO breaks if `incomplete_reason` goes missing on this branch: an
+    /// all-failed run with paused positions must still tell an agent reading
+    /// `incomplete_reason` (per llms.txt: "check `incomplete_reason` before
+    /// assuming any close-all run finished the job") that the portfolio is
+    /// not empty — `status == "error"` alone does not say that, since a
+    /// plain all-failed run with no skips also reports "error".
     #[test]
     fn a_retryable_skip_cannot_turn_all_failed_error_into_partial() {
         let skipped = vec![skip("MRNAon", "trading_paused", true)];
         let out = close_status(0, 3, &skipped);
         assert_eq!(out.status, "error", "error stays error even with a retryable skip present");
         assert_eq!(out.exit_code, 0, "exit_if_all_failed owns this exit code, not close_status");
+        assert!(
+            out.incomplete_reason.is_some(),
+            "an all-failed run with a retryable skip must still explain the skip, not just the failures"
+        );
     }
 
     /// breaks if: an empty wallet is reported as anything but done.
