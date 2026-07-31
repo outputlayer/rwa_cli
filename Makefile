@@ -8,7 +8,7 @@
 
 export RUSTFLAGS := -Dwarnings
 
-.PHONY: ci check lint test integration release fmt install-hooks test-install
+.PHONY: ci check lint test integration release fmt install-hooks test-install mutants mutants-list
 
 # NOTE: `make ci` mirrors ci.yml's BUILD/TEST/LINT jobs (the ones a code change
 # can break). The separate `audit` job (cargo-audit / RUSTSEC advisory scan) is
@@ -41,6 +41,33 @@ integration:
 ## release — release build (the gating "Release Build" job)
 release:
 	cargo build --release
+
+# ── Mutation testing ─────────────────────────────────────────────────────────
+#
+# Checks the TESTS, not the code: cargo-mutants breaks the source (>= for >,
+# a constant return, * for /) and a mutant that SURVIVES means no test noticed.
+# Deliberately NOT part of `make ci` — a run costs minutes per file, while
+# `make ci` must stay a fast mirror of ci.yml.
+#
+# Install once:  cargo install cargo-mutants
+#
+# `-p <package>` is MANDATORY. Without it cargo-mutants only sees the workspace
+# root binary (bin/rwa/src/main.rs, 2 mutants) and reports green having checked
+# essentially nothing — the exact false confidence this target exists to prevent.
+#
+# Not every survivor is a gap. `x.abs() > f64::EPSILON` mutated to `>=` diverges
+# only at exactly 2.22e-16; a test for that pins a value no scenario produces.
+# Record such equivalent mutants with a reason instead of chasing 100%.
+
+## mutants — mutation-test one file: make mutants FILE=close_all.rs [PKG=rwa-cli]
+mutants:
+	@test -n "$(FILE)" || { echo "usage: make mutants FILE=view.rs [PKG=rwa-cli]"; exit 2; }
+	cargo mutants -p $(or $(PKG),rwa-cli) --file "**/$(FILE)" -j 4 --timeout 120
+
+## mutants-list — list mutants without running them (cheap: shows what is checkable)
+mutants-list:
+	@test -n "$(FILE)" || { echo "usage: make mutants-list FILE=view.rs [PKG=rwa-cli]"; exit 2; }
+	cargo mutants -p $(or $(PKG),rwa-cli) --file "**/$(FILE)" --list
 
 ## fmt — format (not gated by CI, but keep the tree tidy)
 fmt:
