@@ -571,6 +571,19 @@ mod tests {
         assert!(out.contains("25.0%"), "250 of 1000 is a quarter:\n{out}");
     }
 
+    /// breaks if: the zero-total guard is removed. Float division by zero
+    /// does not panic in Rust — it silently yields NaN/inf — so an empty-
+    /// valued portfolio (gm_total_usd: 0.0) would print "NaN% of GM
+    /// portfolio" to a human instead of a safe 0.0%.
+    #[test]
+    fn preview_share_is_zero_when_the_portfolio_total_is_zero() {
+        let candidates = vec![candidate("ABBVon", "1.0", 0.0)];
+        let out = render_close_preview(&candidates, &[], 1, 0.0, 100.0);
+        assert!(out.contains("0.0%"), "expected a safe 0.0%, got:\n{out}");
+        assert!(!out.to_lowercase().contains("nan"), "NaN leaked into output:\n{out}");
+        assert!(!out.to_lowercase().contains("inf"), "inf leaked into output:\n{out}");
+    }
+
     /// breaks if: the "Not selling" block appears when nothing was skipped —
     /// an empty section reads as a problem where there is none.
     #[test]
