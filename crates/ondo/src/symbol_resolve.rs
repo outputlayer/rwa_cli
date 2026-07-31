@@ -38,10 +38,25 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
         })
 }
 
-/// Nearest known symbol by edit distance ≤ 2 against both the bare ticker
-/// (`AAPL`) and the on-suffixed form (`AAPLON`), uppercased. Ties resolve to
-/// the first (alphabetical) entry; `None` when nothing is close enough —
-/// suggesting a far-off symbol would be worse than no suggestion.
+/// Nearest candidate by edit distance ≤ 2, case-insensitive. `None` when
+/// nothing is close enough — suggesting a far-off match is worse than staying
+/// silent. Shared by symbol resolution and `--view` term suggestions so both
+/// speak the same dialect of "did you mean".
+#[must_use]
+pub fn closest_match<'a>(input: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let needle = input.to_uppercase();
+    let mut best: Option<(usize, &str)> = None;
+    for c in candidates {
+        let d = edit_distance(&needle, &c.to_uppercase());
+        if d <= 2 && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, c));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Nearest known symbol, matching both the bare ticker (`AAPL`) and the
+/// on-suffixed form (`AAPLON`).
 fn closest_symbol<'a>(input: &str, tokens: &'a [GmTokenEntry]) -> Option<&'a str> {
     let needle = input.to_uppercase();
     let mut best: Option<(usize, &str)> = None;
@@ -151,6 +166,17 @@ mod suggestion_tests {
         let err = resolve_token("ZZZQQQXX", tokens).unwrap_err().to_string();
         assert!(!err.contains("Did you mean"), "far-off input must not suggest: {err}");
         assert!(err.contains("gm search"), "search hint stays: {err}");
+    }
+
+    /// breaks if: closest_match drops the ≤2 edit-distance guard (would suggest
+    /// nonsense for far-off input) or stops being generic over candidates.
+    #[test]
+    fn closest_match_suggests_near_labels_and_refuses_far_ones() {
+        let labels = ["Healthcare", "Technology", "Energy", "Dividend"];
+
+        assert_eq!(closest_match("Enrgy", labels), Some("Energy"));
+        assert_eq!(closest_match("healthcare", labels), Some("Healthcare"), "must be case-insensitive");
+        assert_eq!(closest_match("biopharma", labels), None, "far-off input must not suggest");
     }
 
     #[test]

@@ -67,6 +67,9 @@ pub enum GmTradeErrorKind {
     RecipientNotAllowed,
     /// Another rwa process holds the exclusive lock — transient by definition.
     LockContention,
+    /// `--view` term matched no category, ticker, or Ondo tag label (typo or
+    /// a concept the catalog does not carry, e.g. "biopharma").
+    InvalidView,
 }
 
 #[derive(Debug)]
@@ -96,7 +99,7 @@ impl GmTradeErrorKind {
     /// appears in llms.txt / README / CLAUDE.md). Adding a variant already
     /// breaks `label()`'s exhaustive match at compile time — when you fix that,
     /// add the variant here and document it, or the guard fails.
-    pub const ALL: [GmTradeErrorKind; 19] = [
+    pub const ALL: [GmTradeErrorKind; 20] = [
         Self::MarketClosed,
         Self::NotTradable,
         Self::SlippageTooHigh,
@@ -116,6 +119,7 @@ impl GmTradeErrorKind {
         Self::InteractiveRequired,
         Self::RecipientNotAllowed,
         Self::LockContention,
+        Self::InvalidView,
     ];
 
     /// Stable label used in JSON `error_kind` fields and error Display.
@@ -141,6 +145,7 @@ impl GmTradeErrorKind {
             Self::InteractiveRequired => "interactive_required",
             Self::RecipientNotAllowed => "recipient_not_allowed",
             Self::LockContention => "lock_contention",
+            Self::InvalidView => "invalid_view",
         }
     }
 }
@@ -1253,7 +1258,8 @@ mod tests {
                 | GmTradeErrorKind::RevealRequired
                 | GmTradeErrorKind::InteractiveRequired
                 | GmTradeErrorKind::RecipientNotAllowed
-                | GmTradeErrorKind::LockContention => {}
+                | GmTradeErrorKind::LockContention
+                | GmTradeErrorKind::InvalidView => {}
             }
         }
         let mut seen = std::collections::HashSet::new();
