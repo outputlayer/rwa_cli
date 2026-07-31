@@ -1964,6 +1964,308 @@ fn close_all_dry_run_reports_no_positions() {
     assert_eq!(v["total_usdc"], "0");
 }
 
+// ── close-all: all-skipped wallet drives status/exit (the truthful-output fix) ──
+//
+// `close_all`'s balance fetch (`solana::get_all_balances`) issues a SINGLE
+// (non-batched) `getTokenAccountsByOwner` JSON-RPC call — the same shape
+// `mock_rpc_for_transfers` already mocks for send/reclaim — NOT the two-call
+// `getMultipleAccounts` + `getTokenAccountsByOwner` batch `batch_response`
+// builds for `portfolio`. These fixtures use `mock_rpc_for_transfers`
+// accordingly so the mock actually matches what the binary sends on the wire.
+//
+// In most scenarios below the held position is filtered out during
+// `filter_close_positions` BEFORE any Jupiter quote is fetched (paused via
+// `is_trading_paused`, or dust via the sub-$1.50 check — both checked ahead
+// of the tradable-set lookup), so `candidates` ends up empty and the run
+// takes the early-return branch. Those need no `/order` or transaction mock:
+// a real (`-y`) run never reaches a quote fetch or the confirmation prompt
+// when there is nothing left to sell.
+//
+// The exception is `close_all_dry_run_main_path_sums_quotes_and_reports_the
+// _retryable_skip`, which deliberately keeps one sellable position so the run
+// takes the MAIN path — it is the only close-all test here that quotes.
+
+/// Assets fixture where the held token is paused — the retryable skip path.
+fn paused_assets() -> serde_json::Value {
+    serde_json::json!({
+        "assets": [{
+            "symbol": "AALon",
+            "assetName": "American Airlines",
+            "isTradingPaused": true,
+            "isOffhoursTradable": false,
+            "primaryMarket": { "price": "10.00", "priceChangePct24h": "0.00" },
+            "tags": []
+        }]
+    })
+}
+
+/// breaks if: a temporarily unsellable position stops driving the exit code.
+/// The documented full exit is a shell chain, and `&&` reads only the exit
+/// code — exit 0 here would let it withdraw the gas needed to sell the rest.
+#[test]
+fn close_all_exits_75_when_a_position_is_temporarily_unsellable() {
+    let home = test_home("close-all-retryable-exit");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]));
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(paused_assets());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all", "-y"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(75), "retryable skip must be transient");
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "partial");
+    assert!(v["incomplete_reason"].as_str().unwrap().contains("retry"));
+    assert_eq!(v["skipped"][0]["retryable"], true);
+    assert_eq!(v["skipped"][0]["reason"], "trading_paused");
+}
+
+/// breaks if: dust starts blocking the chain. A sub-minimum position is
+/// unsellable forever, so a run that skipped only dust is a real success.
+#[test]
+fn close_all_exits_0_when_only_dust_was_skipped() {
+    let home = test_home("close-all-dust-exit");
+    let server = MockServer::start();
+    // 0.05 tokens × $1.00 = $0.05 → below the $1.50 minimum.
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([token_entry(AAL_MINT, 0.05, "50000000")]));
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon", "assetName": "American Airlines",
+                "isTradingPaused": false, "isOffhoursTradable": false,
+                "primaryMarket": { "price": "1.00", "priceChangePct24h": "0.00" },
+                "tags": []
+            }]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all", "-y"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "dust-only skip is a success, got {:?}", out.status.code());
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "success");
+    assert!(v.get("incomplete_reason").is_none(), "nothing to retry, nothing to explain");
+    assert_eq!(v["skipped"][0]["retryable"], false);
+}
+
+/// breaks if: --dry-run starts failing the invocation. A preview must never
+/// change an exit code, even when it previews an incomplete close.
+#[test]
+fn close_all_dry_run_never_exits_nonzero_even_with_retryable_skips() {
+    let home = test_home("close-all-dryrun-exit");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]));
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(paused_assets());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "a preview must not fail: {:?}", out.status.code());
+    assert_eq!(stdout_json(&out)["status"], "dry_run");
+}
+
+/// Controller ruling (pinned deliberately, not a brief assumption): on an
+/// all-skipped wallet `--json` WITHOUT `-y` now returns the full partial/75
+/// envelope instead of `confirmation_required`/exit 1, because the emptiness
+/// check sits ABOVE the consent gate — there is nothing to confirm when
+/// there is nothing left to sell, and `partial`/75 tells an agent more than
+/// a bare refusal would. Precedent: an EMPTY wallet already returns
+/// `success` before the gate (see `close_all_dry_run_reports_no_positions`'s
+/// sibling behavior on the real path).
+/// breaks if: this reverts to `confirmation_required`/exit 1 — that would be
+/// a silent contract change back to gating a no-op confirmation.
+#[test]
+fn close_all_all_skipped_without_yes_still_returns_partial_not_confirmation_required() {
+    let home = test_home("close-all-noyes-partial");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(&server, 0, serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]));
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(paused_assets());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    // No -y: on any OTHER (non-empty) close-all this alone would hit the
+    // confirmation_required gate. Here the wallet is all-skipped, so the
+    // emptiness check fires first and never reaches that gate at all.
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(75), "must be the retryable-skip exit, not confirmation_required's 1");
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "partial");
+    assert_ne!(v["status"], "confirmation_required", "{v}");
+}
+
+/// TSLAon's mint, used only by the two-position fixture below to give
+/// `close-all` a SECOND, quotable position alongside AALon — every other
+/// close-all contract test holds exactly one position that filtering drops
+/// entirely, so `candidates` is always empty and the run never leaves the
+/// all-skipped early return. Without a non-empty `candidates` list, the
+/// dry-run summation (D3), the main-path exit-75 branches, and the
+/// confirmation-preview render are all unreachable from this suite.
+const TSLA_MINT: &str = "KeGv7bsfR4MheC1CkmnAVceoApjrkvBhHYjWb67ondo";
+
+/// `gm close-all --dry-run --json` with ONE paused position (AALon, skipped,
+/// retryable) and ONE quotable position (TSLAon) walks the MAIN path (not the
+/// all-skipped early return): `candidates` is non-empty, so this is the only
+/// place in the suite that reaches `run_close_dry_run`'s summation and the
+/// outer `close_status` call at the bottom of the main branch. `order
+/// .assert_hits(1)` is what pins that — `/order` is quoted only while
+/// iterating `candidates`, so a fixture that silently stopped producing one
+/// fails there rather than passing vacuously.
+///
+/// breaks if: `sum_quoted_usdc` is reverted to a hardcoded `0.0` (D3 — the
+/// `total_usdc` assertions go to "0.00"); or the retryable skip stops
+/// reaching the envelope (`incomplete_reason` / `skipped[].retryable`).
+///
+/// does NOT cover, deliberately:
+///   - D2's main-path `if outcome.exit_code != 0 { exit }` blocks. `--dry-run`
+///     pins `exit_code` to 0 by design, so deleting them leaves this test
+///     green. Reaching them needs a landed swap, which the dummy transaction
+///     fixture cannot survive past the sign-time guard — see CLAUDE.md's
+///     live-only-paths note.
+///   - D1's `render_close_preview`, which is gated on `!json` and therefore
+///     never called here. Its invariants are unit-tested in `close_all.rs`.
+#[test]
+fn close_all_dry_run_main_path_sums_quotes_and_reports_the_retryable_skip() {
+    let home = test_home("close-all-main-path");
+    let server = MockServer::start();
+    mock_rpc_for_transfers(
+        &server,
+        0,
+        serde_json::json!([
+            token_entry(AAL_MINT, 2.0, "2000000000"),
+            token_entry(TSLA_MINT, 1.0, "1000000000"),
+        ]),
+    );
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+            "assets": [
+                {
+                    "symbol": "AALon", "assetName": "American Airlines",
+                    "isTradingPaused": true, "isOffhoursTradable": false,
+                    "primaryMarket": { "price": "5.00", "priceChangePct24h": "0.00" },
+                    "tags": []
+                },
+                {
+                    "symbol": "TSLAon", "assetName": "Tesla",
+                    "isTradingPaused": false, "isOffhoursTradable": false,
+                    "primaryMarket": { "price": "10.00", "priceChangePct24h": "0.00" },
+                    "tags": []
+                }
+            ]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+    let order = server.mock(|when, then| {
+        when.method(GET).path("/order").query_param("inputMint", TSLA_MINT);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({
+                "requestId": "req-close-all-main-1",
+                "inAmount": "1000000000",
+                "outAmount": "9964100",
+                "inUsdValue": 10.0,
+                "outUsdValue": 9.9641,
+                "feeBps": 10,
+                "gasless": false,
+                "router": "jupiterz",
+                "transaction": "AQABBASE64DUMMYTX=="
+            }));
+    });
+
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "close-all", "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "dry-run must never exit non-zero: {:?}", out.status.code());
+    order.assert_hits(1);
+
+    let v = stdout_json(&out);
+    assert_eq!(v["status"], "dry_run");
+    // D3: the preview must sum the quoted amount, not print a hardcoded 0.
+    assert_ne!(v["total_usdc"], "0.00", "dry-run total reverted to the D3 hardcode: {v}");
+    let total: f64 = v["total_usdc"].as_str().unwrap().parse().unwrap();
+    assert!((total - 9.96).abs() < 0.02, "total should be ~9.96 USDC (the TSLAon quote): {v}");
+    assert_eq!(v["sold"][0]["token"], "TSLAon");
+    assert_eq!(v["sold"][0]["usdc"], "9.9641");
+    // D2 (main-path exit): a retryable skip present alongside a sold item
+    // still means the portfolio isn't fully closed.
+    let reason = v["incomplete_reason"].as_str().expect("retryable skip must set incomplete_reason");
+    assert!(reason.contains("retry"), "{v}");
+    assert_eq!(v["skipped"][0]["token"], "AALon");
+    assert_eq!(v["skipped"][0]["reason"], "trading_paused");
+    assert_eq!(v["skipped"][0]["retryable"], true);
+}
+
 /// `gm sell <SYM> all --dry-run --json` walks the full prepare path — RPC
 /// balance, session-limits tradability (all-sessions fixture, wall-clock
 /// independent), Jupiter quote — and emits the dry_run TradeJson shape

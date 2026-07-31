@@ -116,6 +116,10 @@ pub struct ClosePosition {
     pub mint: String,
     pub sell_raw: String,
     pub sell_display: String,
+    /// Estimated USD value of the amount being sold (already scaled by
+    /// sell_pct). Computed during filtering anyway — surfaced so the
+    /// confirmation block can show sums without re-pricing.
+    pub est_value: f64,
 }
 
 /// Filter phase for close-all: raw balances → (sellable positions, skipped).
@@ -160,6 +164,7 @@ pub fn filter_close_positions(
                     token: tb.symbol.clone(),
                     estimated_usd: 0.0,
                     reason: "market data unavailable",
+                    retryable: true,
                 });
                 continue;
             }
@@ -170,6 +175,7 @@ pub fn filter_close_positions(
                 token: tb.symbol.clone(),
                 estimated_usd: est_value,
                 reason: "trading_paused",
+                retryable: true,
             });
             continue;
         }
@@ -185,6 +191,7 @@ pub fn filter_close_positions(
             mint: tb.mint.to_string(),
             sell_raw,
             sell_display,
+            est_value,
         });
     }
 
@@ -265,6 +272,77 @@ mod tests {
         assert_eq!(skipped.len(), 2);
         assert!(skipped.iter().any(|s| s.token == "DUSTon" && s.reason.contains("minimum")));
         assert!(skipped.iter().any(|s| s.token == "GHOSTon" && s.reason.contains("market data")));
+    }
+
+    fn asset_paused(symbol: &str, price: &str, pct_24h: &str) -> api::OndoAsset {
+        serde_json::from_value(serde_json::json!({
+            "symbol": symbol,
+            "assetName": symbol,
+            "isTradingPaused": true,
+            "primaryMarket": {
+                "price": price,
+                "priceChangePct24h": pct_24h,
+            }
+        }))
+        .expect("valid asset json")
+    }
+
+    /// breaks if: a temporary skip (paused / wrong session / missing market
+    /// data) is marked permanent, or dust is marked retryable. The whole
+    /// status rule downstream keys off this flag: a wrong value here silently
+    /// turns "retry later" into "done".
+    #[test]
+    fn skip_reasons_carry_the_right_retryable_flag() {
+        // TSLAon: paused → temporary. DUSTon: $0.10 → permanent.
+        let assets = vec![
+            asset_paused("TSLAon", "100", "0"),
+            asset("DUSTon", "0.1", "0"),
+        ];
+        let balances = vec![
+            balance("TSLAon", 2.0, "2000000000"),
+            balance("DUSTon", 1.0, "1000000000"),
+            balance("GHOSTon", 1.0, "1000000000"), // no market data → temporary
+        ];
+        let tradable = std::collections::HashSet::new();
+        let (_, skipped) = filter_close_positions(&balances, 100.0, &assets, &tradable).unwrap();
+
+        let by = |t: &str| skipped.iter().find(|s| s.token == t).expect("skipped");
+        assert!(by("TSLAon").retryable, "trading_paused must be retryable");
+        assert!(by("GHOSTon").retryable, "missing market data must be retryable");
+        assert!(!by("DUSTon").retryable, "dust below the minimum is permanent");
+    }
+
+    /// breaks if: a not-tradable-this-session skip is marked permanent — the
+    /// session changes, so the position IS sellable later.
+    #[test]
+    fn wrong_session_skip_is_retryable() {
+        let assets = vec![asset("TSLAon", "100", "0")];
+        let balances = vec![balance("TSLAon", 2.0, "2000000000")];
+        // Non-empty tradable set that does NOT contain TSLAON → wrong session.
+        let mut tradable = std::collections::HashSet::new();
+        tradable.insert("NVDAON".to_string());
+
+        let (positions, skipped) =
+            filter_close_positions(&balances, 100.0, &assets, &tradable).unwrap();
+        assert!(positions.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].retryable, "a session change makes this sellable again");
+    }
+
+    /// breaks if: est_value stops reaching the caller — the confirmation block
+    /// needs per-position USD, and today filter_close_positions computes it
+    /// and throws it away.
+    #[test]
+    fn sellable_positions_carry_their_estimated_value() {
+        let assets = vec![asset("TSLAon", "100", "0")];
+        let balances = vec![balance("TSLAon", 2.0, "2000000000")];
+        let tradable = std::collections::HashSet::new();
+        let (positions, _) =
+            filter_close_positions(&balances, 50.0, &assets, &tradable).unwrap();
+
+        assert_eq!(positions.len(), 1);
+        // 2.0 tokens × 50% × $100 = $100 — half the position, not the whole one.
+        assert!((positions[0].est_value - 100.0).abs() < 1e-6, "got {}", positions[0].est_value);
     }
 
     fn spy_asset() -> api::OndoAsset {

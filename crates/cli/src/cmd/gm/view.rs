@@ -915,8 +915,10 @@ mod tests {
     ///      factor set by SUBTRACTING those four strings from `tags`, so an
     ///      asset whose factor label matches its own sector/class/region/type
     ///      label would lose that factor label from the split, silently.
+    ///
     /// Both (2) and (3) hold today (verified: 0 and 0) but nothing enforces
     /// them going forward except this alarm.
+    ///
     /// Run: cargo test -p rwa-cli -- --ignored view_dictionaries_do_not_collide
     #[test]
     #[ignore = "hits the live (or cached) Ondo catalog"]
