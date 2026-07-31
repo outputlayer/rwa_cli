@@ -556,11 +556,17 @@ mod tests {
     }
 
     /// breaks if: a position lands in more than one group for a single-valued
-    /// category, or Unclassified is dropped — either way the sum stops matching.
+    /// category, or Unclassified is dropped — either way the sum stops
+    /// matching. Also breaks if the `Category::Sector` arm of `labels_of`
+    /// reads the wrong field: `sector` is set explicitly (not via `tags`,
+    /// which `pos()` never copies into the single-valued fields), so a
+    /// mislabeled arm (e.g. reading `kind` instead) yields no "Healthcare"
+    /// group at all and both positions fall into one Unclassified bucket —
+    /// caught by the explicit group count/name/value checks below.
     #[test]
     fn non_overlapping_split_sums_exactly_to_the_total() {
         let positions = vec![
-            pos("PFEon", 976.11, -0.96, &["Healthcare"]),
+            PositionJson { sector: Some("Healthcare".to_string()), ..pos("PFEon", 976.11, -0.96, &[]) },
             pos("SPYon", 500.00, 0.50, &[]),
         ];
         let total: f64 = positions.iter().map(|p| p.value_usd).sum();
@@ -573,6 +579,42 @@ mod tests {
         assert!((sum - total).abs() < 1e-6, "groups {sum} must sum to total {total}");
         assert_eq!(groups.last().unwrap().group.as_deref(), Some(UNCLASSIFIED),
                    "untagged positions go last");
+        assert_eq!(groups.len(), 2, "expected a Healthcare group plus Unclassified, not a single catch-all");
+        assert_eq!(groups[0].group.as_deref(), Some("Healthcare"), "Sector split must read p.sector");
+        assert!((groups[0].value_usd - 976.11).abs() < 1e-6);
+    }
+
+    /// breaks if: any two of the Sector/Class/Region/Type arms in `labels_of`
+    /// are swapped (they are structurally identical field reads — an easy
+    /// copy-paste error). Each position carries a DIFFERENT label per field,
+    /// so reading the wrong field changes which group it lands in and the
+    /// group names below stop matching.
+    #[test]
+    fn split_by_class_region_and_type_each_reads_its_own_field() {
+        let one = PositionJson {
+            asset_class: Some("Equities".to_string()),
+            region: Some("US".to_string()),
+            kind: Some("Stock".to_string()),
+            ..pos("One", 100.0, 0.0, &[])
+        };
+        let two = PositionJson {
+            asset_class: Some("Fixed Income".to_string()),
+            region: Some("Asia".to_string()),
+            kind: Some("ETF".to_string()),
+            ..pos("Two", 200.0, 0.0, &[])
+        };
+
+        let (_, class_groups, _) = apply_view(vec![one.clone(), two.clone()], &split_spec(Category::Class));
+        let class_names: Vec<&str> = class_groups.iter().map(|g| g.group.as_deref().unwrap()).collect();
+        assert_eq!(class_names, vec!["Fixed Income", "Equities"], "Class split must read p.asset_class");
+
+        let (_, region_groups, _) = apply_view(vec![one.clone(), two.clone()], &split_spec(Category::Region));
+        let region_names: Vec<&str> = region_groups.iter().map(|g| g.group.as_deref().unwrap()).collect();
+        assert_eq!(region_names, vec!["Asia", "US"], "Region split must read p.region");
+
+        let (_, type_groups, _) = apply_view(vec![one, two], &split_spec(Category::Type));
+        let type_names: Vec<&str> = type_groups.iter().map(|g| g.group.as_deref().unwrap()).collect();
+        assert_eq!(type_names, vec!["ETF", "Stock"], "Type split must read p.kind");
     }
 
     /// breaks if: overlap is not detected — an agent summing groups would then
@@ -643,14 +685,22 @@ mod tests {
 
     /// breaks if: group_alloc_pct is computed against the portfolio instead of
     /// the group, or the group's 24h is a plain average instead of value-weighted.
+    ///
+    /// The third, differently-tagged position is load-bearing: it makes
+    /// gm_total (1500) diverge from the Growth group's own value_usd (1000),
+    /// so a group_alloc_pct computed against gm_total (60%/6.67%) is
+    /// numerically distinguishable from one computed against the group
+    /// (90%/10%) — without it, a single all-covering group makes the two
+    /// divisors coincide and the mutation below is invisible.
     #[test]
     fn group_percentages_are_relative_to_the_group_and_24h_is_value_weighted() {
         let positions = vec![
             pos("Big", 900.0, 10.0, &["Growth"]),
             pos("Small", 100.0, -10.0, &["Growth"]),
+            pos("Third", 500.0, 0.0, &["Value"]),
         ];
         let (_, groups, _) = apply_view(positions, &split_spec(Category::Factor));
-        let g = &groups[0];
+        let g = groups.iter().find(|g| g.group.as_deref() == Some("Growth")).unwrap();
 
         let shares: Vec<f64> = g.positions.iter().map(|p| p.group_alloc_pct.unwrap()).collect();
         assert!((shares[0] - 90.0).abs() < 1e-6, "group share, not portfolio share: {shares:?}");
