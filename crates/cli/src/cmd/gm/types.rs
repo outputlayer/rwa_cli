@@ -180,6 +180,48 @@ pub struct PortfolioGmPositionsJson {
     pub change_24h_usd: f64,
     #[serde(serialize_with = "ser_f64_2")]
     pub change_24h_pct: f64,
+    /// Present only when `--view` was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<GroupJson>>,
+}
+
+#[derive(Serialize)]
+pub struct ViewFiltersJson {
+    pub tags: Vec<String>,
+    pub tokens: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ViewJson {
+    /// Terms exactly as typed — the echo that keeps a polymorphic flag honest.
+    pub terms: Vec<String>,
+    pub filters: ViewFiltersJson,
+    /// Our category word (`sector`/`region`/`class`/`type`/`factor`), not the
+    /// Ondo slug. Null when the view only filters.
+    pub split_by: Option<String>,
+    /// True when a position can appear in more than one group — groups then do
+    /// NOT sum to `value_usd`. Read this before summing.
+    pub overlapping: bool,
+    pub matched_positions: usize,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub matched_value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub matched_pct_of_gm: f64,
+}
+
+#[derive(Serialize)]
+pub struct GroupJson {
+    /// Null when the view has no split (a single anonymous group).
+    pub group: Option<String>,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub value_usd: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub gm_alloc_pct: f64,
+    #[serde(serialize_with = "ser_f64_2")]
+    pub change_24h_pct: f64,
+    pub positions: Vec<PositionJson>,
 }
 
 #[derive(Serialize)]

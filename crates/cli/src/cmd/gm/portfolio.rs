@@ -86,6 +86,9 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
                 value_usd: gm_positions_value,
                 change_24h_usd: gm_positions_change,
                 change_24h_pct: gm_positions_change_pct,
+                // Not wired yet — task 6 threads --view through this command.
+                view: None,
+                groups: None,
             },
             unavailable,
             source,

@@ -29,11 +29,12 @@ fn parse_max_bps_env(raw: Option<String>) -> Option<u32> {
 pub(super) use types::{
     ExecOpts, TradeTuning,
     AllocationJson, BuyBasketItemJson, BuyBasketResultJson, CloseAllResultJson, CloseFailJson, CloseItemJson,
-    CloseSkipJson, GasRefuelJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson, PortfolioCashJson,
+    CloseSkipJson, GasRefuelJson, GroupJson, HistoryCandleJson, HistoryJson, HoursJson, ListItemJson,
+    PortfolioCashJson,
     PnlAllJson, PnlJson, PnlTokenJson, PnlTotalsJson, PnlWalletSummaryJson,
     PortfolioGmPositionsJson, PortfolioJson, PortfolioUnavailableJson, PositionJson, ReclaimJson,
     SellBasketItemJson, SellBasketResultJson, SendJson, TradeJson, TradableItemJson,
-    TradableResultJson,
+    TradableResultJson, ViewFiltersJson, ViewJson,
 };
 
 // ── Subcommand enum ────────────────────────────────────────
@@ -408,6 +409,8 @@ mod tests {
                 value_usd: 96.44,
                 change_24h_usd: 1.17,
                 change_24h_pct: 1.23,
+                view: None,
+                groups: None,
             },
             unavailable: vec![],
             source: None,
@@ -427,6 +430,10 @@ mod tests {
         assert!(json.get("gm_positions_value_usd").is_none());
         // unavailable omitted when empty
         assert!(json.get("unavailable").is_none());
+        // breaks if: `view`/`groups` serialize even without --view, which would
+        // change the JSON shape of every existing `portfolio` caller.
+        assert!(json.pointer("/gm_positions/view").is_none(), "view must be omitted when absent");
+        assert!(json.pointer("/gm_positions/groups").is_none(), "groups must be omitted when absent");
     }
 
     /// breaks if: tag fields are serialized when absent (noise for existing
@@ -489,6 +496,8 @@ mod tests {
                 value_usd: 0.0,
                 change_24h_usd: 0.0,
                 change_24h_pct: 0.0,
+                view: None,
+                groups: None,
             },
             unavailable: vec![],
             source: None,
@@ -507,6 +516,8 @@ mod tests {
                 value_usd: 0.0,
                 change_24h_usd: 0.0,
                 change_24h_pct: 0.0,
+                view: None,
+                groups: None,
             },
             unavailable: vec![PortfolioUnavailableJson {
                 symbol: "TSLAon".into(),
@@ -619,7 +630,7 @@ mod tests {
         let with = serde_json::to_value(PortfolioJson {
             wallet: "w".into(),
             cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
-            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0 },
+            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0, view: None, groups: None },
             unavailable: vec![],
             source: Some("jupiter"),
         }).unwrap();
@@ -628,7 +639,7 @@ mod tests {
         let without = serde_json::to_value(PortfolioJson {
             wallet: "w".into(),
             cash: PortfolioCashJson { sol: 0.0, usdc: 0.0 },
-            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0 },
+            gm_positions: PortfolioGmPositionsJson { positions: vec![], value_usd: 0.0, change_24h_usd: 0.0, change_24h_pct: 0.0, view: None, groups: None },
             unavailable: vec![],
             source: None,
         }).unwrap();
