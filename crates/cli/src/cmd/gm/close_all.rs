@@ -367,7 +367,11 @@ mod tests {
         let out = close_status(7, 0, &skipped);
         assert_eq!(out.status, "partial");
         assert_eq!(out.exit_code, 75, "shell chains read the exit code, not JSON");
-        assert!(out.incomplete_reason.is_some());
+        let reason = out.incomplete_reason.expect("must explain the skip");
+        // breaks if: pluralisation is hardcoded to "positions" — a single
+        // retryable skip must read "1 position", not "1 positions".
+        assert!(reason.contains("1 position "), "singular wording: {reason}");
+        assert!(!reason.contains("positions"), "must not pluralize a single skip: {reason}");
     }
 
     /// breaks if: dust starts blocking the exit. A $0.47 position is unsellable
@@ -400,6 +404,18 @@ mod tests {
         assert_eq!(out.status, "error");
     }
 
+    /// breaks if: the `base == "error"` guard is removed. A retryable skip on
+    /// top of a totally-failed run must NOT turn "error" into "partial" — the
+    /// error path's own exit classification (`exit_if_all_failed`) already
+    /// owns transient-vs-permanent here, so this function must stay out of it.
+    #[test]
+    fn a_retryable_skip_cannot_turn_all_failed_error_into_partial() {
+        let skipped = vec![skip("MRNAon", "trading_paused", true)];
+        let out = close_status(0, 3, &skipped);
+        assert_eq!(out.status, "error", "error stays error even with a retryable skip present");
+        assert_eq!(out.exit_code, 0, "exit_if_all_failed owns this exit code, not close_status");
+    }
+
     /// breaks if: an empty wallet is reported as anything but done.
     #[test]
     fn nothing_to_do_is_success() {
@@ -420,6 +436,10 @@ mod tests {
         let reason = close_status(1, 0, &skipped).incomplete_reason.unwrap();
         assert!(reason.contains('2'), "two retryable, not three: {reason}");
         assert!(reason.to_lowercase().contains("retry"), "must say what to do: {reason}");
+        // breaks if: pluralisation is hardcoded to "positions" for ANY count —
+        // this test alone wouldn't catch that (2 is plural either way), but
+        // paired with the singular check above it pins both directions.
+        assert!(reason.contains("positions"), "two retryable must pluralize: {reason}");
     }
 
     /// breaks if: a retryable skip alongside failures loses the 75 — the
