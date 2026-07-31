@@ -97,6 +97,13 @@ async fn process_close_item(
     }
 }
 
+/// Sum of the quoted USDC across previewed items. Unparseable amounts are
+/// skipped rather than poisoning the total with NaN — a preview must never
+/// print `NaN USDC`.
+fn sum_quoted_usdc(items: &[CloseItemJson]) -> f64 {
+    items.iter().filter_map(|i| i.usdc.parse::<f64>().ok()).sum()
+}
+
 /// Dry-run: fetch-only, no execute. Sequential (Jupiter rate-limit conservatism).
 async fn run_close_dry_run(
     taker: &str,
@@ -104,7 +111,7 @@ async fn run_close_dry_run(
     json: bool,
     slippage: Option<u32>,
     max_bps: Option<u32>,
-) -> (Vec<CloseItemJson>, Vec<CloseFailJson>) {
+) -> (Vec<CloseItemJson>, Vec<CloseFailJson>, f64) {
     let mut sold = Vec::new();
     let mut failed = Vec::new();
 
@@ -135,7 +142,8 @@ async fn run_close_dry_run(
         }
     }
 
-    (sold, failed)
+    let total = sum_quoted_usdc(&sold);
+    (sold, failed, total)
 }
 
 pub async fn close_all(
@@ -227,8 +235,7 @@ pub async fn close_all(
     }
 
     let (sold, failed, total_usdc) = if dry_run {
-        let (sold, failed) = run_close_dry_run(&taker, candidates, json, slippage, max_bps).await;
-        (sold, failed, 0.0)
+        run_close_dry_run(&taker, candidates, json, slippage, max_bps).await
     } else {
         let wallet_arc = Arc::new(w);
         run_swap_items(
@@ -622,5 +629,41 @@ mod tests {
         let s = skipped_summary(&skipped);
         assert!(s.contains("trading_paused: MRNAon, XYZon"), "grouped by reason: {s}");
         assert!(s.contains("below $1.50 minimum: CAPRon"), "dust named separately: {s}");
+    }
+
+    /// breaks if: the dry-run total goes back to a constant. Today
+    /// close_all.rs:230 hardcodes 0.0, so a preview of a full close reports
+    /// "→ 0.00 USDC" while printing the real per-position quotes above it.
+    #[test]
+    fn dry_run_total_is_the_sum_of_quoted_items() {
+        let items = vec![
+            CloseItemJson {
+                token: "AALon".to_string(),
+                amount: "0.64".to_string(),
+                usdc: "9.943261".to_string(),
+                tx: String::new(),
+            },
+            CloseItemJson {
+                token: "TSLAon".to_string(),
+                amount: "0.03".to_string(),
+                usdc: "9.9641".to_string(),
+                tx: String::new(),
+            },
+        ];
+        let total = sum_quoted_usdc(&items);
+        assert!((total - 19.907361).abs() < 1e-6, "got {total}");
+    }
+
+    /// breaks if: an unparseable quote string panics or silently poisons the
+    /// total with NaN instead of being skipped.
+    #[test]
+    fn sum_quoted_usdc_ignores_unparseable_amounts() {
+        let items = vec![CloseItemJson {
+            token: "X".to_string(),
+            amount: "1".to_string(),
+            usdc: "not-a-number".to_string(),
+            tx: String::new(),
+        }];
+        assert_eq!(sum_quoted_usdc(&items), 0.0);
     }
 }
