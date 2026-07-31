@@ -28,6 +28,7 @@ fn filter_close_items(
                 token: skip.token,
                 estimated_usd: skip.estimated_usd,
                 reason: skip.reason,
+                retryable: skip.retryable,
             }
         })
         .collect();

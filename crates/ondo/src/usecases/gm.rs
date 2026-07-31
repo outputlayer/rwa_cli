@@ -246,6 +246,10 @@ pub struct CloseSkip {
     pub token: String,
     pub estimated_usd: f64,
     pub reason: &'static str,
+    /// True when the position IS sellable later and a repeat run would move
+    /// it: a dividend pause ends, a session changes, an API comes back. False
+    /// only for dust below the minimum, which no retry can fix.
+    pub retryable: bool,
 }
 
 /// Pre-fetched sell order ready for parallel execution (phase 1 result).
@@ -527,6 +531,7 @@ pub fn should_skip_position(
             token: symbol.to_string(),
             estimated_usd: est_value,
             reason: "below $1.50 minimum",
+            retryable: false,
         });
     }
     if !tradable_set.is_empty() && !tradable_set.contains(&symbol.to_uppercase()) {
@@ -534,6 +539,7 @@ pub fn should_skip_position(
             token: symbol.to_string(),
             estimated_usd: est_value,
             reason: "not tradable in current session",
+            retryable: true,
         });
     }
     None

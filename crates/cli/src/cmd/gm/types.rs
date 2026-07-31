@@ -426,6 +426,9 @@ pub struct CloseSkipJson {
     #[serde(serialize_with = "ser_f64_2")]
     pub estimated_usd: f64,
     pub reason: &'static str,
+    /// True when a repeat run would sell this position (pause/session/API),
+    /// false for dust. Drives `status` and the exit code.
+    pub retryable: bool,
 }
 
 #[derive(Serialize)]

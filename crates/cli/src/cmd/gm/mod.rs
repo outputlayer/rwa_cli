@@ -625,6 +625,7 @@ mod tests {
             token: "TSLAon".to_string(),
             estimated_usd: 0.0,
             reason: "market data unavailable",
+            retryable: true,
         };
         let json = serde_json::to_value(&skip).unwrap();
         assert_eq!(json.pointer("/token"), Some(&serde_json::Value::from("TSLAon")));
@@ -747,6 +748,7 @@ mod tests {
                 token: "QQQon".into(),
                 estimated_usd: 1.234,
                 reason: "below $1.50 minimum",
+                retryable: false,
             }],
             total_usdc: "0.00".into(),
         })
