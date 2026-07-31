@@ -185,6 +185,322 @@ fn portfolio_json_emits_nested_cash_and_positions_shape() {
     assets.assert();
 }
 
+/// Assets fixture with real tag shapes: AALon carries a sector plus two factor
+/// labels (Value, Large Cap) — `portfolio_view_split_emits_view_and_groups`
+/// below splits by `sector` (single-valued, exercises the non-overlapping
+/// path) and `portfolio_view_factor_split_reports_overlapping_and_exceeds_total`
+/// splits the SAME asset by `factor` (multi-valued, exercises the overlapping
+/// path) so both are actually driven through the real binary, not just
+/// claimed in this comment. Also carries an LLYon/Healthcare asset the wallet
+/// never holds, so a valid term ("Healthcare") can match zero positions
+/// instead of being unrecognized.
+fn tagged_assets() -> serde_json::Value {
+    serde_json::json!({
+        "assets": [
+            {
+                "symbol": "AALon",
+                "assetName": "American Airlines",
+                "isTradingPaused": false,
+                "isOffhoursTradable": false,
+                "primaryMarket": { "price": "10.00", "priceChangePct24h": "1.00" },
+                "tags": [
+                    { "categorySlug": "sector-industry", "tagLabel": "Industrials" },
+                    { "categorySlug": "asset-class", "tagLabel": "Equities" },
+                    { "categorySlug": "instrument-type", "tagLabel": "Stock" },
+                    { "categorySlug": "type-factor-risk-profile", "tagLabel": "Value" },
+                    { "categorySlug": "type-factor-risk-profile", "tagLabel": "Large Cap" }
+                ]
+            },
+            {
+                "symbol": "LLYon",
+                "assetName": "Eli Lilly",
+                "isTradingPaused": false,
+                "isOffhoursTradable": false,
+                "primaryMarket": { "price": "500.00", "priceChangePct24h": "0.50" },
+                "tags": [
+                    { "categorySlug": "sector-industry", "tagLabel": "Healthcare" },
+                    { "categorySlug": "asset-class", "tagLabel": "Equities" },
+                    { "categorySlug": "instrument-type", "tagLabel": "Stock" }
+                ]
+            }
+        ]
+    })
+}
+
+/// `--view <category>` must emit the branch-free contract: `view` describing
+/// the parse and `groups` carrying the positions.
+/// breaks if: split grouping stops keying off the resolved category, drops
+/// `group_alloc_pct` on grouped positions, or `overlapping` flips for a
+/// single-valued category like sector.
+#[test]
+fn portfolio_view_split_emits_view_and_groups() {
+    let home = test_home("portfolio-view-split");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "sector"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let view = &v["gm_positions"]["view"];
+    assert_eq!(view["split_by"], "sector");
+    assert_eq!(view["overlapping"], false, "sectors are single-valued");
+    assert_eq!(view["matched_positions"], 1);
+
+    let groups = v["gm_positions"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["group"], "Industrials");
+    assert_eq!(groups[0]["positions"][0]["token"], "AALon");
+    assert!(groups[0]["positions"][0]["group_alloc_pct"].is_number(),
+            "positions inside groups carry their group share");
+}
+
+/// `--view factor` on AALon (Value + Large Cap) must set `overlapping: true`
+/// end to end through the real binary — the only prior coverage of
+/// `overlapping` was `false` (a sector split), so a wiring regression that
+/// hardcodes `overlapping: false` at the `portfolio.rs` call site (instead of
+/// forwarding `apply_view`'s third return value) passed every test on this
+/// branch. `false` is the dangerous direction: it is what makes a consumer
+/// silently sum overlapping groups as if they partitioned the portfolio.
+/// breaks if: `overlapping` is hardcoded `false` (or dropped) at the wiring
+/// site, or a single position stops fanning out into one group per label it
+/// carries (both would collapse `groups.len()` to 1 and the summed value back
+/// down to the position's own value, matching `gm_positions.value_usd`
+/// instead of exceeding it).
+#[test]
+fn portfolio_view_factor_split_reports_overlapping_and_exceeds_total() {
+    let home = test_home("portfolio-view-factor-overlap");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "factor"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let view = &v["gm_positions"]["view"];
+    assert_eq!(view["split_by"], "factor");
+    assert_eq!(view["overlapping"], true, "AALon carries two factor labels — must self-report overlap");
+
+    let groups = v["gm_positions"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2, "one group per factor label (Value, Large Cap)");
+    let group_names: Vec<&str> = groups.iter().map(|g| g["group"].as_str().unwrap()).collect();
+    assert!(group_names.contains(&"Value") && group_names.contains(&"Large Cap"),
+            "expected Value and Large Cap groups, got {group_names:?}");
+
+    let summed_groups: f64 = groups.iter().map(|g| g["value_usd"].as_f64().unwrap()).sum();
+    let portfolio_total = v["gm_positions"]["value_usd"].as_f64().unwrap();
+    assert!(summed_groups > portfolio_total,
+            "overlapping groups must sum ABOVE the portfolio total: {summed_groups} vs {portfolio_total}");
+}
+
+/// `positions[].tags` must be deduped: 9 live assets (fixed-income ETFs) carry
+/// the SAME asset-class tag twice with an identical label — the Ondo API
+/// response itself has the duplicate, `tag_labels()` is an unfiltered pass
+/// through `tags`, so without dedup at the construction site a scraper
+/// counting occurrences (or `--view class` on such an asset, if it ever read
+/// tags directly instead of the single-valued `asset_class` field) would see
+/// the position twice.
+/// breaks if: the dedup is dropped or reordered (order must still be
+/// catalog order, first occurrence wins).
+#[test]
+fn portfolio_positions_tags_are_deduped_preserving_order() {
+    let home = test_home("portfolio-tags-dedup");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon",
+                "assetName": "American Airlines",
+                "isTradingPaused": false,
+                "isOffhoursTradable": false,
+                "primaryMarket": { "price": "10.00", "priceChangePct24h": "1.00" },
+                "tags": [
+                    { "categorySlug": "asset-class", "tagLabel": "Fixed Income" },
+                    { "categorySlug": "asset-class", "tagLabel": "Fixed Income" },
+                    { "categorySlug": "type-factor-risk-profile", "tagLabel": "Value" }
+                ]
+            }]
+        }));
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let tags: Vec<&str> = v["gm_positions"]["positions"][0]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(tags, vec!["Fixed Income", "Value"],
+               "duplicate 'Fixed Income' must collapse to one, order preserved: {tags:?}");
+}
+
+/// A filter-only view still emits exactly one group with `group: null`, so an
+/// agent parses one shape regardless of the spec.
+/// breaks if: a filter-only term (no category keyword) accidentally triggers a
+/// split, or the single anonymous-group invariant is dropped for filters.
+#[test]
+fn portfolio_view_filter_emits_one_anonymous_group() {
+    let home = test_home("portfolio-view-filter");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "Value"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+    let v = stdout_json(&out);
+    assert!(v["gm_positions"]["view"]["split_by"].is_null());
+    let groups = v["gm_positions"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert!(groups[0]["group"].is_null(), "no split means an anonymous group");
+}
+
+/// Without the flag the shape is exactly what shipped before: no `view`, no
+/// `groups`. This is the regression guard for existing agents.
+/// breaks if: `view`/`groups` are emitted as `Some` unconditionally (e.g. a
+/// mutation that always wraps them in `Some(..)` or defaults to `Some(vec![])`
+/// instead of only populating them when `--view` was passed) — this is the
+/// exact gap task 6's review named as untested through the real binary.
+#[test]
+fn portfolio_without_view_omits_view_and_groups() {
+    let home = test_home("portfolio-view-absent");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json")
+            .json_body(batch_response(1_000_000_000, 0, serde_json::json!([])));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    let v = stdout_json(&out);
+    assert!(v["gm_positions"].get("view").is_none(), "view must be absent without the flag");
+    assert!(v["gm_positions"].get("groups").is_none(), "groups must be absent without the flag");
+}
+
+/// An unrecognized term fails with the typed kind and exit 1 (not transient),
+/// while a valid term matching nothing succeeds with an empty result.
+/// breaks if: an unknown term is silently accepted as a filter (no
+/// `invalid_view`), a known term is misclassified as invalid, or a legitimate
+/// zero-match filter is treated as an error instead of exit 0 / empty groups.
+#[test]
+fn portfolio_view_rejects_unknown_terms_but_allows_empty_matches() {
+    let home = test_home("portfolio-view-errors");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let bad = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "biopharma"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(1), "invalid_view is permanent, not transient");
+    let e = stdout_json(&bad);
+    assert_eq!(e["error_kind"], "invalid_view");
+
+    let empty = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "Healthcare"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert!(empty.status.success(), "a valid term matching nothing is not an error");
+    let v = stdout_json(&empty);
+    assert_eq!(v["gm_positions"]["view"]["matched_positions"], 0);
+    assert!(v["gm_positions"]["groups"].as_array().unwrap().is_empty());
+}
+
 /// A held token with no market data lands in `unavailable[]` instead of
 /// silently disappearing or failing the whole command.
 #[test]
