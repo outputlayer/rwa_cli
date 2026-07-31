@@ -186,9 +186,14 @@ fn portfolio_json_emits_nested_cash_and_positions_shape() {
 }
 
 /// Assets fixture with real tag shapes: AALon carries a sector plus two factor
-/// labels, so both the non-overlapping and overlapping paths are exercised.
-/// Also carries an LLYon/Healthcare asset the wallet never holds, so a valid
-/// term ("Healthcare") can match zero positions instead of being unrecognized.
+/// labels (Value, Large Cap) — `portfolio_view_split_emits_view_and_groups`
+/// below splits by `sector` (single-valued, exercises the non-overlapping
+/// path) and `portfolio_view_factor_split_reports_overlapping_and_exceeds_total`
+/// splits the SAME asset by `factor` (multi-valued, exercises the overlapping
+/// path) so both are actually driven through the real binary, not just
+/// claimed in this comment. Also carries an LLYon/Healthcare asset the wallet
+/// never holds, so a valid term ("Healthcare") can match zero positions
+/// instead of being unrecognized.
 fn tagged_assets() -> serde_json::Value {
     serde_json::json!({
         "assets": [
@@ -265,6 +270,120 @@ fn portfolio_view_split_emits_view_and_groups() {
     assert_eq!(groups[0]["positions"][0]["token"], "AALon");
     assert!(groups[0]["positions"][0]["group_alloc_pct"].is_number(),
             "positions inside groups carry their group share");
+}
+
+/// `--view factor` on AALon (Value + Large Cap) must set `overlapping: true`
+/// end to end through the real binary — the only prior coverage of
+/// `overlapping` was `false` (a sector split), so a wiring regression that
+/// hardcodes `overlapping: false` at the `portfolio.rs` call site (instead of
+/// forwarding `apply_view`'s third return value) passed every test on this
+/// branch. `false` is the dangerous direction: it is what makes a consumer
+/// silently sum overlapping groups as if they partitioned the portfolio.
+/// breaks if: `overlapping` is hardcoded `false` (or dropped) at the wiring
+/// site, or a single position stops fanning out into one group per label it
+/// carries (both would collapse `groups.len()` to 1 and the summed value back
+/// down to the position's own value, matching `gm_positions.value_usd`
+/// instead of exceeding it).
+#[test]
+fn portfolio_view_factor_split_reports_overlapping_and_exceeds_total() {
+    let home = test_home("portfolio-view-factor-overlap");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tagged_assets());
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET, "--view", "factor"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let view = &v["gm_positions"]["view"];
+    assert_eq!(view["split_by"], "factor");
+    assert_eq!(view["overlapping"], true, "AALon carries two factor labels — must self-report overlap");
+
+    let groups = v["gm_positions"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2, "one group per factor label (Value, Large Cap)");
+    let group_names: Vec<&str> = groups.iter().map(|g| g["group"].as_str().unwrap()).collect();
+    assert!(group_names.contains(&"Value") && group_names.contains(&"Large Cap"),
+            "expected Value and Large Cap groups, got {group_names:?}");
+
+    let summed_groups: f64 = groups.iter().map(|g| g["value_usd"].as_f64().unwrap()).sum();
+    let portfolio_total = v["gm_positions"]["value_usd"].as_f64().unwrap();
+    assert!(summed_groups > portfolio_total,
+            "overlapping groups must sum ABOVE the portfolio total: {summed_groups} vs {portfolio_total}");
+}
+
+/// `positions[].tags` must be deduped: 9 live assets (fixed-income ETFs) carry
+/// the SAME asset-class tag twice with an identical label — the Ondo API
+/// response itself has the duplicate, `tag_labels()` is an unfiltered pass
+/// through `tags`, so without dedup at the construction site a scraper
+/// counting occurrences (or `--view class` on such an asset, if it ever read
+/// tags directly instead of the single-valued `asset_class` field) would see
+/// the position twice.
+/// breaks if: the dedup is dropped or reordered (order must still be
+/// catalog order, first occurrence wins).
+#[test]
+fn portfolio_positions_tags_are_deduped_preserving_order() {
+    let home = test_home("portfolio-tags-dedup");
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc");
+        then.status(200).header("content-type", "application/json").json_body(batch_response(
+            1_000_000_000,
+            0,
+            serde_json::json!([token_entry(AAL_MINT, 5.0, "5000000000")]),
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+            "assets": [{
+                "symbol": "AALon",
+                "assetName": "American Airlines",
+                "isTradingPaused": false,
+                "isOffhoursTradable": false,
+                "primaryMarket": { "price": "10.00", "priceChangePct24h": "1.00" },
+                "tags": [
+                    { "categorySlug": "asset-class", "tagLabel": "Fixed Income" },
+                    { "categorySlug": "asset-class", "tagLabel": "Fixed Income" },
+                    { "categorySlug": "type-factor-risk-profile", "tagLabel": "Value" }
+                ]
+            }]
+        }));
+    });
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "portfolio", WALLET])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    let tags: Vec<&str> = v["gm_positions"]["positions"][0]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(tags, vec!["Fixed Income", "Value"],
+               "duplicate 'Fixed Income' must collapse to one, order preserved: {tags:?}");
 }
 
 /// A filter-only view still emits exactly one group with `group: null`, so an

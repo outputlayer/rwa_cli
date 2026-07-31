@@ -52,8 +52,18 @@ pub async fn portfolio(
                 asset_class: asset.and_then(|a| a.asset_class()).map(String::from),
                 region: asset.and_then(|a| a.region()).map(String::from),
                 kind: asset.and_then(|a| a.instrument_type()).map(String::from),
+                // Deduped, order preserved: a handful of live assets (e.g.
+                // fixed-income ETFs) carry the same asset-class tag twice
+                // with an identical label — harmless for `any`-based
+                // matching, but noise in a JSON field agents read directly.
                 tags: asset
-                    .map(|a| a.tag_labels().map(String::from).collect())
+                    .map(|a| {
+                        let mut seen = std::collections::HashSet::new();
+                        a.tag_labels()
+                            .filter(|s| seen.insert((*s).to_string()))
+                            .map(String::from)
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 group_alloc_pct: None,
             }
@@ -107,6 +117,14 @@ pub async fn portfolio(
             };
             (filtered, Some(view_json), Some(groups))
         };
+
+    // Invariant the match below (and the JSON branch above it) both depend
+    // on: `view` and `groups` are set together by the block above, never one
+    // without the other. If they ever desynchronize, the human-mode match's
+    // `_` arm silently falls back to `render_portfolio` — printing FILTERED
+    // positions in the full-portfolio table (with a GM TOTAL line), which is
+    // exactly the misleading shape `--view` exists to avoid.
+    debug_assert_eq!(view.is_some(), groups.is_some(), "view and groups must be set together");
 
     let source = if balance_source == solana::BalanceSource::Jupiter {
         if !json {
