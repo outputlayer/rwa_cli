@@ -768,4 +768,37 @@ mod tests {
         assert!(groups[0].group.is_none(), "no split means group: null");
         assert_eq!(groups[0].positions.len(), 1);
     }
+
+    /// Not part of `make ci` (network). The whole `--view` grammar rests on
+    /// three dictionaries never colliding — a live snapshot on 2026-07-31 had
+    /// 5 categories × 51 labels × 444 tickers with zero overlap. A fixture
+    /// cannot notice when Ondo introduces a colliding label; this can.
+    /// Run: cargo test -p rwa-cli -- --ignored view_dictionaries_do_not_collide
+    #[test]
+    #[ignore = "hits the live Ondo catalog"]
+    fn view_dictionaries_do_not_collide() {
+        let assets = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(rwa_ondo::api::fetch_assets())
+            .expect("live catalog");
+
+        let categories: Vec<&str> = Category::ALL.iter().map(|c| c.term()).collect();
+        for a in &assets {
+            for t in &a.tags {
+                assert!(
+                    !categories.iter().any(|c| c.eq_ignore_ascii_case(&t.tag_label)),
+                    "Ondo label '{}' now collides with a reserved category name — \
+                     `--view {}` would change meaning. Rename the category term or \
+                     document the tag: escape hatch.",
+                    t.tag_label,
+                    t.tag_label
+                );
+            }
+            assert!(
+                !categories.iter().any(|c| c.eq_ignore_ascii_case(&a.symbol)),
+                "ticker '{}' collides with a reserved category name",
+                a.symbol
+            );
+        }
+    }
 }

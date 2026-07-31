@@ -39,6 +39,7 @@ rwa gm portfolio                 # 5. See your holdings
 | `rwa gm buy-basket --total N --equal <SYM...>` | Even-weight basket / bulk buy |
 | `rwa gm sell-basket <SYM AMT ...> [-y]` | Sell multiple tokens at once |
 | `rwa gm portfolio [WALLET]` | Holdings + allocation + 24h change |
+| `rwa gm portfolio --view <term>` | Slice holdings: split by category (sector/region/class/type/factor) or filter by tag/ticker |
 | `rwa gm pnl` | Avg entry price + realized/unrealized P&L (from your CLI trades) |
 | `rwa gm hours [--tradable]` | Current session (+ what trades right now; 24/7 = flagships only) |
 | `rwa gm list` / `search` / `tradable` | Browse & filter (sector, `--tag asia/dividend/...`) |
@@ -54,11 +55,19 @@ rwa gm portfolio                 # 5. See your holdings
 
 Every trading command takes `--dry-run` (preview), `-y` (skip confirmation), `--slippage <BPS>`, `--max-bps <N>` (cost ceiling), and `--json`.
 
+```bash
+rwa gm portfolio --view sector      # split the portfolio into blocks by sector
+rwa gm portfolio --view Dividend    # only positions tagged Dividend
+rwa gm portfolio --view MRNA,CAPR   # only these tickers
+rwa gm portfolio --view Healthcare,factor   # filter, then split by factor
+```
+
 ## Things to know
 
 - **Preview first.** `--dry-run` validates and quotes without executing; `--quote-only` (buy) quotes any size even without funds.
 - **Conditional orders.** `--limit-price <P>` (buy/sell) only fills if the quoted price is ≤ P (buy) / ≥ P (sell), else `condition_not_met` (exit 1) — in `--dry-run` too; worst-case fill is limit ± slippage. Add `share` to gate per underlying share instead of per raw token. For a synthetic limit order, run it on a schedule until it fills: `rwa gm buy TSLA 100 --limit-price 400 --slippage 20 -y --json`.
 - **Amounts** are exact (`100`), percent (`50%`), or `all` — never silently rounded. Minimum buy: 5 USDC. Token sell amounts are raw; for dividend-accruing tokens wallets display slightly more (shares_per_token multiplier) — if an exact sell overshoots, the error shows both raw and wallet-displayed numbers; prefer `all`/`50%`.
+- **`--view` slices `portfolio`.** A category name (`sector`, `region`, `class`, `type`, `factor`) splits the output into blocks; a tag label (`Dividend`, `Healthcare`, …) or ticker (`MRNA`) filters it instead — comma-separated and repeatable, same-category terms OR together, different categories AND (at most one category per call). `gm_alloc_pct`/`GM TOTAL` always reflect the whole portfolio, never the filtered slice. `--view factor` groups overlap (tokens carry 2+ factor tags) and won't sum to the total — JSON marks it `overlapping: true`. An unrecognized term, or all terms blank, fails closed with `invalid_view` (exit 1) rather than silently showing everything.
 - **P&L is tracked automatically.** Every CLI trade lands in a local per-wallet ledger with a tamper-evident hash chain; `rwa gm pnl` shows average entry price, realized and unrealized P&L (built from your trades only) plus `ledger_integrity` (`ok`/`legacy`/`broken@line N`) so a corrupted ledger is visible instead of silently mispricing.
 - **`sell` swaps to USDC; `send` transfers out.** `send USDC all` sends your *entire* USDC balance.
 - **Multi-token commands run in parallel** by default (internally bounded); `--sequential` is the rate-limit fallback. `close-all` is the canonical exit — it skips dust and reports what it skipped.

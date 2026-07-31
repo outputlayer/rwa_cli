@@ -70,6 +70,10 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 ### Portfolio & history
 - `rwa --json gm portfolio` — own wallet holdings
 - `rwa --json gm portfolio <WALLET>` — any public wallet
+- `rwa --json gm portfolio --view sector` — split holdings into per-sector blocks
+- `rwa --json gm portfolio --view Dividend` — filter to positions tagged Dividend
+- `rwa --json gm portfolio --view MRNA,CAPR` — filter to specific tickers
+- `rwa --json gm portfolio --view Healthcare,factor` — filter, then split (comma-separated terms combine)
 - `rwa --json gm history <SYM>` — price history (default `1M`)
 - `rwa --json gm history <SYM> -r 1D` — 1D/1W/1M/3M/1Y/ALL
 
@@ -82,6 +86,18 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `gm_positions.change_24h_pct`
 
 Do not rely on legacy flat `portfolio` fields.
+
+**Slicing with `--view <term>` — read this before parsing `groups`.** A term is auto-detected as one of three kinds (or forced with a `tag:`/`token:`/`sector:` prefix): a reserved category name (`sector`, `region`, `class`, `type`, `factor`) SPLITS the output into per-group blocks; anything else — an Ondo tag label (`Dividend`, `Healthcare`, `ETF`, …) or a ticker (`MRNA`) — FILTERS it. A reserved category name always wins over a same-spelled catalog label. The flag is repeatable and comma-separated: terms in the SAME category OR together, terms from DIFFERENT categories AND, and at most one category (one split) is allowed per invocation.
+
+`gm_positions.view` and `gm_positions.groups` appear ONLY when `--view` was passed. Once present, `groups` has exactly ONE shape whether you filtered, split, or both — parse it the same way every time: `group: null` means no split (one anonymous group holding every matched position); `group: "<name>"` means a split block. Never branch your parser on filter-vs-split.
+
+`gm_alloc_pct` and `gm_positions.value_usd` (`GM TOTAL` in human output) are ALWAYS relative to the FULL, unfiltered portfolio — a filter never rewrites them. Figures inside `groups[].positions[]` (`group_alloc_pct`) are relative to that group instead — do not mix the two.
+
+**Check `gm_positions.view.overlapping` before summing `groups[].value_usd`.** Multi-valued categories (`factor` especially — most assets carry 2+ factor tags) produce OVERLAPPING groups: a position can appear in more than one group, so the groups do NOT sum to the portfolio total. `overlapping: true` is the signal; summing as if the groups partitioned the portfolio silently double-counts.
+
+Positions with no label in the split category land in a literal `Unclassified` group (not an invented name).
+
+A term matching nothing is not an error: exit 0, `groups: []`. A term matching no category/tag/ticker AT ALL, or all terms blank (e.g. an unset `--view "$VAR"`), is `invalid_view` (exit 1) — fails closed instead of silently returning the whole portfolio.
 
 GM tokens are total-return trackers (Token-2022 Scaled UI): dividends accrue via the mint's multiplier, so token price = share price × multiplier and wallet balances = raw × multiplier. The CLI's canonical frame is RAW everywhere (amounts, prices, ledger, pnl). `portfolio` values each position as raw × price and adds `shares_per_token` per position; `buy`/`sell` previews (including `--quote-only`/`--dry-run`) add `share_price`. Both `share_price` and `shares_per_token` are informational only (never the trade input/output) and are only present when the multiplier != 1 (omitted for ordinary 1:1 mints).
 
