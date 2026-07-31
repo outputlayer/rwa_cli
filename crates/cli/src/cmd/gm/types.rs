@@ -19,6 +19,15 @@ pub fn ser_opt_f64_4<S: serde::Serializer>(
         None => s.serialize_none(),
     }
 }
+pub fn ser_opt_f64_2<S: serde::Serializer>(
+    v: &Option<f64>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(val) => s.serialize_some(&((val * 100.0).round() / 100.0)),
+        None => s.serialize_none(),
+    }
+}
 
 // ── Command option bundles ─────────────────────────────────
 
@@ -119,7 +128,7 @@ pub struct TradeJson {
     pub shares_per_token: Option<f64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct PositionJson {
     pub token: String,
     #[serde(serialize_with = "ser_f64_4")]
@@ -136,6 +145,22 @@ pub struct PositionJson {
     /// reinvestment accrual). Absent when 1 or unknown.
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_4")]
     pub shares_per_token: Option<f64>,
+    /// Ondo tags. Present on every portfolio response (not just `--view`) so
+    /// scripts never need a join against `gm search`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Every tag label across all categories — what `--view` matches against.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Share of the enclosing group's value. Set only inside `groups[]`.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_f64_2")]
+    pub group_alloc_pct: Option<f64>,
 }
 
 #[derive(Serialize)]

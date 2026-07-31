@@ -32,14 +32,25 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
     let positions: Vec<PositionJson> = summary
         .positions
         .into_iter()
-        .map(|p| PositionJson {
-            token: p.token,
-            balance: p.balance,
-            price: p.price,
-            value_usd: p.value_usd,
-            gm_alloc_pct: p.gm_alloc_pct,
-            change_pct_24h: p.change_pct_24h,
-            shares_per_token: p.shares_per_token,
+        .map(|p| {
+            let asset = api::find_asset(&p.token, &assets);
+            PositionJson {
+                token: p.token,
+                balance: p.balance,
+                price: p.price,
+                value_usd: p.value_usd,
+                gm_alloc_pct: p.gm_alloc_pct,
+                change_pct_24h: p.change_pct_24h,
+                shares_per_token: p.shares_per_token,
+                sector: asset.and_then(|a| a.sector()).map(String::from),
+                asset_class: asset.and_then(|a| a.asset_class()).map(String::from),
+                region: asset.and_then(|a| a.region()).map(String::from),
+                kind: asset.and_then(|a| a.instrument_type()).map(String::from),
+                tags: asset
+                    .map(|a| a.tag_labels().map(String::from).collect())
+                    .unwrap_or_default(),
+                group_alloc_pct: None,
+            }
         })
         .collect();
     let unavailable: Vec<PortfolioUnavailableJson> = summary

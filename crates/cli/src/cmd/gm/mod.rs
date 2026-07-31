@@ -397,6 +397,12 @@ mod tests {
                     gm_alloc_pct: 100.0,
                     change_pct_24h: 1.23,
                     shares_per_token: None,
+                    sector: None,
+                    asset_class: None,
+                    region: None,
+                    kind: None,
+                    tags: vec![],
+                    group_alloc_pct: None,
                 }],
                 value_usd: 96.44,
                 change_24h_usd: 1.17,
@@ -420,6 +426,56 @@ mod tests {
         assert!(json.get("gm_positions_value_usd").is_none());
         // unavailable omitted when empty
         assert!(json.get("unavailable").is_none());
+    }
+
+    /// breaks if: tag fields are serialized when absent (noise for existing
+    /// scripts), or `kind` leaks under its Rust name instead of "type", or
+    /// group_alloc_pct appears outside groups.
+    #[test]
+    fn position_json_carries_tags_and_omits_them_when_absent() {
+        let tagged = serde_json::to_value(PositionJson {
+            token: "PFEon".to_string(),
+            balance: 36.9488,
+            price: 26.42,
+            value_usd: 976.11,
+            gm_alloc_pct: 11.28,
+            change_pct_24h: -0.96,
+            shares_per_token: Some(1.0609),
+            sector: Some("Healthcare".to_string()),
+            asset_class: Some("Equities".to_string()),
+            region: Some("US".to_string()),
+            kind: Some("Stock".to_string()),
+            tags: vec!["Dividend".to_string(), "Large Cap".to_string()],
+            group_alloc_pct: None,
+        })
+        .unwrap();
+
+        assert_eq!(tagged["sector"], "Healthcare");
+        assert_eq!(tagged["type"], "Stock", "instrument type must serialize as `type`");
+        assert_eq!(tagged["tags"][1], "Large Cap");
+        assert!(tagged.get("group_alloc_pct").is_none(), "group_alloc_pct belongs to groups only");
+
+        let bare = serde_json::to_value(PositionJson {
+            token: "AALon".to_string(),
+            balance: 1.0,
+            price: 10.0,
+            value_usd: 10.0,
+            gm_alloc_pct: 100.0,
+            change_pct_24h: 0.0,
+            shares_per_token: None,
+            sector: None,
+            asset_class: None,
+            region: None,
+            kind: None,
+            tags: vec![],
+            group_alloc_pct: None,
+        })
+        .unwrap();
+
+        for absent in ["sector", "asset_class", "region", "type", "tags"] {
+            assert!(bare.get(absent).is_none(), "{absent} must be omitted when empty");
+        }
+        assert_eq!(bare["token"], "AALon", "existing fields stay untouched");
     }
 
     #[test]
