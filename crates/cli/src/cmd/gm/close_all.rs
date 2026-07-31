@@ -98,10 +98,17 @@ async fn process_close_item(
 }
 
 /// Sum of the quoted USDC across previewed items. Unparseable amounts are
-/// skipped rather than poisoning the total with NaN — a preview must never
-/// print `NaN USDC`.
+/// skipped, and so are parseable-but-non-finite ones — Rust's `f64::from_str`
+/// happily accepts "NaN"/"inf"/"-inf"/"Infinity" as `Ok`, so a bare `.parse()`
+/// filter does NOT catch those; an explicit `is_finite()` check is required
+/// to keep either one from poisoning the total (a preview must never print
+/// `NaN USDC` or `inf USDC`).
 fn sum_quoted_usdc(items: &[CloseItemJson]) -> f64 {
-    items.iter().filter_map(|i| i.usdc.parse::<f64>().ok()).sum()
+    items
+        .iter()
+        .filter_map(|i| i.usdc.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .sum()
 }
 
 /// Dry-run: fetch-only, no execute. Sequential (Jupiter rate-limit conservatism).
@@ -665,5 +672,45 @@ mod tests {
             tx: String::new(),
         }];
         assert_eq!(sum_quoted_usdc(&items), 0.0);
+    }
+
+    /// breaks if: the finiteness filter is missing. Unlike "not-a-number",
+    /// `"NaN"` and `"inf"`/`"-inf"` DO parse successfully via Rust's
+    /// `f64::from_str` (`Ok(f64::NAN)` / `Ok(f64::INFINITY)`), so a bare
+    /// `.parse().ok()` filter does not catch them — only an explicit
+    /// `is_finite()` check does. A valid row is mixed in so the assertion
+    /// can't pass merely because non-finite inputs vanish; the surviving sum
+    /// must equal the one finite row, not 0.0 and not NaN/inf.
+    #[test]
+    fn sum_quoted_usdc_ignores_non_finite_amounts() {
+        let items = vec![
+            CloseItemJson {
+                token: "GOOD".to_string(),
+                amount: "1".to_string(),
+                usdc: "5.5".to_string(),
+                tx: String::new(),
+            },
+            CloseItemJson {
+                token: "NAN".to_string(),
+                amount: "1".to_string(),
+                usdc: "NaN".to_string(),
+                tx: String::new(),
+            },
+            CloseItemJson {
+                token: "INF".to_string(),
+                amount: "1".to_string(),
+                usdc: "inf".to_string(),
+                tx: String::new(),
+            },
+            CloseItemJson {
+                token: "NEGINF".to_string(),
+                amount: "1".to_string(),
+                usdc: "-inf".to_string(),
+                tx: String::new(),
+            },
+        ];
+        let total = sum_quoted_usdc(&items);
+        assert!(total.is_finite(), "total must be finite, got {total}");
+        assert_eq!(total, 5.5, "only the finite row should count, got {total}");
     }
 }
