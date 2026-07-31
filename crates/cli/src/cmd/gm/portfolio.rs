@@ -95,36 +95,110 @@ pub async fn portfolio(wallet_addr: Option<&str>, json: bool, rpc_url: Option<&s
         });
     }
 
-    println!("Portfolio for {pubkey}\n");
-    println!("  SOL:   {:.6}", sol_bal);
-    println!("  USDC:  {:.2}", usdc_bal);
+    print!("{}", render_portfolio(&pubkey, sol_bal, usdc_bal, &positions, gm_positions_value, gm_positions_change_pct));
+    Ok(())
+}
+
+/// Human-readable portfolio table. Pure: returns the block so it can be
+/// asserted in tests instead of being printed straight to stdout.
+fn render_portfolio(
+    pubkey: &str,
+    sol: f64,
+    usdc: f64,
+    positions: &[PositionJson],
+    value_usd: f64,
+    change_pct: f64,
+) -> String {
+    use std::fmt::Write as _;
+    let mut o = String::new();
+    let _ = writeln!(o, "Portfolio for {pubkey}\n");
+    let _ = writeln!(o, "  SOL:   {sol:.6}");
+    let _ = writeln!(o, "  USDC:  {usdc:.2}");
 
     if positions.is_empty() {
-        println!("\nNo GM token positions.");
-        return Ok(());
+        let _ = writeln!(o, "\nNo GM token positions.");
+        return o;
     }
 
-    println!();
-    println!(
-        "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
-        "TOKEN", "BALANCE", "PRICE", "VALUE", "GM %", "24h"
-    );
-    println!("{}", "-".repeat(64));
+    let _ = writeln!(o);
+    let _ = writeln!(o, "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
+                     "TOKEN", "BALANCE", "PRICE", "VALUE", "GM %", "24h");
+    let _ = writeln!(o, "{}", "-".repeat(64));
+    for p in positions {
+        let _ = writeln!(o, "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
+                         p.token, p.balance, p.price, p.value_usd, p.gm_alloc_pct, p.change_pct_24h);
+    }
+    let _ = writeln!(o, "{}", "-".repeat(64));
+    let _ = writeln!(o, "{:<10} {:>12} {:>10} {:>11.2} {:>7} {:>+7.2}%",
+                     "GM TOTAL", "", "", value_usd, "", change_pct);
+    let _ = writeln!(o, "  Cash balances shown above are separate from GM position totals.");
+    o
+}
 
-    for p in &positions {
-        println!(
-            "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
-            p.token, p.balance, p.price, p.value_usd, p.gm_alloc_pct, p.change_pct_24h
-        );
+/// Human-readable rendering of a `--view` result. Three shapes in one function
+/// because they share every invariant: GM % is always portfolio-relative, GM
+/// TOTAL appears exactly once, and the echo line always names the terms.
+fn render_view(
+    pubkey: &str,
+    sol: f64,
+    usdc: f64,
+    groups: &[GroupJson],
+    view: &ViewJson,
+    gm_total: f64,
+    gm_change_pct: f64,
+) -> String {
+    use std::fmt::Write as _;
+    let mut o = String::new();
+    let _ = writeln!(o, "Portfolio for {pubkey}\n");
+    let _ = writeln!(o, "  SOL:   {sol:.6}");
+    let _ = writeln!(o, "  USDC:  {usdc:.2}");
+
+    let mut echo = format!("view: {}", view.terms.join(", "));
+    if let Some(by) = &view.split_by {
+        let _ = write!(echo, " · split by {by} · {} groups", groups.len());
+    }
+    let _ = write!(echo, " · {} positions · {:.1}% of GM", view.matched_positions, view.matched_pct_of_gm);
+    if view.overlapping {
+        let _ = write!(echo, " · positions appear in more than one group");
+    }
+    let _ = writeln!(o, "{echo}\n");
+
+    if groups.is_empty() {
+        let _ = writeln!(o, "No positions match this view.");
+        let _ = writeln!(o, "{:<10} {:>36.2} {:>+16.2}%", "GM TOTAL", gm_total, gm_change_pct);
+        return o;
     }
 
-    println!("{}", "-".repeat(64));
-    println!(
-        "{:<10} {:>12} {:>10} {:>11.2} {:>7} {:>+7.2}%",
-        "GM TOTAL", "", "", gm_positions_value, "", gm_positions_change_pct
-    );
-    println!("  Cash balances shown above are separate from GM position totals.");
-    Ok(())
+    let split = view.split_by.is_some();
+    for g in groups {
+        if let Some(name) = &g.group {
+            let _ = writeln!(o, "\n═══ {name} ═══ {:.2} · {:.1}% of GM ═══", g.value_usd, g.gm_alloc_pct);
+        }
+        let pct_header = if split { "GRP %" } else { "GM %" };
+        let _ = writeln!(o, "{:<10} {:>12} {:>10} {:>12} {:>8} {:>8}",
+                         "TOKEN", "BALANCE", "PRICE", "VALUE", pct_header, "24h");
+        let _ = writeln!(o, "{}", "-".repeat(64));
+        for p in &g.positions {
+            let pct = if split { p.group_alloc_pct.unwrap_or(0.0) } else { p.gm_alloc_pct };
+            let _ = writeln!(o, "{:<10} {:>12.4} {:>10.2} {:>11.2} {:>7.1}% {:>+7.2}%",
+                             p.token, p.balance, p.price, p.value_usd, pct, p.change_pct_24h);
+        }
+        let _ = writeln!(o, "{}", "-".repeat(64));
+        if split {
+            let _ = writeln!(o, "{:<10} {:>36.2} {:>8} {:>+7.2}%", "SUBTOTAL", g.value_usd, "100.0%", g.change_24h_pct);
+        }
+    }
+
+    // MATCHED only when the filter actually cut something — otherwise it would
+    // duplicate GM TOTAL line for line.
+    if !split && view.matched_value_usd < gm_total - 0.005 {
+        let _ = writeln!(o, "{:<10} {:>36.2} {:>7.1}% {:>+7.2}%",
+                         "MATCHED", view.matched_value_usd, view.matched_pct_of_gm,
+                         groups.first().map_or(0.0, |g| g.change_24h_pct));
+    }
+    let _ = writeln!(o, "{:<10} {:>36.2} {:>16}{:>+7.2}%", "GM TOTAL", gm_total, "", gm_change_pct);
+    let _ = writeln!(o, "  Cash balances shown above are separate from GM position totals.");
+    o
 }
 
 pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
@@ -189,4 +263,119 @@ pub async fn history(symbol: &str, range: &str, json: bool) -> Result<()> {
     println!("  Low:       ${:.2}", low);
     println!("  Change:    {:+.2}%", change_pct);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn position(token: &str, value: f64, gm_pct: f64, group_pct: Option<f64>) -> PositionJson {
+        PositionJson {
+            token: token.to_string(),
+            balance: 1.0,
+            price: value,
+            value_usd: value,
+            gm_alloc_pct: gm_pct,
+            change_pct_24h: 0.0,
+            shares_per_token: None,
+            sector: None,
+            asset_class: None,
+            region: None,
+            kind: None,
+            tags: vec![],
+            group_alloc_pct: group_pct,
+        }
+    }
+
+    fn view_json(terms: &[&str], split: Option<&str>, overlapping: bool, matched: usize, matched_value: f64, pct: f64) -> ViewJson {
+        ViewJson {
+            terms: terms.iter().map(|s| (*s).to_string()).collect(),
+            filters: ViewFiltersJson { tags: vec![], tokens: vec![] },
+            split_by: split.map(String::from),
+            overlapping,
+            matched_positions: matched,
+            matched_value_usd: matched_value,
+            matched_pct_of_gm: pct,
+        }
+    }
+
+    /// breaks if: a subtotal line is ever labelled GM TOTAL — a reader (or a
+    /// script scraping human output) would take a slice for the whole wallet.
+    #[test]
+    fn gm_total_appears_exactly_once_even_with_many_groups() {
+        let groups = vec![
+            GroupJson { group: Some("Value".into()), value_usd: 600.0, gm_alloc_pct: 60.0,
+                        change_24h_pct: -1.0, positions: vec![position("Aon", 600.0, 60.0, Some(100.0))] },
+            GroupJson { group: Some("Growth".into()), value_usd: 400.0, gm_alloc_pct: 40.0,
+                        change_24h_pct: 2.0, positions: vec![position("Bon", 400.0, 40.0, Some(100.0))] },
+        ];
+        let out = render_view("WALLET", 1.0, 2.0, &groups,
+                              &view_json(&["factor"], Some("factor"), true, 2, 1000.0, 100.0), 1000.0, 0.0);
+
+        assert_eq!(out.matches("GM TOTAL").count(), 1, "exactly one GM TOTAL:\n{out}");
+        assert_eq!(out.matches("SUBTOTAL").count(), 2, "one SUBTOTAL per group:\n{out}");
+    }
+
+    /// breaks if: the overlap note is printed unconditionally — it would then
+    /// read as a warning on views where sums are exact.
+    #[test]
+    fn overlap_note_appears_only_when_groups_overlap() {
+        let groups = vec![GroupJson { group: Some("US".into()), value_usd: 1000.0, gm_alloc_pct: 100.0,
+                                      change_24h_pct: 0.0, positions: vec![position("Aon", 1000.0, 100.0, Some(100.0))] }];
+
+        let overlapping = render_view("W", 0.0, 0.0, &groups,
+                                      &view_json(&["factor"], Some("factor"), true, 1, 1000.0, 100.0), 1000.0, 0.0);
+        assert!(overlapping.contains("more than one"), "must warn when overlapping:\n{overlapping}");
+
+        let clean = render_view("W", 0.0, 0.0, &groups,
+                                &view_json(&["region"], Some("region"), false, 1, 1000.0, 100.0), 1000.0, 0.0);
+        assert!(!clean.contains("more than one"), "must stay silent when exact:\n{clean}");
+    }
+
+    /// breaks if: MATCHED is printed when the filter kept everything (a line
+    /// duplicating GM TOTAL) or omitted when it actually cut something.
+    #[test]
+    fn matched_line_appears_only_when_the_filter_cut_something() {
+        let groups = vec![GroupJson { group: None, value_usd: 300.0, gm_alloc_pct: 30.0,
+                                      change_24h_pct: 0.0, positions: vec![position("Aon", 300.0, 30.0, Some(100.0))] }];
+
+        let partial = render_view("W", 0.0, 0.0, &groups,
+                                  &view_json(&["Dividend"], None, false, 1, 300.0, 30.0), 1000.0, 0.0);
+        assert!(partial.contains("MATCHED"), "partial match must show MATCHED:\n{partial}");
+
+        let full = render_view("W", 0.0, 0.0, &groups,
+                               &view_json(&["Healthcare"], None, false, 1, 1000.0, 100.0), 1000.0, 0.0);
+        assert!(!full.contains("MATCHED"), "100% match must not duplicate the total:\n{full}");
+    }
+
+    /// breaks if: an empty view renders a phantom table instead of saying so.
+    #[test]
+    fn empty_view_states_no_match_and_still_shows_the_total() {
+        let out = render_view("W", 0.0, 0.0, &[],
+                              &view_json(&["Energy"], None, false, 0, 0.0, 0.0), 1000.0, -1.25);
+        assert!(out.contains("No positions match"), "{out}");
+        assert!(out.contains("GM TOTAL"), "the wallet total stays visible:\n{out}");
+    }
+
+    /// breaks if: the echo line is dropped — the polymorphic flag becomes a
+    /// guessing game about whether a term was read as a tag or a category.
+    #[test]
+    fn the_view_echo_names_every_term() {
+        let out = render_view("W", 0.0, 0.0, &[],
+                              &view_json(&["Healthcare", "factor"], Some("factor"), false, 0, 0.0, 0.0), 1000.0, 0.0);
+        assert!(out.contains("Healthcare"), "{out}");
+        assert!(out.contains("factor"), "{out}");
+    }
+
+    /// breaks if: the pre-existing portfolio table loses a column or the cash
+    /// disclaimer — this is the output that shipped before --view existed.
+    #[test]
+    fn plain_portfolio_render_keeps_its_columns_and_disclaimer() {
+        let out = render_portfolio("WALLET", 26.8764, 1562.36,
+                                   &[position("ABBVon", 1798.35, 20.77, None)], 1798.35, -1.39);
+        for expected in ["TOKEN", "BALANCE", "PRICE", "VALUE", "GM %", "24h", "GM TOTAL", "ABBVon"] {
+            assert!(out.contains(expected), "missing {expected}:\n{out}");
+        }
+        assert!(out.contains("separate from GM position totals"), "cash disclaimer:\n{out}");
+    }
 }
