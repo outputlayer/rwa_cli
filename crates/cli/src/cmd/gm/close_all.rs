@@ -215,6 +215,61 @@ pub async fn close_all(
         println!();
     }
 
+    // Emptiness check BEFORE the prompt: an all-skipped wallet (e.g. every
+    // position weekend-paused) has nothing to confirm — asking "Sell 0
+    // positions for ~0.00 USDC?" would be a wart, and more importantly the
+    // status/exit here must obey the same rule as the main path below, not a
+    // blanket "success". This is exactly the case the whole plan is about: a
+    // retryable skip means the portfolio is NOT closed.
+    if candidates.is_empty() {
+        // sold=0, failed=0 here (nothing was ever attempted), so
+        // close_status can only return "success" or "partial" — never
+        // "error" — matching the real multi-trade path's own rules.
+        let real_outcome = close_status(0, 0, &skipped);
+        // `w` (the live ed25519 SigningKey) is never moved anywhere on this
+        // early-return path — drop it explicitly before either possible exit
+        // below so a leftover secret can never survive a `std::process::exit`
+        // (which runs no destructors), on the real path where exit_code can
+        // be 75, and on dry-run for the same reason even though its
+        // exit_code is pinned to 0 today.
+        drop(w);
+        let outcome = if dry_run {
+            // A preview must warn exactly as much as the real run would: keep
+            // the reason, but status/exit stay dry-run's fixed "never fails".
+            CloseOutcome {
+                status: "dry_run",
+                exit_code: 0,
+                incomplete_reason: real_outcome.incomplete_reason,
+            }
+        } else {
+            real_outcome
+        };
+
+        if json {
+            json_out(&CloseAllResultJson {
+                status: outcome.status,
+                sold: vec![],
+                failed: vec![],
+                skipped,
+                total_usdc: "0".to_string(),
+                incomplete_reason: outcome.incomplete_reason.clone(),
+            })?;
+            if outcome.exit_code != 0 {
+                std::process::exit(outcome.exit_code);
+            }
+            return Ok(());
+        }
+
+        println!("Nothing to sell after filtering.");
+        if let Some(reason) = &outcome.incomplete_reason {
+            println!("  NOT fully closed — {reason}. Your portfolio is not empty.");
+        }
+        if outcome.exit_code != 0 {
+            std::process::exit(outcome.exit_code);
+        }
+        return Ok(());
+    }
+
     if !dry_run {
         let prompt = if sell_pct < 100.0 {
             format!(
@@ -230,22 +285,13 @@ pub async fn close_all(
         }
     }
 
-    if candidates.is_empty() {
-        if json {
-            return json_out(&CloseAllResultJson {
-                status: if dry_run { "dry_run" } else { "success" },
-                sold: vec![],
-                failed: vec![],
-                skipped,
-                total_usdc: "0".to_string(),
-                incomplete_reason: None,
-            });
-        }
-        println!("Nothing to sell after filtering.");
-        return Ok(());
-    }
-
     let (sold, failed, total_usdc) = if dry_run {
+        // `w` is never used on the dry-run path (only `taker`, an owned
+        // String, is needed) — drop it explicitly rather than leaving it
+        // alive until function exit relying on dry-run's exit_code staying
+        // pinned to 0 (see the same reasoning at the empty-candidates
+        // early-return above).
+        drop(w);
         run_close_dry_run(&taker, candidates, json, slippage, max_bps).await
     } else {
         let wallet_arc = Arc::new(w);
@@ -261,10 +307,17 @@ pub async fn close_all(
         .await
     };
 
-    // Real path only — the dry-run outcome stays "dry_run" unconditionally
-    // (a dry-run never "fails" the invocation; it only previews).
+    // Status/exit stay "dry_run"/0 unconditionally (a dry-run never "fails"
+    // the invocation; it only previews) — but the reason is still populated
+    // from the same rule the real path uses, so a preview warns exactly as
+    // much as the real run would (a dry-run that hides a retryable skip's
+    // reason would tell less truth than the run it's supposed to preview).
     let outcome = if dry_run {
-        CloseOutcome { status: "dry_run", exit_code: 0, incomplete_reason: None }
+        CloseOutcome {
+            status: "dry_run",
+            exit_code: 0,
+            incomplete_reason: close_status(sold.len(), failed.len(), &skipped).incomplete_reason,
+        }
     } else {
         close_status(sold.len(), failed.len(), &skipped)
     };
@@ -512,6 +565,23 @@ mod tests {
         let out = close_status(0, 0, &[]);
         assert_eq!(out.status, "success");
         assert_eq!(out.exit_code, 0);
+    }
+
+    /// breaks if: close_status stops treating (0 sold, 0 failed) plus a
+    /// retryable skip as partial/exit-75. This is the exact input the
+    /// all-skipped fix-round bug fed it: a wallet where every position was
+    /// filtered out (e.g. every GM token weekend-paused) never sold or
+    /// failed anything, but the portfolio is still not empty — it must not
+    /// read as `nothing_to_do_is_success`'s plain "success" above just
+    /// because the counts are the same (0, 0); the skip list is what
+    /// distinguishes "nothing to do" from "nothing done, something left".
+    #[test]
+    fn nothing_attempted_but_a_retryable_skip_remains_is_still_partial() {
+        let skipped = vec![skip("AALon", "trading_paused", true)];
+        let out = close_status(0, 0, &skipped);
+        assert_eq!(out.status, "partial");
+        assert_eq!(out.exit_code, 75);
+        assert!(out.incomplete_reason.is_some());
     }
 
     /// breaks if: the reason stops naming what to do or how much is left —
