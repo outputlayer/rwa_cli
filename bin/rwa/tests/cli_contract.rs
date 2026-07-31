@@ -1973,13 +1973,17 @@ fn close_all_dry_run_reports_no_positions() {
 // builds for `portfolio`. These fixtures use `mock_rpc_for_transfers`
 // accordingly so the mock actually matches what the binary sends on the wire.
 //
-// In every scenario below the held position is filtered out during
+// In most scenarios below the held position is filtered out during
 // `filter_close_positions` BEFORE any Jupiter quote is fetched (paused via
 // `is_trading_paused`, or dust via the sub-$1.50 check — both checked ahead
 // of the tradable-set lookup), so `candidates` ends up empty and the run
-// takes the early-return branch Task 5 fixed. No `/order` or transaction
-// mock is needed: a real (`-y`) run never reaches a quote fetch or the
-// confirmation prompt when there is nothing left to sell.
+// takes the early-return branch. Those need no `/order` or transaction mock:
+// a real (`-y`) run never reaches a quote fetch or the confirmation prompt
+// when there is nothing left to sell.
+//
+// The exception is `close_all_dry_run_main_path_sums_quotes_and_reports_the
+// _retryable_skip`, which deliberately keeps one sellable position so the run
+// takes the MAIN path — it is the only close-all test here that quotes.
 
 /// Assets fixture where the held token is paused — the retryable skip path.
 fn paused_assets() -> serde_json::Value {
@@ -2158,21 +2162,26 @@ fn close_all_all_skipped_without_yes_still_returns_partial_not_confirmation_requ
 const TSLA_MINT: &str = "KeGv7bsfR4MheC1CkmnAVceoApjrkvBhHYjWb67ondo";
 
 /// `gm close-all --dry-run --json` with ONE paused position (AALon, skipped,
-/// retryable) and ONE quotable position (TSLAon) walks the MAIN path (not
-/// the all-skipped early return): `candidates` is non-empty, so this is the
-/// only place in the suite that exercises `run_close_dry_run`'s summation,
-/// `render_close_preview` (human mode), and the outer `close_status` call at
-/// the bottom of the main branch.
+/// retryable) and ONE quotable position (TSLAon) walks the MAIN path (not the
+/// all-skipped early return): `candidates` is non-empty, so this is the only
+/// place in the suite that reaches `run_close_dry_run`'s summation and the
+/// outer `close_status` call at the bottom of the main branch. `order
+/// .assert_hits(1)` is what pins that — `/order` is quoted only while
+/// iterating `candidates`, so a fixture that silently stopped producing one
+/// fails there rather than passing vacuously.
 ///
 /// breaks if: `sum_quoted_usdc` is reverted to a hardcoded `0.0` (D3 — the
-/// `total_usdc` assertion goes to "0.00"); or the main-path
-/// `if outcome.exit_code != 0 { exit }` blocks are deleted (D2 — the process
-/// exit code silently reverts to 0 while `status` still says "partial",
-/// which no assertion here would catch on `status` alone — the exit-code
-/// assertion is load-bearing); or `render_close_preview` stops being called
-/// (D1 — human-mode stdout would print the unfiltered/no-dollar-figure list
-/// again, though `--json` mode itself can't observe that stdout is clean by
-/// construction, so this test relies on the JSON assertions instead).
+/// `total_usdc` assertions go to "0.00"); or the retryable skip stops
+/// reaching the envelope (`incomplete_reason` / `skipped[].retryable`).
+///
+/// does NOT cover, deliberately:
+///   - D2's main-path `if outcome.exit_code != 0 { exit }` blocks. `--dry-run`
+///     pins `exit_code` to 0 by design, so deleting them leaves this test
+///     green. Reaching them needs a landed swap, which the dummy transaction
+///     fixture cannot survive past the sign-time guard — see CLAUDE.md's
+///     live-only-paths note.
+///   - D1's `render_close_preview`, which is gated on `!json` and therefore
+///     never called here. Its invariants are unit-tested in `close_all.rs`.
 #[test]
 fn close_all_dry_run_main_path_sums_quotes_and_reports_the_retryable_skip() {
     let home = test_home("close-all-main-path");
