@@ -35,7 +35,12 @@ zeroize.workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 serial_test.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+# rt-multi-thread: `view::tests::view_dictionaries_do_not_collide` (#[ignore])
+# builds its own `tokio::runtime::Runtime::new()`, which needs it. Previously
+# this compiled only because `cargo test --workspace` unifies features across
+# every crate being tested and rwa-ondo's dev-deps happen to request it too —
+# `cargo test -p rwa-cli --ignored` alone would not have built.
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 zip.workspace = true
