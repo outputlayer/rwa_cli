@@ -316,6 +316,36 @@ mod tests {
         assert_eq!(out.matches("SUBTOTAL").count(), 2, "one SUBTOTAL per group:\n{out}");
     }
 
+    /// breaks if: the per-position percentage column collapses to one meaning
+    /// regardless of split — SPLIT must render `GRP %` / `group_alloc_pct`,
+    /// NO-SPLIT must render `GM %` / `gm_alloc_pct`. The fixture uses two
+    /// clearly different numbers (42.5 vs 77.5) so the assertion reads the
+    /// actual printed value, not just the header word — a mutation that
+    /// always picks `GM %`/`gm_alloc_pct` regardless of `split` must fail
+    /// this even though the header-only tests elsewhere stay green.
+    #[test]
+    fn split_prints_group_alloc_pct_no_split_prints_gm_alloc_pct() {
+        let split_groups = vec![GroupJson {
+            group: Some("Value".into()), value_usd: 600.0, gm_alloc_pct: 15.0, change_24h_pct: 0.0,
+            positions: vec![position("Aon", 600.0, 42.5, Some(77.5))],
+        }];
+        let split = render_view("W", 0.0, 0.0, &split_groups,
+                                &view_json(&["factor"], Some("factor"), false, 1, 600.0, 33.0), 600.0, 0.0);
+        assert!(split.contains("GRP %"), "split render must head the column GRP %:\n{split}");
+        assert!(split.contains("77.5%"), "split row must print group_alloc_pct (77.5):\n{split}");
+        assert!(!split.contains("42.5%"), "split row must not leak gm_alloc_pct (42.5) into the pct column:\n{split}");
+
+        let no_split_groups = vec![GroupJson {
+            group: None, value_usd: 600.0, gm_alloc_pct: 15.0, change_24h_pct: 0.0,
+            positions: vec![position("Aon", 600.0, 42.5, Some(77.5))],
+        }];
+        let no_split = render_view("W", 0.0, 0.0, &no_split_groups,
+                                   &view_json(&["factor"], None, false, 1, 600.0, 33.0), 600.0, 0.0);
+        assert!(no_split.contains("GM %"), "no-split render must head the column GM %:\n{no_split}");
+        assert!(no_split.contains("42.5%"), "no-split row must print gm_alloc_pct (42.5):\n{no_split}");
+        assert!(!no_split.contains("77.5%"), "no-split row must not leak group_alloc_pct (77.5) into the pct column:\n{no_split}");
+    }
+
     /// breaks if: the overlap note is printed unconditionally — it would then
     /// read as a warning on views where sums are exact.
     #[test]
