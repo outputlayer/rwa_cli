@@ -85,11 +85,15 @@ cargo install --git https://github.com/outputlayer/rwa_cli --bin rwa
 - `gm_positions.change_24h_usd`
 - `gm_positions.change_24h_pct`
 
+Every position also carries `sector`/`asset_class`/`region`/`type`/`tags` (Ondo catalog labels, each omitted when unknown) — scripts never need a join against `gm search` to know what a token is.
+
 Do not rely on legacy flat `portfolio` fields.
 
 **Slicing with `--view <term>` — read this before parsing `groups`.** A term is auto-detected as one of three kinds (or forced with an explicit prefix: `tag:`/`token:`, or any category name — `sector:`/`region:`/`class:`/`type:`/`factor:`): a reserved category name (`sector`, `region`, `class`, `type`, `factor`) SPLITS the output into per-group blocks; anything else — an Ondo tag label (`Dividend`, `Healthcare`, `ETF`, …) or a ticker (`MRNA`) — FILTERS it. A reserved category name always wins over a same-spelled catalog label. The flag is repeatable and comma-separated: terms in the SAME category OR together, terms from DIFFERENT categories AND, and at most one category (one split) is allowed per invocation.
 
 `gm_positions.view` and `gm_positions.groups` appear ONLY when `--view` was passed. Once present, `groups` has exactly ONE shape whether you filtered, split, or both — parse it the same way every time: `group: null` means no split (one anonymous group holding every matched position); `group: "<name>"` means a split block. Never branch your parser on filter-vs-split.
+
+**With `--view`, `gm_positions.positions[]` is REBOUND to only the matched positions** (the same subset that appears flattened across `groups[].positions[]`) — a term matching nothing yields `positions: []`. `gm_positions.value_usd` (and `gm_alloc_pct`, see below) keep describing the FULL, unfiltered portfolio regardless. Do not sum `positions[].value_usd` and compare it to `value_usd` expecting the whole portfolio — use `view.matched_value_usd` for the slice's total.
 
 `gm_alloc_pct` and `gm_positions.value_usd` (`GM TOTAL` in human output) are ALWAYS relative to the FULL, unfiltered portfolio — a filter never rewrites them. Figures inside `groups[].positions[]` (`group_alloc_pct`) are relative to that group instead — do not mix the two.
 
