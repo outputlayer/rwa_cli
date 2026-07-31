@@ -11,6 +11,8 @@ cargo build
 cargo build --release
 cargo clippy --all-targets
 cargo test --workspace
+make mutants FILE=view.rs          # mutation-test ONE file (checks the tests, not the code)
+make mutants-list FILE=view.rs     # cheap: list mutants without running them
 cargo bench -p rwa-ondo            # criterion microbenchmarks (hot CPU paths)
 bash scripts/bench-latency.sh      # real command latency p50/p95 (network-bound)
 cargo run -- gm hours
@@ -18,6 +20,8 @@ cargo install --path bin/rwa
 ```
 
 **CI runs every step with `RUSTFLAGS=-Dwarnings`** (clippy lints, `unsafe_code`, `dead_code`, … are hard errors), and plain local `cargo test`/`cargo clippy` (no `-Dwarnings`, plus clippy's incremental cache) can be green while CI is red. `make ci` reproduces CI exactly — always run it before pushing. Release steps are in `RELEASING.md`.
+
+**A green test is not a proof the test works.** A test that passes while the code it guards is broken is worse than no test — it converts absent coverage into false confidence. When you add or change tests, verify each one FAILS on a deliberate break of the code it covers (invert a condition, return a constant, swap an operator), then restore. Machine check for the same thing: `make mutants FILE=<file>` — cargo-mutants breaks the source itself and reports every mutation no test noticed (`cargo install cargo-mutants` once). It is deliberately NOT in `make ci` (minutes per file); run it when adding tests to a file you're changing. Three caveats learned the hard way: **`-p <package>` is mandatory** (the make target handles it — without it cargo-mutants sees only `bin/rwa/src/main.rs`, 2 mutants, and reports green having checked nothing); a fixture where the correct and the broken value coincide hides the mutation (e.g. asserting a group's share when that group IS the whole portfolio — both divisors are equal); and not every survivor is a gap — `x.abs() > f64::EPSILON` mutated to `>=` diverges only at exactly 2.22e-16, so record such **equivalent** mutants with a reason instead of chasing 100%.
 
 **What CI (and `make ci`) CANNOT verify — live-only paths.** The real on-chain money paths never run in CI (no wallet, no live Jupiter/RPC): `usecases/gm_execute.rs` (the `/execute` submit + retry loop), `jupiter/execute.rs` submit, `solana/transfer.rs` (`send`), and `usecases/gm_gas.rs` (auto-refuel). These are exactly the sub-60%-coverage files, and they're validated by **live-money runs**, not tests (a real `--dry-run` then a small `-y` trade, e.g. on a flagship token). If you change any of them, a green `make ci` is necessary but NOT sufficient — do a live dry-run + small real trade before merging, and keep sends to a known test address. Everything else (quote math, slippage/limit/cost gates, the sign-time delta checks against a mocked RPC, amount parsing, ledger/pnl, JSON shapes via the spawned-binary `cli_contract` suite) IS covered by tests.
 
