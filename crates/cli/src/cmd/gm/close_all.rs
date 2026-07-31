@@ -8,28 +8,27 @@ use usecases::gm::ClosePosition as CloseCandidate;
 
 /// Filter phase: from raw balances to (candidates, skipped[]).
 /// The math lives in `usecases::gm::filter_close_positions`; this wrapper only
-/// prints the human skip lines and shapes the JSON entries.
+/// shapes the JSON entries — no printing here, see the doc comment below on
+/// why the per-skip stderr line was removed.
 fn filter_close_items(
     balances: &[solana::SolanaTokenBalance],
     sell_pct: f64,
     assets: &[api::OndoAsset],
     tradable_set: &std::collections::HashSet<String>,
-    json: bool,
 ) -> Result<(Vec<CloseCandidate>, Vec<CloseSkipJson>)> {
     let (candidates, skips) =
         usecases::gm::filter_close_positions(balances, sell_pct, assets, tradable_set)?;
+    // No per-skip eprintln here: `render_close_preview`'s "Not selling" block
+    // (printed right after this call, before the confirmation) shows the same
+    // tokens with their real reason AND retryable/permanent status — a second
+    // stderr line per skip would just be noise ahead of that fuller table.
     let skipped = skips
         .into_iter()
-        .map(|skip| {
-            if !json {
-                eprintln!("  Skipping {} — {}", skip.token, skip.reason);
-            }
-            CloseSkipJson {
-                token: skip.token,
-                estimated_usd: skip.estimated_usd,
-                reason: skip.reason,
-                retryable: skip.retryable,
-            }
+        .map(|skip| CloseSkipJson {
+            token: skip.token,
+            estimated_usd: skip.estimated_usd,
+            reason: skip.reason,
+            retryable: skip.retryable,
         })
         .collect();
     Ok((candidates, skipped))
@@ -184,6 +183,7 @@ pub async fn close_all(
                 failed: vec![],
                 skipped: vec![],
                 total_usdc: "0".to_string(),
+                incomplete_reason: None,
             });
         }
         println!("No GM positions to close.");
@@ -195,37 +195,40 @@ pub async fn close_all(
     } else {
         String::new()
     };
+
+    // Filter FIRST: the confirmation must show what will actually be sold, not
+    // the raw balance list that filtering then silently trims.
+    let (candidates, skipped) =
+        filter_close_items(&balances, sell_pct, &assets, &tradable_set)?;
+
+    // Portfolio value for the share figure: everything we looked at, sellable
+    // or not — otherwise the share would always read ~100%.
+    let gm_total_usd: f64 = candidates.iter().map(|c| c.est_value).sum::<f64>()
+        + skipped.iter().map(|s| s.estimated_usd).sum::<f64>();
+    let sellable_usd: f64 = candidates.iter().map(|c| c.est_value).sum();
+
     if !json {
-        println!("Positions to close{}:", pct_label);
-        for b in &balances {
-            if sell_pct < 100.0 {
-                println!(
-                    "  {} — {:.4} of {} tokens",
-                    b.symbol,
-                    b.balance * sell_pct / 100.0,
-                    b.balance
-                );
-            } else {
-                println!("  {} — {} tokens", b.symbol, b.balance);
-            }
-        }
+        print!(
+            "{}",
+            render_close_preview(&candidates, &skipped, balances.len(), gm_total_usd, sell_pct)
+        );
         println!();
     }
 
     if !dry_run {
         let prompt = if sell_pct < 100.0 {
-            format!("Sell {}% of all positions?", sell_pct)
+            format!(
+                "Sell {sell_pct}% of {} positions for ~{sellable_usd:.2} USDC?",
+                candidates.len()
+            )
         } else {
-            "Sell all positions?".to_string()
+            format!("Sell {} positions for ~{sellable_usd:.2} USDC?", candidates.len())
         };
         if !require_execution_consent(yes, json, &prompt)? {
             println!("Cancelled.");
             return Ok(());
         }
     }
-
-    let (candidates, skipped) =
-        filter_close_items(&balances, sell_pct, &assets, &tradable_set, json)?;
 
     if candidates.is_empty() {
         if json {
@@ -235,6 +238,7 @@ pub async fn close_all(
                 failed: vec![],
                 skipped,
                 total_usdc: "0".to_string(),
+                incomplete_reason: None,
             });
         }
         println!("Nothing to sell after filtering.");
@@ -257,9 +261,14 @@ pub async fn close_all(
         .await
     };
 
-    // Real path only — the dry-run status stays "dry_run" unconditionally
+    // Real path only — the dry-run outcome stays "dry_run" unconditionally
     // (a dry-run never "fails" the invocation; it only previews).
-    let status = if dry_run { "dry_run" } else { multi_status(sold.len(), failed.len()) };
+    let outcome = if dry_run {
+        CloseOutcome { status: "dry_run", exit_code: 0, incomplete_reason: None }
+    } else {
+        close_status(sold.len(), failed.len(), &skipped)
+    };
+    let status = outcome.status;
     // Captured before `failed` is moved into the JSON envelope below — feeds
     // `exit_if_all_failed`'s transient/permanent exit-code decision and the
     // human-mode error typing further down.
@@ -273,6 +282,7 @@ pub async fn close_all(
             failed,
             skipped,
             total_usdc: format!("{total_usdc:.2}"),
+            incomplete_reason: outcome.incomplete_reason.clone(),
         })?;
         // Unlike the baskets there is no wallet on the stack to leak here:
         // `wallet_arc` (an ed25519 SigningKey that zeroizes on Drop) is scoped
@@ -281,6 +291,9 @@ pub async fn close_all(
         // key is zeroized well before the possible exit in
         // `exit_if_all_failed` (see its doc comment: no drop needed here).
         exit_if_all_failed(status, &failed_kinds);
+        if outcome.exit_code != 0 {
+            std::process::exit(outcome.exit_code);
+        }
         return Ok(());
     }
 
@@ -298,22 +311,22 @@ pub async fn close_all(
         total_usdc
     );
     if !skipped.is_empty() {
-        let names: Vec<&str> = skipped.iter().map(|s| s.token.as_str()).collect();
-        println!(
-            "  Skipped: {} (below ${:.2}: {})",
-            skipped.len(),
-            usecases::gm::MIN_SELL_VALUE_USD,
-            names.join(", ")
-        );
+        println!("  Skipped: {} ({})", skipped.len(), skipped_summary(&skipped));
     }
     if !failed.is_empty() {
         println!("  Failed:  {} positions", failed.len());
+    }
+    if let Some(reason) = &outcome.incomplete_reason {
+        println!("  NOT fully closed — {reason}. Your portfolio is not empty.");
     }
     if status == "error" {
         return Err(all_failed_error(
             format!("close-all: all {} position(s) failed", failed.len()),
             &failed_kinds,
         ));
+    }
+    if outcome.exit_code != 0 {
+        std::process::exit(outcome.exit_code);
     }
     Ok(())
 }

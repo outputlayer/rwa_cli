@@ -609,6 +609,7 @@ mod tests {
             }],
             skipped: vec![],
             total_usdc: "96.44".into(),
+            incomplete_reason: None,
         })
         .unwrap();
 
@@ -751,6 +752,7 @@ mod tests {
                 retryable: false,
             }],
             total_usdc: "0.00".into(),
+            incomplete_reason: None,
         })
         .unwrap();
 

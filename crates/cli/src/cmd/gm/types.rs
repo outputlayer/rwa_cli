@@ -418,6 +418,10 @@ pub struct CloseAllResultJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<CloseSkipJson>,
     pub total_usdc: String,
+    /// Why the run is not a plain success: present iff temporarily unsellable
+    /// positions remain. Absent on a clean success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_reason: Option<String>,
 }
 
 #[derive(Serialize)]
