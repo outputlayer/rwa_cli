@@ -706,6 +706,27 @@ mod tests {
         assert!(out.contains("(50%)"), "partial-sell label missing:\n{out}");
     }
 
+    /// breaks if: the `sell_pct < 100.0` boundary flips to `<=` (or otherwise
+    /// stops treating exactly 100.0 as "full close"). A full close-all must
+    /// print a bare "Positions to close (N of M):" header with NO percentage
+    /// label — `render_close_preview_shows_the_partial_sell_percentage` above
+    /// already pins that 50% DOES get a label, but nothing previously pinned
+    /// the other side of that same boundary at exactly 100.0, which is the
+    /// value a real full `close-all` always passes.
+    #[test]
+    fn preview_shows_no_percentage_label_at_exactly_100_percent() {
+        let candidates = vec![candidate("ABBVon", "1.0", 100.0)];
+        let out = render_close_preview(&candidates, &[], 1, 100.0, 100.0);
+        // The header line carries the `sell_pct` label; the summary line
+        // below it legitimately contains a `%` (the portfolio-share figure),
+        // so the assertion is scoped to the header, not the whole output.
+        let header = out.lines().next().expect("header line");
+        assert_eq!(
+            header, "Positions to close (1 of 1):",
+            "full-close header must be bare, no ` (100%)` suffix: {header}"
+        );
+    }
+
     /// breaks if: the skip summary keeps claiming everything was dust. Today
     /// close_all.rs prints "(below $1.50: …)" for every skip regardless of
     /// reason, including paused positions worth thousands.
