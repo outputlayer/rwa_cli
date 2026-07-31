@@ -39,7 +39,7 @@ rwa gm hours                       # Market status
 rwa gm list                        # All 438 tokens
 rwa gm buy <SYM> <AMT> --dry-run   # Preview trade (no separate quote command)
 rwa gm buy/sell <SYM> <AMT> -y     # Execute trade
-rwa gm close-all -y                # Sell ALL positions (sequential, skips <$1.50)
+rwa gm close-all -y                # Sell ALL positions (parallel by default; skips dust <$1.50 and temporarily unsellable positions)
 rwa gm close-all 50% -y            # Sell 50% of every position
 rwa gm buy-basket SYM AMT ... -y   # Buy multiple tokens at once
 rwa gm sell-basket SYM AMT ... -y  # Sell multiple tokens at once
