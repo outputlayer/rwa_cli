@@ -303,3 +303,132 @@ pub async fn close_all(
     }
     Ok(())
 }
+
+/// Outcome of a close-all run: what to report, what to exit with, and why it
+/// is not a plain success.
+pub(super) struct CloseOutcome {
+    pub status: &'static str,
+    pub exit_code: i32,
+    /// Present iff temporary skips remain — the sentence shown to a human and
+    /// carried in JSON as `incomplete_reason`.
+    pub incomplete_reason: Option<String>,
+}
+
+/// Status and exit code for a completed close-all.
+///
+/// A skip that a repeat run would clear (`retryable`) means the portfolio is
+/// NOT closed, so the run reports `partial` and exits 75 — the canonical full
+/// exit is a shell chain (`close-all && reclaim && send`), and `&&` reads only
+/// the exit code. Dust never triggers this: no retry can sell it, so a run
+/// that skipped nothing else is a genuine success.
+fn close_status(sold: usize, failed: usize, skipped: &[CloseSkipJson]) -> CloseOutcome {
+    let retryable = skipped.iter().filter(|s| s.retryable).count();
+    let base = multi_status(sold, failed);
+
+    if retryable == 0 {
+        return CloseOutcome { status: base, exit_code: 0, incomplete_reason: None };
+    }
+
+    // `error` (nothing sold, everything failed) stays error — its own exit
+    // path already classifies transient vs permanent.
+    if base == "error" {
+        return CloseOutcome { status: base, exit_code: 0, incomplete_reason: None };
+    }
+
+    let plural = if retryable == 1 { "position" } else { "positions" };
+    CloseOutcome {
+        status: "partial",
+        exit_code: 75,
+        incomplete_reason: Some(format!(
+            "{retryable} {plural} temporarily unsellable — retry later"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skip(token: &str, reason: &'static str, retryable: bool) -> CloseSkipJson {
+        CloseSkipJson {
+            token: token.to_string(),
+            estimated_usd: 1.0,
+            reason,
+            retryable,
+        }
+    }
+
+    /// breaks if: a temporary skip stops driving the status. This is the whole
+    /// point: an agent chaining `close-all && reclaim && send` must not be told
+    /// the portfolio is empty while sellable positions remain.
+    #[test]
+    fn a_retryable_skip_makes_it_partial_even_when_everything_else_sold() {
+        let skipped = vec![skip("MRNAon", "trading_paused", true)];
+        let out = close_status(7, 0, &skipped);
+        assert_eq!(out.status, "partial");
+        assert_eq!(out.exit_code, 75, "shell chains read the exit code, not JSON");
+        assert!(out.incomplete_reason.is_some());
+    }
+
+    /// breaks if: dust starts blocking the exit. A $0.47 position is unsellable
+    /// forever; reporting anything but success would make every real portfolio
+    /// look incomplete.
+    #[test]
+    fn dust_only_skips_stay_success_with_exit_zero() {
+        let skipped = vec![skip("CAPRon", "below $1.50 minimum", false)];
+        let out = close_status(3, 0, &skipped);
+        assert_eq!(out.status, "success");
+        assert_eq!(out.exit_code, 0);
+        assert!(out.incomplete_reason.is_none(), "nothing to retry, nothing to explain");
+    }
+
+    /// breaks if: the new retryable rule leaks into the existing failed[] rule.
+    /// A partial caused by failures keeps exit 0, exactly as the baskets do.
+    #[test]
+    fn failures_without_retryable_skips_keep_exit_zero() {
+        let out = close_status(2, 1, &[]);
+        assert_eq!(out.status, "partial");
+        assert_eq!(out.exit_code, 0, "failed[] partial must not change exit code");
+        assert!(out.incomplete_reason.is_none());
+    }
+
+    /// breaks if: the all-failed case stops being an error, or starts being
+    /// reported as merely incomplete.
+    #[test]
+    fn everything_failed_is_error() {
+        let out = close_status(0, 3, &[]);
+        assert_eq!(out.status, "error");
+    }
+
+    /// breaks if: an empty wallet is reported as anything but done.
+    #[test]
+    fn nothing_to_do_is_success() {
+        let out = close_status(0, 0, &[]);
+        assert_eq!(out.status, "success");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    /// breaks if: the reason stops naming what to do or how much is left —
+    /// the human summary and the JSON field both read it.
+    #[test]
+    fn incomplete_reason_counts_only_retryable_skips_and_says_retry() {
+        let skipped = vec![
+            skip("MRNAon", "trading_paused", true),
+            skip("XYZon", "not tradable in current session", true),
+            skip("CAPRon", "below $1.50 minimum", false),
+        ];
+        let reason = close_status(1, 0, &skipped).incomplete_reason.unwrap();
+        assert!(reason.contains('2'), "two retryable, not three: {reason}");
+        assert!(reason.to_lowercase().contains("retry"), "must say what to do: {reason}");
+    }
+
+    /// breaks if: a retryable skip alongside failures loses the 75 — the
+    /// portfolio is still not empty, so the chain must still stop.
+    #[test]
+    fn retryable_skip_wins_over_failed_partial_for_the_exit_code() {
+        let skipped = vec![skip("MRNAon", "trading_paused", true)];
+        let out = close_status(1, 1, &skipped);
+        assert_eq!(out.status, "partial");
+        assert_eq!(out.exit_code, 75);
+    }
+}
