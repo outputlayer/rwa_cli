@@ -23,7 +23,7 @@ pub fn get_token_list() -> &'static [GmTokenEntry] {
     &TOKEN_LIST
 }
 
-/// Static fallback list of Ondo GM tokens (439 tokens).
+/// Static fallback list of Ondo GM tokens (442 tokens).
 /// Tuple: (symbol, solana_mint_address)
 static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("AALon", "9wYZetvT8J2ptfsRca5gzLBGvcUug38mp9yT3xaondo"),
@@ -209,6 +209,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("HSAIon", "nagL8iWMNLZVuKFk3bUGDaHyT5ZY4bNfUzsdtGHondo"),
     ("HUBBon", "ZmiDoowvkpp1Qgx4mmY3qtsHbNV1oE12ApKCbZNondo"),
     ("HUTon", "f7iz4BQsnjw95EUyFiBKAnKgo7oBrycfzQdtmDwondo"),
+    ("HYGWon", "ZKzkbFi4n3NQmRA9i5T7jVPSN2XERwxfHUf4p2pondo"),
     ("HYGon", "c5ug15fwZRfQhhVa6LHscFY33ebVDHcVCezYpj7ondo"),
     ("HYSon", "CsN1Tyz467bSFLPGd6MJyZhPNtwDaWZtX8ixHWyondo"),
     ("IALTon", "gfKuBLive7Q35MYgxPgNx7qx524zQJ9RiDZJFZoondo"),
@@ -368,6 +369,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("SBUXon", "iPFqjcZQTNMNXA4kbShbMhfAVD8yr8Uq9UtXMV6ondo"),
     ("SCCOon", "EANjzFjj3nPXHdzN5CE3Z8LLVn69Ce77FE8X4cvondo"),
     ("SCHWon", "cnc6M1zXLdrGR5LAQVcaJDfgezMiVWNtGQsVy1Kondo"),
+    ("SECUon", "sDtEN5uwUJJCFJ95x2rPjPqNx5UWUbHQ2ucceUzondo"),
     ("SEDGon", "EAwP9LGNjTkQ2YeKE6CGKqBYtrJ6APFvRe7KCMmondo"),
     ("SGOVon", "HjrN6ChZK2QRL6hMXayjGPLFvxhgjwKEy135VRjondo"),
     ("SHLDon", "siVse6kjZb9ihaXHaqoG3mhHyTPEnNCkvSDTheoondo"),
@@ -401,6 +403,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("STXon", "EXtprP1wzrNo2bByrU9JyzqEg2hQMSCVJakeHHYondo"),
     ("SWKSon", "iJtKb1CWnWdgJhs7HgSZvLmSJABGGMc97QeuG7tondo"),
     ("SYMon", "nP42LxpSZkUfnBUxiFsHxL5GKYWRZ1VxqGkMTNwondo"),
+    ("SYSBon", "5U9o49BoQNU6bBMswvmBs3R4GZmYSyrnTN4ncX4ondo"),
     ("TASKon", "nQysX1ZsRJ8yTJg8smZTZ91rWcVBabDRqdUEKZHondo"),
     ("TCOMon", "9PMjLqd8zPdKkJUXarnit5t7tPL3cCscwHzy7ATondo"),
     ("TELon", "ZjYCwYeG85TbV5oXkCkvWQTNPh2PgTQ8X4nxpbyondo"),
