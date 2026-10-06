@@ -9,6 +9,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.14] - 2026-10-07 — close-all tells the truth, `portfolio --view`, 450 tokens
+
+### Changed
+
+- **`close-all` exits 75 when a retryable skip remains** — a position skipped for a reason a repeat run would clear (`trading_paused`, `not tradable in current session`, `market data unavailable`) now yields `status: "partial"`, an `incomplete_reason`, and **exit 75** (was `"success"` / exit 0), including when *every* position was skipped. A shell chain `close-all && reclaim && send` now stops instead of withdrawing the gas needed to sell the rest. Dust below the $1.50 minimum stays `retryable: false` and keeps `"success"` / exit 0; `--dry-run` still exits 0 but carries `incomplete_reason`. **Agents branching on close-all's exit code will see 75 where they saw 0.**
+
+### Added
+
+- **`gm portfolio --view <term>…`** — one polymorphic flag to slice the portfolio: a category name (`sector`, `region`, `class`, `type`, `factor`) splits it into groups, an Ondo tag label or ticker filters it. JSON gains `gm_positions.view` / `gm_positions.groups` only when the flag is given; unrecognized or all-blank terms are `invalid_view` (exit 1).
+- **Ondo tags on every portfolio position** — `sector`/`asset_class`/`region`/`type`/`tags` (omitted when unknown).
+- **GM token list 439 → 450** — AIon, GOOGon, HTZon, HYDBon, HYGWon, NEARon, RXRXon, SECUon, SYSBon, USHYon, WENon; every mint verified on-chain (Token-2022, Ondo mint authority) and tradable per Ondo session-limits.
+
+### Fixed
+
+- **`close-all --dry-run` total** is the sum of the quotes (was a hardcoded `0.00`); non-finite quotes are rejected.
+- **`incomplete_reason` survives the all-failed error case** of `close-all`.
+- Portfolio output: aligned `GM TOTAL`/`MATCHED` columns, `-0.0%` normalised, group counts pluralised.
+
+### Security
+
+- `rustls` 0.23.45 (RUSTSEC-2026-0285), `event-listener` 5.4.2 (RUSTSEC-2026-0221), `chacha20` 0.10.2 (0.10.1 yanked).
+
+---
+
 ## [0.7.11] - 2026-07-19 — post-audit fixes: F10 mis-allocation + exit-code contract
 
 ### Fixed
