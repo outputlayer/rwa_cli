@@ -23,7 +23,7 @@ pub fn get_token_list() -> &'static [GmTokenEntry] {
     &TOKEN_LIST
 }
 
-/// Static fallback list of Ondo GM tokens (439 tokens).
+/// Static fallback list of Ondo GM tokens (450 tokens).
 /// Tuple: (symbol, solana_mint_address)
 static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("AALon", "9wYZetvT8J2ptfsRca5gzLBGvcUug38mp9yT3xaondo"),
@@ -44,6 +44,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("AGon", "hrZ5vs6c6v1iWyvEXjGSHs3sQuuj58VzXikNyRWondo"),
     ("AIPon", "jmnrdSzu293vKTWyEx3A2ZRVxxytJKW1wD3CLzkondo"),
     ("AIQon", "uwh6Z6c2F8WZfUSK1A8VBfA9AwJKN5T2bvQwVFLondo"),
+    ("AIon", "rVMtUyy1ohurejV9qd81y9cPRHNA1A2QqWAErqfondo"),
     ("ALABon", "cskxd6aqyqJMYgLZmFYfYecWkjasRJDEtm1QVxsondo"),
     ("ALBon", "B5KufqHkskgGYwMXtL8FSHgREAkMQvE3ykhH5Kmondo"),
     ("ALOYon", "ndHvUEgrvZquSR6wZv2cG1AiBr7e7HGuWvfPULcondo"),
@@ -194,6 +195,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("GMEon", "aznKt8v32CwYMEcTcB4bGTv8DXWStCpHrcCtyy7ondo"),
     ("GNRCon", "eqzwohR9oCR6sravF4y5HyUwyvCDbnfSYqiiFrXondo"),
     ("GOOGLon", "bbahNA5vT9WJeYft8tALrH1LXWffjwqVoUbqYa1ondo"),
+    ("GOOGon", "jcA9zXHWuTuDFDDDDYJTNhersed1B5etkuB6X9Eondo"),
     ("GRABon", "m9GcsVgdjaL3KsdtSFHimnhtsUMpTHkjtwEG4Tzondo"),
     ("GRNDon", "Gc1aT3ay7FXL3qdAW7cNSXYPDsGavy7qiACuxwxondo"),
     ("GSon", "BchJRy2snmhJZf3rQ9LJ3ePs2BGfYgfvQNo31d2ondo"),
@@ -207,8 +209,11 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("HOODon", "BVdXGvmgi6A9oAiwWvBvP76fyTqcCNRJMM7zMN6ondo"),
     ("HPEon", "axbgKgUMscTJ34DjA69kBJuf6UYq4Pzb8B8numYondo"),
     ("HSAIon", "nagL8iWMNLZVuKFk3bUGDaHyT5ZY4bNfUzsdtGHondo"),
+    ("HTZon", "QApMAZTHvfhX2dTDzM8AMyAHVyhmPVwj4oY8Jveondo"),
     ("HUBBon", "ZmiDoowvkpp1Qgx4mmY3qtsHbNV1oE12ApKCbZNondo"),
     ("HUTon", "f7iz4BQsnjw95EUyFiBKAnKgo7oBrycfzQdtmDwondo"),
+    ("HYDBon", "71VH3YQkjqqGxzwYvGhsCsJNQYzkMo9Rg72aVxqondo"),
+    ("HYGWon", "ZKzkbFi4n3NQmRA9i5T7jVPSN2XERwxfHUf4p2pondo"),
     ("HYGon", "c5ug15fwZRfQhhVa6LHscFY33ebVDHcVCezYpj7ondo"),
     ("HYSon", "CsN1Tyz467bSFLPGd6MJyZhPNtwDaWZtX8ixHWyondo"),
     ("IALTon", "gfKuBLive7Q35MYgxPgNx7qx524zQJ9RiDZJFZoondo"),
@@ -290,6 +295,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("MYRGon", "auLvQAhUzPuy2SQBSq2T6AofPGNkR4nZ83P8pjuondo"),
     ("NATon", "mmy8WbFRNrjoDsPGqpYmzQAVu7PfGhMCdSRLxZLondo"),
     ("NBISon", "DiRshqNDE68bWbGdLHm1GwQ76MvWQG3af6w1NdQondo"),
+    ("NEARon", "bD6TafGhPo8NaeKEyge1DrZGAPB5wxK3x4fCpqjondo"),
     ("NEEon", "t7eN6cGwRMFaZvsNW2SmVwkedmHtDdrxA4ycNE5ondo"),
     ("NEMon", "Dig28Tf1ufhCBAsjTmFkXCgcNgMqDMYj5A2rDQmondo"),
     ("NETon", "ZtAY65FCh3YB9H1wkbjRxxY5nXt9VfuTTz3Mzbuondo"),
@@ -362,12 +368,14 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("RMBSon", "jjnSEAsi8UbCez7x9XCbWntLWRHBdc2tWSdC3uoondo"),
     ("ROKon", "e83tWWrVsVk1hRGNz5BCwNr9TMBNWixmoUhWgYcondo"),
     ("RTXon", "12BvLZtzjdssAycxPeBQUjukhmgQpULAvy6SroYdondo"),
+    ("RXRXon", "q16ZLSbANUhpcq15pRUXRxNFfEqgpde9mSBwRcyondo"),
     ("SAPon", "bjbrNi96mXAzgvxSuGJ2SRJ5U4N8agbG7wUAKAjondo"),
     ("SATAon", "vZVGEJfSM1hS4XdFVAZL2Fr1cbPzJty9vWyax68ondo"),
     ("SBETon", "iLDu2jjp2i3Uqc2Vm7K7GLiUj3hR4Un49MtD7c4ondo"),
     ("SBUXon", "iPFqjcZQTNMNXA4kbShbMhfAVD8yr8Uq9UtXMV6ondo"),
     ("SCCOon", "EANjzFjj3nPXHdzN5CE3Z8LLVn69Ce77FE8X4cvondo"),
     ("SCHWon", "cnc6M1zXLdrGR5LAQVcaJDfgezMiVWNtGQsVy1Kondo"),
+    ("SECUon", "sDtEN5uwUJJCFJ95x2rPjPqNx5UWUbHQ2ucceUzondo"),
     ("SEDGon", "EAwP9LGNjTkQ2YeKE6CGKqBYtrJ6APFvRe7KCMmondo"),
     ("SGOVon", "HjrN6ChZK2QRL6hMXayjGPLFvxhgjwKEy135VRjondo"),
     ("SHLDon", "siVse6kjZb9ihaXHaqoG3mhHyTPEnNCkvSDTheoondo"),
@@ -401,6 +409,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("STXon", "EXtprP1wzrNo2bByrU9JyzqEg2hQMSCVJakeHHYondo"),
     ("SWKSon", "iJtKb1CWnWdgJhs7HgSZvLmSJABGGMc97QeuG7tondo"),
     ("SYMon", "nP42LxpSZkUfnBUxiFsHxL5GKYWRZ1VxqGkMTNwondo"),
+    ("SYSBon", "5U9o49BoQNU6bBMswvmBs3R4GZmYSyrnTN4ncX4ondo"),
     ("TASKon", "nQysX1ZsRJ8yTJg8smZTZ91rWcVBabDRqdUEKZHondo"),
     ("TCOMon", "9PMjLqd8zPdKkJUXarnit5t7tPL3cCscwHzy7ATondo"),
     ("TELon", "ZjYCwYeG85TbV5oXkCkvWQTNPh2PgTQ8X4nxpbyondo"),
@@ -433,6 +442,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("URNMon", "hieZTEZNBU67bMGULK9hWCB9h5jBPKdpRWiXpwkondo"),
     ("USARon", "aA1dRckexLmQyppFoWmjKDFjrNFUsZeGzZ7L5xpondo"),
     ("USFRon", "o6U1Sm6Vd7EofMyCrL28mrp2QLzgYGgjveHiEQ5ondo"),
+    ("USHYon", "aau4XCAZR6p9uC4vgdHdh4ip3oW5pr5PrNs3FJ8ondo"),
     ("USOon", "rpydAzWdCy85HEmoQkH5PVxYtDYQWjmLxgHHadxondo"),
     ("UUUUon", "ey16y4Bk92zmPSvbRznuv3RioAXbVreBkQxrKGDondo"),
     ("VCXon", "esgtAV7yKf7Ei3Q92VmXcEGkoqY2UqCHzZvCWhgondo"),
@@ -452,6 +462,7 @@ static GM_TOKENS_STATIC: &[(&str, &str)] = &[
     ("Von", "kxEW4oJL75K37VeXaZF1ynbHQATQwhECQKN1374ondo"),
     ("WCCon", "m3m2HAANsAf2Y3BkdBixDgtrrFHnZDp4NqVh9obondo"),
     ("WDCon", "FLqH2jB2DZPJP5nnVFAakRKaNTcDZtq71Pnpp6Aondo"),
+    ("WENon", "QwJ619MuDRvT1f29RH7tMdaqsUnaSNcvBEJAZkHondo"),
     ("WFCon", "L6ZE5qCpVVSqLePz64CrwkgyWoPF9M7tB8BeFH4ondo"),
     ("WLKon", "mrNSd1y72F7Dx2Uip4vidtsJKKd8iJatTKGX6Pvondo"),
     ("WMBon", "bvjmEwQBqbMr6rnx5a74boBz6nmA1DNThujPnNAondo"),

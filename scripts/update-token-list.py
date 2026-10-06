@@ -21,7 +21,7 @@ Pipeline:
 Modes:
   (default)   rewrite token_list.rs in place
   --check     exit 1 if the generated list differs from the committed file
-              (no write) — used by CI to detect drift
+              (no write) — run manually before a release
 
 Network failures on individual symbols are retried; a symbol that never
 resolves aborts the run (fail-closed) rather than silently dropping a token.
