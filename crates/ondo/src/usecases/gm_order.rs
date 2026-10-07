@@ -628,6 +628,16 @@ mod tests {
     }
 
     #[test]
+    fn split_total_dust_goes_to_largest_weight_not_first() {
+        // Largest weight is SECOND (70%): 20.000001 floors to 6_000_000 /
+        // 14_000_000 and the 1-micro dust must land on TSLA, not SPY. (Distinct
+        // weights: a tie fixture can't tell "largest" from "first".)
+        let out = split_total_by_weights("20.000001", &wpairs(&[("SPY", "30%"), ("TSLA", "70%")])).unwrap();
+        assert_eq!(out[0].1, 6_000_000);
+        assert_eq!(out[1].1, 14_000_001);
+    }
+
+    #[test]
     fn split_total_fractional_weights() {
         let out = split_total_by_weights("100", &wpairs(&[("TSLA", "87.5%"), ("NVDA", "12.5%")])).unwrap();
         assert_eq!(out[0].1, 87_500_000);

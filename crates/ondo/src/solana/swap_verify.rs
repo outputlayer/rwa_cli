@@ -505,6 +505,60 @@ mod tests {
         );
     }
 
+    /// GM-sell layout: the GM token is Token-2022, so the input balance lives in
+    /// watch slot 1 (slot 0 absent) and USDC output credits slot 2. Runs the
+    /// verifier with the Token-2022 input debited `debit` raw units.
+    async fn gm_sell_verify(debit: u64) -> Result<()> {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("getMultipleAccounts");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": [null, token_account_json(10_000_000_000), token_account_json(0), null] }
+            }));
+        }).await;
+        server.mock_async(|when, then| {
+            when.method(POST).body_contains("simulateTransaction");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "value": {
+                    "err": null,
+                    "accounts": [null, token_account_json(10_000_000_000 - debit), token_account_json(25_000_000), null],
+                    "logs": []
+                }}
+            }));
+        }).await;
+        // Sell 2e9 raw GM tokens for >= 24.9 USDC.
+        verify_swap_simulation(
+            "AQID", &[2u8; 32], 2_000_000_000, &[3u8; 32], 24_900_000, &[1u8; 32],
+            Some(&server.base_url()),
+        )
+        .await
+    }
+
+    /// Token-2022 input in slot 1 debited by one unit MORE than expected, with
+    /// USDC correctly credited, must refuse. One unit (not a gross overspend)
+    /// so a widened input range (`0..3`, which would net the USDC credit off
+    /// the debit) is caught too; the message pins the overspend branch, so a
+    /// narrowed range (`0..1`, "debited nothing") is also caught.
+    #[tokio::test]
+    async fn gm_sell_refuses_token2022_overspend_in_slot_one() {
+        let err = gm_sell_verify(2_000_000_001).await.expect_err("overspend must refuse");
+        match err.downcast_ref::<SwapSimError>() {
+            Some(SwapSimError::UnsafeDelta(m)) => {
+                assert!(m.contains("more than the expected"), "wrong refusal: {m}");
+            }
+            other => panic!("expected UnsafeDelta, got {other:?}: {err}"),
+        }
+    }
+
+    /// The honest twin: exactly the expected Token-2022 debit passes.
+    #[tokio::test]
+    async fn gm_sell_accepts_exact_token2022_debit_in_slot_one() {
+        gm_sell_verify(2_000_000_000).await.expect("exact debit must pass");
+    }
+
     #[tokio::test]
     async fn verify_swap_simulation_refuses_on_chain_failure_end_to_end() {
         use httpmock::prelude::*;

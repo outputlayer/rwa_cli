@@ -681,20 +681,15 @@ fn buy_basket_dry_run_enforces_max_bps() {
         .unwrap();
 
     let v = stdout_json(&out);
-    match v["status"].as_str() {
-        Some("dry_run") => {
-            assert!(v["bought"].as_array().unwrap().is_empty(), "over-budget quote must not pass: {v}");
-            let failed = v["failed"].as_array().unwrap();
-            assert_eq!(failed.len(), 1, "expected one cost_too_high failure: {v}");
-            // failed[].token echoes the user's input symbol (existing fail_json convention)
-            assert_eq!(failed[0]["token"], "AAL");
-            assert_eq!(failed[0]["error_kind"], "cost_too_high");
-        }
-        Some("error") => {
-            assert_eq!(v["error_kind"], "market_closed", "unexpected error: {v}");
-        }
-        other => panic!("unexpected status {other:?}: {v}"),
-    }
+    // always_tradable_limits() makes this wall-clock independent, so the
+    // market_closed envelope is NOT an acceptable outcome here.
+    assert_eq!(v["status"], "dry_run", "unexpected: {v}");
+    assert!(v["bought"].as_array().unwrap().is_empty(), "over-budget quote must not pass: {v}");
+    let failed = v["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "expected one cost_too_high failure: {v}");
+    // failed[].token echoes the user's input symbol (existing fail_json convention)
+    assert_eq!(failed[0]["token"], "AAL");
+    assert_eq!(failed[0]["error_kind"], "cost_too_high");
 }
 
 /// M3: a REAL (non-`--dry-run`, `-y`) buy-basket where every item fails must
@@ -967,9 +962,8 @@ fn buy_basket_total_dry_run_echoes_allocation() {
 }
 
 /// `gm buy --quote-only --json` emits the `dry_run` TradeJson shape without
-/// touching the RPC (no funds check). Sessions are wall-clock dependent, so
-/// when the market is closed the same invocation must emit the error envelope
-/// with `error_kind: "market_closed"` — both branches are stable contracts.
+/// touching the RPC (no funds check). The session mock is always-tradable, so
+/// the result is wall-clock independent.
 #[test]
 fn buy_quote_only_json_emits_dry_run_shape() {
     let home = test_home("buy-quote-only");
@@ -988,10 +982,13 @@ fn buy_quote_only_json_emits_dry_run_shape() {
         when.method(POST).path("/rpc");
         then.status(500);
     });
-    // Session-limits API down → check_tradable fails open (documented behavior).
+    // Deterministic session fixture: tradable in every session, so the
+    // result is wall-clock independent (a 500 fails closed while Closed).
     server.mock(|when, then| {
         when.method(GET).path("/session");
-        then.status(500);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
     });
     let order = server.mock(|when, then| {
         when.method(GET).path("/order");
@@ -1023,24 +1020,15 @@ fn buy_quote_only_json_emits_dry_run_shape() {
         .unwrap();
 
     let v = stdout_json(&out);
-    match v["status"].as_str() {
-        Some("dry_run") => {
-            assert_eq!(v["token"], "AALon");
-            assert_eq!(v["counter_amount"], "10");
-            assert_eq!(v["counter_token"], "USDC");
-            assert_eq!(v["tx"], "");
-            assert_eq!(v["fee_bps"], 5);
-            assert_eq!(v["gasless"], true);
-            assert_eq!(v["router"], "iris");
-            order.assert_hits(1);
-        }
-        Some("error") => {
-            // Market closed right now (weekend window) — still a stable contract.
-            assert_eq!(v["error_kind"], "market_closed", "unexpected error: {v}");
-            assert!(!out.status.success());
-        }
-        other => panic!("unexpected status {other:?}: {v}"),
-    }
+    assert_eq!(v["status"], "dry_run", "unexpected: {v}");
+    assert_eq!(v["token"], "AALon");
+    assert_eq!(v["counter_amount"], "10");
+    assert_eq!(v["counter_token"], "USDC");
+    assert_eq!(v["tx"], "");
+    assert_eq!(v["fee_bps"], 5);
+    assert_eq!(v["gasless"], true);
+    assert_eq!(v["router"], "iris");
+    order.assert_hits(1);
 }
 
 /// `gm buy --json` without `-y` (and not `--dry-run`/`--quote-only`) must fail
@@ -3499,4 +3487,90 @@ fn buy_basket_equal_without_total_errors() {
     let v = stdout_json(&out);
     assert_eq!(v["error_kind"], "invalid_amount");
     assert!(v["error"].as_str().unwrap().contains("--total"), "{v}");
+}
+
+/// Runs `gm <side> AAL <amt> --dry-run --limit-price <limit>` against a mock
+/// stack whose quote implies exactly 10 USDC/token (buy: 10 USDC -> 1 token)
+/// or 12.5 USDC/token (sell: 2 tokens -> 25 USDC). Returns the process output.
+fn run_limit_price_dry_run(name: &str, side: &str, amount: &str, limit: &str) -> std::process::Output {
+    let home = test_home(name);
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200).json_body(serde_json::json!(
+            { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value": [
+                usdc_account_entry(1_000_000_000),
+                token_entry(AAL_MINT, 2.0, "2000000000"),
+            ] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+    let (in_amt, out_amt) = if side == "buy" { ("10000000", "1000000000") } else { ("2000000000", "25000000") };
+    server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200).json_body(serde_json::json!({
+            "requestId": "req-1",
+            "inAmount": in_amt,
+            "outAmount": out_amt,
+            "inUsdValue": 10.0,
+            "outUsdValue": 9.99,
+            "feeBps": 5,
+            "gasless": true,
+            "router": "iris",
+            "transaction": "AQABBASE64DUMMYTX=="
+        }));
+    });
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    rwa(&home)
+        .args(["--json", "gm", side, "AAL", amount, "--limit-price", limit, "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap()
+}
+
+/// `buy --limit-price` just below the implied 10 USDC/token must fail with
+/// `condition_not_met` (exit 1) even in `--dry-run`; at the exact implied
+/// price (equality passes) it previews normally.
+#[test]
+fn buy_limit_price_below_implied_is_condition_not_met() {
+    let out = run_limit_price_dry_run("buy-limit-below", "buy", "10", "9.99");
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "condition_not_met", "{v}");
+
+    let ok = run_limit_price_dry_run("buy-limit-equal", "buy", "10", "10");
+    assert!(ok.status.success(), "equality must pass: {}", String::from_utf8_lossy(&ok.stdout));
+    assert_eq!(stdout_json(&ok)["status"], "dry_run");
+}
+
+/// `sell --limit-price` just above the implied 12.5 USDC/token must fail with
+/// `condition_not_met`; at the exact implied price it previews normally.
+#[test]
+fn sell_limit_price_above_implied_is_condition_not_met() {
+    let out = run_limit_price_dry_run("sell-limit-above", "sell", "all", "12.51");
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "condition_not_met", "{v}");
+
+    let ok = run_limit_price_dry_run("sell-limit-equal", "sell", "all", "12.5");
+    assert!(ok.status.success(), "equality must pass: {}", String::from_utf8_lossy(&ok.stdout));
+    assert_eq!(stdout_json(&ok)["status"], "dry_run");
 }

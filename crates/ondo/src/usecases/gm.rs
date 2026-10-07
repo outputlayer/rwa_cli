@@ -1116,6 +1116,8 @@ mod tests {
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(30)), Some((55.0, 30)));
         // cost 55 <= max 100 -> allow
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(100)), None);
+        // cost exactly == max is NOT over the cap (strict `>`): fee 10, slip 0 -> 10 bps
+        assert_eq!(cost_exceeds_max_bps(Some(0.0), Some(10), Some(10)), None);
         // no max set -> allow
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), None), None);
         // favorable cost (-10 bps) never exceeds, even at max 0
