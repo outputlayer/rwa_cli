@@ -9,6 +9,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.15] - 2026-10-07 — faster quotes, exact percentages, honest error kinds
+
+### Changed
+
+- **Percentages are exact: at most 2 decimal places, `0 < pct ≤ 100`** (integer bps, no float rounding). `33.333%`, `0%`, `1e1%` are now `invalid_amount` (exit 1) for buy/sell/close-all/sell-basket — previously silently rounded (`close-all 0.004%` used to drop every position and report success). `sell-basket` validates percentages before any leg executes. **Scripts passing such values now get exit 1.**
+- **`rpc_unavailable` (exit 75) only for transient RPC failures** — network errors, HTTP 5xx, rate limits and endpoint-side JSON-RPC codes (-32005/-32004/-32007/-32603/-32429). HTTP 401/403 and request errors (e.g. -32601/-32602) now carry no `error_kind` and **exit 1** (were `rpc_unavailable`/75), so an expired private-RPC key no longer loops retrying agents.
+- **Jupiter `/order` 429/5xx/network failures are typed `execute_unavailable` (exit 75)** — were untyped (`error_kind: null`, exit 1).
+- **`search`/`tradable` fail when Ondo session limits are unavailable** (`Ondo session limits unavailable`, exit 1) instead of reporting every token untradable with exit 0. On an Ondo assets outage they warn on stderr and leave `type` empty instead of guessing `"stock"`.
+- **`close-all` with a percentage that resolves to 0 raw tokens** puts that position in `skipped[]` (`reason: "percentage resolves to 0 raw tokens"`, `retryable: false`); if every position resolves to 0 the command fails `invalid_amount`.
+- **`reclaim --token <typo>`** fails `unknown_token` before touching the wallet or RPC (was `status: success` with 0 accounts).
+- `close-all --dry-run` human output now uses the shared per-item quote lines (JSON unchanged).
+
+### Added
+
+- Typed `invalid_amount` on basket amount, `--limit-price` and close-all percent parse errors (were `error_kind: null`).
+- Bare tickers ending in "ON" resolve (`AAON` → `AAONon`, `ON` → `ONon`) in buy/sell/tradable/history.
+
+### Performance
+
+- HTTP responses are gzip-compressed (Ondo assets payload ~3 MB → ~0.5 MB on cold cache).
+- `close-all --dry-run` fetches quotes with the same staggered parallel launcher as baskets (`--sequential` keeps 3 s spacing).
+- Tradability check fetches Ondo assets and session limits concurrently; sell preflight joins it with the balance read. Cold `buy --dry-run` ~1.1 s → ~0.8 s.
+
+### Fixed
+
+- Per-item `failed[].error` keeps the full cause chain.
+- Passphrase hint points to `rwa keys store-passphrase` (the recommended keychain setup) before `RWA_PASSPHRASE`.
+- Docs: all-failed basket/close-all envelopes exit 75 iff every `failed[].error_kind` is transient; exit 2 = clap usage error; `rwa update` error kinds; the process lock covers every `rwa` invocation, including read-only ones.
+
+### Tests
+
+- Mutation-tested every changed line (cargo-mutants); closed gaps incl. the pre-trade tradability gate, RPC URL rotation, `--limit-price` wiring, Token-2022 sign-time guard slots, `--max-bps` boundary and `--total` dust.
+
+---
+
 ## [0.7.14] - 2026-10-07 — close-all tells the truth, `portfolio --view`, 450 tokens
 
 ### Changed
