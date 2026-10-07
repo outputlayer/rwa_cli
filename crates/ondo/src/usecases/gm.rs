@@ -512,8 +512,9 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
     Ok(exec)
 }
 
-pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
-    let Some(raw) = amount else { return Ok(100.0); };
+/// close-all percentage as integer basis points (default 10_000 = 100%).
+pub fn parse_sell_pct(amount: Option<&str>) -> Result<u32> {
+    let Some(raw) = amount else { return Ok(10_000); };
     let s = raw.trim();
     let pct_str = s
         .strip_suffix('%')
@@ -909,27 +910,27 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_none_returns_100() {
-        assert_eq!(parse_sell_pct(None).unwrap(), 100.0);
+        assert_eq!(parse_sell_pct(None).unwrap(), 10_000);
     }
 
     #[test]
     fn parse_sell_pct_full_percent() {
-        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 100.0);
+        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 10_000);
     }
 
     #[test]
     fn parse_sell_pct_half_percent() {
-        assert_eq!(parse_sell_pct(Some("50%")).unwrap(), 50.0);
+        assert_eq!(parse_sell_pct(Some("50%")).unwrap(), 5_000);
     }
 
     #[test]
-    fn parse_sell_pct_zero_percent() {
-        assert_eq!(parse_sell_pct(Some("0%")).unwrap(), 0.0);
+    fn parse_sell_pct_zero_percent_is_err() {
+        assert!(parse_sell_pct(Some("0%")).is_err());
     }
 
     #[test]
     fn parse_sell_pct_decimal_percent() {
-        assert_eq!(parse_sell_pct(Some("1.5%")).unwrap(), 1.5);
+        assert_eq!(parse_sell_pct(Some("1.5%")).unwrap(), 150);
     }
 
     #[test]
@@ -1045,14 +1046,12 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_fractional_near_zero() {
-        let pct = parse_sell_pct(Some("0.01%")).unwrap();
-        assert!((pct - 0.01).abs() < f64::EPSILON);
+        assert_eq!(parse_sell_pct(Some("0.01%")).unwrap(), 1);
     }
 
     #[test]
     fn parse_sell_pct_exactly_100_percent() {
-        let pct = parse_sell_pct(Some("100%")).unwrap();
-        assert_eq!(pct, 100.0);
+        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 10_000);
     }
 
     // ── classify_error ────────────────────────────────────────

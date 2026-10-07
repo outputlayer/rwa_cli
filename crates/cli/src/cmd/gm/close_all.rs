@@ -12,12 +12,12 @@ use usecases::gm::ClosePosition as CloseCandidate;
 /// why the per-skip stderr line was removed.
 fn filter_close_items(
     balances: &[solana::SolanaTokenBalance],
-    sell_pct: f64,
+    sell_bps: u32,
     assets: &[api::OndoAsset],
     tradable_set: &std::collections::HashSet<String>,
 ) -> Result<(Vec<CloseCandidate>, Vec<CloseSkipJson>)> {
     let (candidates, skips) =
-        usecases::gm::filter_close_positions(balances, sell_pct, assets, tradable_set)?;
+        usecases::gm::filter_close_positions(balances, sell_bps, assets, tradable_set)?;
     // No per-skip eprintln here: `render_close_preview`'s "Not selling" block
     // (printed right after this call, before the confirmation) shows the same
     // tokens with their real reason AND retryable/permanent status — a second
@@ -168,7 +168,8 @@ pub async fn close_all(
 ) -> Result<()> {
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
-    let sell_pct = usecases::gm::parse_sell_pct(amount)?;
+    let sell_bps = usecases::gm::parse_sell_pct(amount)?;
+    let sell_pct = f64::from(sell_bps) / 100.0; // display only
 
     let tokens = token_list::get_token_list();
     let w = load_wallet(selected)?;
@@ -205,7 +206,7 @@ pub async fn close_all(
     // Filter FIRST: the confirmation must show what will actually be sold, not
     // the raw balance list that filtering then silently trims.
     let (candidates, skipped) =
-        filter_close_items(&balances, sell_pct, &assets, &tradable_set)?;
+        filter_close_items(&balances, sell_bps, &assets, &tradable_set)?;
 
     // Portfolio value for the share figure: everything we looked at, sellable
     // or not — otherwise the share would always read ~100%.

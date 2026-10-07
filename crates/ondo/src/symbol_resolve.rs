@@ -13,16 +13,14 @@ pub fn resolve_token<'a>(symbol: &str, tokens: &'a [GmTokenEntry]) -> Result<&'a
         return Ok(entry);
     }
 
+    // Try `<input>ON` FIRST so a bare ticker that itself ends in "ON"
+    // (AAON, ON) resolves to its `on` token, then the input as given.
     let normalized = symbol.to_uppercase();
-    let lookup = if normalized.ends_with("ON") {
-        normalized
-    } else {
-        format!("{normalized}ON")
-    };
+    let suffixed = format!("{normalized}ON");
 
-    tokens
+    [suffixed, normalized]
         .iter()
-        .find(|t| t.symbol.to_uppercase() == lookup)
+        .find_map(|lookup| tokens.iter().find(|t| t.symbol.to_uppercase() == *lookup))
         .ok_or_else(|| {
             // Typed so agents get `error_kind: "unknown_token"` instead of null;
             // suggest the nearest symbol (typos are the most common input
@@ -99,6 +97,30 @@ mod tests {
             GmTokenEntry { symbol: "AAPLon", solana_address: Some("FakeAddr223456789012345678901234567890abc") },
             GmTokenEntry { symbol: "SPYon", solana_address: None },
         ]
+    }
+
+    #[test]
+    fn bare_ticker_ending_in_on_resolves_to_its_on_token() {
+        let tokens = vec![
+            // `AAon` upper-cases to "AAON": the collision that made order matter.
+            GmTokenEntry { symbol: "AAon", solana_address: None },
+            GmTokenEntry { symbol: "AAONon", solana_address: None },
+            GmTokenEntry { symbol: "ONon", solana_address: None },
+        ];
+        assert_eq!(resolve_token("AAON", &tokens).unwrap().symbol, "AAONon");
+        assert_eq!(resolve_token("ON", &tokens).unwrap().symbol, "ONon");
+        assert_eq!(resolve_token("AAONon", &tokens).unwrap().symbol, "AAONon");
+        assert_eq!(resolve_token("AA", &tokens).unwrap().symbol, "AAon");
+    }
+
+    #[test]
+    fn every_real_token_resolves_from_its_bare_ticker() {
+        let tokens = crate::token_list::get_token_list();
+        for t in tokens {
+            let bare = t.symbol.strip_suffix("on").unwrap_or(t.symbol);
+            assert_eq!(resolve_token(bare, tokens).unwrap().symbol, t.symbol, "bare {bare}");
+            assert_eq!(resolve_token(t.symbol, tokens).unwrap().symbol, t.symbol);
+        }
     }
 
     #[test]

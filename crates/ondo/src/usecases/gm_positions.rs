@@ -4,7 +4,7 @@
 
 use eyre::Result;
 
-use super::gm::{should_skip_position, CloseSkip};
+use super::gm::{should_skip_position, CloseSkip, GmTradeError, GmTradeErrorKind};
 use crate::{amounts, api, jupiter, solana};
 
 pub struct PortfolioPosition {
@@ -127,15 +127,16 @@ pub struct ClosePosition {
 /// values, and tokens not tradable in the current session.
 pub fn filter_close_positions(
     balances: &[solana::SolanaTokenBalance],
-    sell_pct: f64,
+    sell_bps: u32,
     assets: &[api::OndoAsset],
     tradable_set: &std::collections::HashSet<String>,
 ) -> Result<(Vec<ClosePosition>, Vec<CloseSkip>)> {
     let mut positions = Vec::new();
     let mut skipped = Vec::new();
+    let mut zero_resolved = 0usize;
 
     for tb in balances {
-        let sell_raw = if sell_pct < 100.0 {
+        let sell_raw = if sell_bps < 10_000 {
             let raw: u128 = tb.raw_amount.parse().map_err(|_| {
                 eyre::eyre!(
                     "Invalid on-chain amount for {}: {}",
@@ -143,8 +144,15 @@ pub fn filter_close_positions(
                     tb.raw_amount
                 )
             })?;
-            let partial = amounts::pct_of_u128(raw, sell_pct);
+            let partial = amounts::pct_of_u128(raw, sell_bps);
             if partial == 0 {
+                zero_resolved += 1;
+                skipped.push(CloseSkip {
+                    token: tb.symbol.clone(),
+                    estimated_usd: 0.0,
+                    reason: "percentage resolves to 0 raw tokens",
+                    retryable: false,
+                });
                 continue;
             }
             partial.to_string()
@@ -152,8 +160,8 @@ pub fn filter_close_positions(
             tb.raw_amount.clone()
         };
 
-        let sell_balance = if sell_pct < 100.0 {
-            tb.balance * sell_pct / 100.0
+        let sell_balance = if sell_bps < 10_000 {
+            tb.balance * f64::from(sell_bps) / 10_000.0
         } else {
             tb.balance
         };
@@ -193,6 +201,14 @@ pub fn filter_close_positions(
             sell_display,
             est_value,
         });
+    }
+
+    if !balances.is_empty() && zero_resolved == balances.len() {
+        return Err(GmTradeError::new(
+            GmTradeErrorKind::InvalidAmount,
+            "Percentage resolves to 0 raw tokens for every position — use a larger percentage",
+        )
+        .into());
     }
 
     Ok((positions, skipped))
@@ -263,7 +279,7 @@ mod tests {
             balance("GHOSTon", 1.0, "1000000000"),  // no market data
         ];
         let tradable = std::collections::HashSet::new();
-        let (positions, skipped) = filter_close_positions(&balances, 50.0, &assets, &tradable).unwrap();
+        let (positions, skipped) = filter_close_positions(&balances, 5_000, &assets, &tradable).unwrap();
 
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].symbol, "TSLAon");
@@ -272,6 +288,31 @@ mod tests {
         assert_eq!(skipped.len(), 2);
         assert!(skipped.iter().any(|s| s.token == "DUSTon" && s.reason.contains("minimum")));
         assert!(skipped.iter().any(|s| s.token == "GHOSTon" && s.reason.contains("market data")));
+    }
+
+    #[test]
+    fn filter_close_positions_sub_bps_goes_to_skipped_not_silent() {
+        let assets = vec![asset("TSLAon", "100", "0"), asset("AAPLon", "100", "0")];
+        // 0.01% (1 bps): 5_000 raw floors to 0; 2_000_000_000 raw → 200_000.
+        let balances = vec![
+            balance("TSLAon", 2000.0, "2000000000"),
+            balance("AAPLon", 0.000005, "5000"),
+        ];
+        let tradable = std::collections::HashSet::new();
+        let (_, skipped) = filter_close_positions(&balances, 1, &assets, &tradable).unwrap();
+        let s = skipped.iter().find(|s| s.token == "AAPLon").expect("zero-raw position reported");
+        assert!(!s.retryable);
+        assert!(s.reason.contains("0 raw"));
+    }
+
+    #[test]
+    fn filter_close_positions_all_zero_is_invalid_amount() {
+        let assets = vec![asset("TSLAon", "100", "0")];
+        let balances = vec![balance("TSLAon", 0.000005, "5000")];
+        let tradable = std::collections::HashSet::new();
+        let err = filter_close_positions(&balances, 1, &assets, &tradable).err().expect("err");
+        let kind = err.downcast_ref::<GmTradeError>().map(|e| e.kind);
+        assert_eq!(kind, Some(GmTradeErrorKind::InvalidAmount));
     }
 
     fn asset_paused(symbol: &str, price: &str, pct_24h: &str) -> api::OndoAsset {
@@ -304,7 +345,7 @@ mod tests {
             balance("GHOSTon", 1.0, "1000000000"), // no market data → temporary
         ];
         let tradable = std::collections::HashSet::new();
-        let (_, skipped) = filter_close_positions(&balances, 100.0, &assets, &tradable).unwrap();
+        let (_, skipped) = filter_close_positions(&balances, 10_000, &assets, &tradable).unwrap();
 
         let by = |t: &str| skipped.iter().find(|s| s.token == t).expect("skipped");
         assert!(by("TSLAon").retryable, "trading_paused must be retryable");
@@ -323,7 +364,7 @@ mod tests {
         tradable.insert("NVDAON".to_string());
 
         let (positions, skipped) =
-            filter_close_positions(&balances, 100.0, &assets, &tradable).unwrap();
+            filter_close_positions(&balances, 10_000, &assets, &tradable).unwrap();
         assert!(positions.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(skipped[0].retryable, "a session change makes this sellable again");
@@ -338,7 +379,7 @@ mod tests {
         let balances = vec![balance("TSLAon", 2.0, "2000000000")];
         let tradable = std::collections::HashSet::new();
         let (positions, _) =
-            filter_close_positions(&balances, 50.0, &assets, &tradable).unwrap();
+            filter_close_positions(&balances, 5_000, &assets, &tradable).unwrap();
 
         assert_eq!(positions.len(), 1);
         // 2.0 tokens × 50% × $100 = $100 — half the position, not the whole one.
@@ -385,7 +426,7 @@ mod tests {
             raw_amount: "1000000000".into(),
         }];
         let tradable: std::collections::HashSet<String> = ["SPYON".to_string()].into();
-        let (positions, skipped) = filter_close_positions(&balances, 100.0, &[paused], &tradable).unwrap();
+        let (positions, skipped) = filter_close_positions(&balances, 10_000, &[paused], &tradable).unwrap();
         assert!(positions.is_empty());
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].reason, "trading_paused");
