@@ -3,45 +3,48 @@ use rwa_ondo::{solana, token_list};
 
 use super::*;
 
+/// Resolve `--token` (GM symbol or mint address) up front: a typo must fail
+/// before any wallet load or RPC call.
+fn resolve_filter_mint(filter: &str) -> Result<String> {
+    let filter_upper = filter.to_uppercase();
+    let tokens = token_list::get_token_list();
+    // Try to resolve symbol → mint
+    let filter_mint = tokens
+        .iter()
+        .find(|t| {
+            t.symbol.eq_ignore_ascii_case(&filter_upper)
+                || t.symbol
+                    .strip_suffix("on")
+                    .unwrap_or(t.symbol)
+                    .eq_ignore_ascii_case(&filter_upper)
+        })
+        .and_then(|t| t.solana_address)
+        .map(|s| s.to_string());
+    // A typo must not read as "nothing to reclaim": accept a known symbol
+    // or a valid mint address, otherwise fail as unknown_token.
+    match filter_mint {
+        Some(m) => Ok(m),
+        None if solana::validate_address(filter).is_ok() => Ok(filter.to_string()),
+        None => {
+            Err(rwa_ondo::usecases::gm::GmTradeError::new(
+                rwa_ondo::usecases::gm::GmTradeErrorKind::UnknownToken,
+                format!("Unknown token '{filter}' — use a GM symbol (see `rwa gm list`) or a mint address"),
+            )
+            .into())
+        }
+    }
+}
+
 pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&str>, selected: Option<&str>) -> Result<()> {
+    let filter_mint = token_filter.map(resolve_filter_mint).transpose()?;
     let w = load_wallet(selected)?;
     let pubkey = w.pubkey();
 
     let mut empty = solana::get_empty_token_accounts(&pubkey, rpc_url).await?;
 
-    // Filter by token if specified
-    if let Some(filter) = token_filter {
-        let filter_upper = filter.to_uppercase();
-        let tokens = token_list::get_token_list();
-        // Try to resolve symbol → mint
-        let filter_mint = tokens
-            .iter()
-            .find(|t| {
-                t.symbol.eq_ignore_ascii_case(&filter_upper)
-                    || t.symbol
-                        .strip_suffix("on")
-                        .unwrap_or(t.symbol)
-                        .eq_ignore_ascii_case(&filter_upper)
-            })
-            .and_then(|t| t.solana_address)
-            .map(|s| s.to_string());
-        // A typo must not read as "nothing to reclaim": accept a known symbol
-        // or a valid mint address, otherwise fail as unknown_token.
-        let filter_mint = match filter_mint {
-            Some(m) => m,
-            None if solana::validate_address(filter).is_ok() => filter.to_string(),
-            None => {
-                return Err(rwa_ondo::usecases::gm::GmTradeError::new(
-                    rwa_ondo::usecases::gm::GmTradeErrorKind::UnknownToken,
-                    format!("Unknown token '{filter}' — use a GM symbol (see `rwa gm list`) or a mint address"),
-                )
-                .into());
-            }
-        };
-
-        empty.retain(|a| a.mint == filter_mint);
+    if let Some(m) = &filter_mint {
+        empty.retain(|a| a.mint == *m);
     }
-
     if empty.is_empty() {
         if json {
             return json_out(&ReclaimJson {

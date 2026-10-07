@@ -98,3 +98,23 @@ pub(super) async fn rpc_batch_sequential(
 
     Err(all_exhausted(None, last_err).into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    fn err(kind: SolanaRpcErrorKind, st: Option<StatusCode>, code: Option<i64>) -> SolanaRpcError {
+        SolanaRpcError::new(kind, Some("getBalance"), None, st, code, "x")
+    }
+
+    #[test]
+    fn should_try_next_url_only_for_endpoint_transient_errors() {
+        use SolanaRpcErrorKind as K;
+        assert!(should_try_next_url(&err(K::Network, None, None)));
+        assert!(should_try_next_url(&err(K::HttpStatus, Some(StatusCode::SERVICE_UNAVAILABLE), None)));
+        assert!(should_try_next_url(&err(K::RpcResponse, None, Some(-32005))));
+        assert!(!should_try_next_url(&err(K::HttpStatus, Some(StatusCode::UNAUTHORIZED), None)));
+        assert!(!should_try_next_url(&err(K::RpcResponse, None, Some(-32601))));
+    }
+}

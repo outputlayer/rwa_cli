@@ -115,6 +115,11 @@ fn sort_in_candidate_order(items: &mut [CloseItemJson], order_of: &[String]) {
     items.sort_by_key(|i| order_of.iter().position(|s| *s == i.token));
 }
 
+/// Same, for failed entries.
+fn sort_failed_in_candidate_order(items: &mut [CloseFailJson], order_of: &[String]) {
+    items.sort_by_key(|f| order_of.iter().position(|s| *s == f.token));
+}
+
 /// Dry-run: fetch-only, no execute. Parallel by default (staggered, adaptive
 /// quote launches — same as the basket dry-runs); `--sequential` opts into one
 /// quote at a time, `SEQUENTIAL_SPACING` apart. Items are reported in
@@ -153,7 +158,7 @@ async fn run_close_dry_run(
     };
     // Parallel results arrive in completion order; keep candidate order.
     sort_in_candidate_order(&mut sold, &order_of);
-    failed.sort_by_key(|f| order_of.iter().position(|s| *s == f.token));
+    sort_failed_in_candidate_order(&mut failed, &order_of);
 
     let total = sum_quoted_usdc(&sold);
     (sold, failed, total)
@@ -850,6 +855,16 @@ mod tests {
         let order: Vec<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
         let mut items = vec![item("C"), item("A"), item("B")];
         sort_in_candidate_order(&mut items, &order);
+        let got: Vec<&str> = items.iter().map(|i| i.token.as_str()).collect();
+        assert_eq!(got, ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn sort_failed_in_candidate_order_restores_candidate_order() {
+        let fail = |t: &str| CloseFailJson { token: t.to_string(), error: "e".to_string(), error_kind: None };
+        let order: Vec<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        let mut items = vec![fail("C"), fail("A"), fail("B")];
+        sort_failed_in_candidate_order(&mut items, &order);
         let got: Vec<&str> = items.iter().map(|i| i.token.as_str()).collect();
         assert_eq!(got, ["A", "B", "C"]);
     }

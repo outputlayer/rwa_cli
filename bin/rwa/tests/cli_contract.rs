@@ -3636,3 +3636,134 @@ fn sell_limit_price_above_implied_is_condition_not_met() {
     assert!(ok.status.success(), "equality must pass: {}", String::from_utf8_lossy(&ok.stdout));
     assert_eq!(stdout_json(&ok)["status"], "dry_run");
 }
+
+// ── mutation-gap closers ─────────────────────────────────────────────────────
+
+fn limits_never_tradable() -> serde_json::Value {
+    let no = serde_json::json!({
+        "tradable": false, "maxAttestationCount": "0", "maxActiveNotionalValue": "0"
+    });
+    serde_json::json!({
+        "limits": [{ "symbol": "TSLAon", "premarket": no, "regular": no, "postmarket": no,
+                     "overnight": no, "offhours": no }]
+    })
+}
+
+fn tsla_asset(paused: bool) -> serde_json::Value {
+    serde_json::json!({ "assets": [{
+        "symbol": "TSLAon", "assetName": "Tesla", "isTradingPaused": paused,
+        "isOffhoursTradable": false, "primaryMarket": { "price": "250.0" }, "tags": []
+    }]})
+}
+
+/// breaks if: `check_tradable` stops blocking a paused asset on buy.
+#[test]
+fn buy_is_blocked_when_asset_is_trading_paused() {
+    let home = test_home("buy-paused");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(true));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+    mock_rpc_for_transfers(&server, 100_000_000, serde_json::json!([]));
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "5", "--dry-run"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.url("/jup"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "trading_paused", "{v}");
+}
+
+/// breaks if: `check_tradable` stops blocking a token the session limits say
+/// is not tradable (kind depends on wall-clock: off-hours vs regular sessions).
+#[test]
+fn buy_is_blocked_when_token_not_tradable_in_session() {
+    let home = test_home("buy-not-tradable");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(false));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(limits_never_tradable());
+    });
+    mock_rpc_for_transfers(&server, 100_000_000, serde_json::json!([]));
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "5", "--dry-run"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.url("/jup"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert!(matches!(v["error_kind"].as_str(), Some("market_closed" | "not_tradable")), "{v}");
+}
+
+fn list_type_of_tsla(assets_url: &str, session_url: &str, home: &Path) -> String {
+    let out = rwa(home)
+        .args(["--json", "gm", "tradable", "TSLA"])
+        .env("RWA_ONDO_API_URL", assets_url)
+        .env("RWA_ONDO_SESSION_URL", session_url)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    v["items"][0]["type"].as_str().unwrap_or_else(|| panic!("no type: {v}")).to_string()
+}
+
+/// breaks if: an assets outage makes `list` guess a type from an empty name
+/// (must be ""), or healthy assets stop deriving "stock".
+#[test]
+fn list_type_is_unknown_on_assets_outage_and_stock_otherwise() {
+    let home = test_home("list-type");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(false));
+    });
+    assert_eq!(list_type_of_tsla(&server.url("/assets"), &server.url("/session"), &home), "stock");
+    let home2 = test_home("list-type-down");
+    assert_eq!(list_type_of_tsla("http://127.0.0.1:1/assets", &server.url("/session"), &home2), "");
+}
+
+/// breaks if: `reclaim --token` stops rejecting a typo (reads as "nothing to
+/// reclaim") or the check moves back behind wallet load / RPC.
+#[test]
+fn reclaim_unknown_token_fails_fast_without_wallet() {
+    let home = test_home("reclaim-unknown");
+    let out = rwa(&home).args(["--json", "gm", "reclaim", "--token", "ZZZZ"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_json(&out)["error_kind"], "unknown_token");
+}
+
+/// breaks if: a valid mint address is rejected as unknown_token.
+#[test]
+fn reclaim_valid_mint_address_is_not_unknown_token() {
+    let home = test_home("reclaim-mint");
+    let out = rwa(&home)
+        .args(["--json", "gm", "reclaim", "--token", AAL_MINT])
+        .output()
+        .unwrap();
+    let v = stdout_json(&out);
+    assert_ne!(v["error_kind"], "unknown_token", "{v}");
+}
