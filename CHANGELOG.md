@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.16] - 2026-10-07 — revert parallel `close-all --dry-run`
+
+### Changed
+
+- **`close-all --dry-run` quotes positions sequentially again** (0.7.14 behavior, `[DRY RUN] Would sell …` lines restored; JSON unchanged). Live measurement on 4 positions showed the 0.7.15 parallel launcher gave no speed-up (~1.5–1.8 s either way — single quotes are already ~0.35 s and the launcher staggers them 350 ms apart) while back-to-back runs tripped Jupiter's keyless per-wallet rate limit more often (up to ~10 s with 0.8/1.6/3.2 s retries). `--sequential` no longer adds 3 s spacing in dry-run.
+
+---
+
 ## [0.7.15] - 2026-10-07 — faster quotes, exact percentages, honest error kinds
 
 ### Changed
