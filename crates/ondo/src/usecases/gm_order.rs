@@ -126,10 +126,14 @@ pub async fn fetch_sell_order_by_symbol(
     let tokens = token_list::get_token_list();
     let sym = Symbol::from(symbol_str);
     let (sym, gm_mint) = resolve_gm_mint(&sym, tokens)?;
-    check_tradable(&sym, None).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let bal = solana::get_balance(taker, &gm_mint, rpc_url).await
+    let (tradable_res, bal_res) = tokio::join!(
+        check_tradable(&sym, None),
+        solana::get_balance(taker, &gm_mint, rpc_url),
+    );
+    tradable_res?;
+    let bal = bal_res
         .wrap_err_with(|| format!("failed to fetch {sym} balance"))?;
     if bal.balance <= 0.0 {
         return Err(GmTradeError::new(
