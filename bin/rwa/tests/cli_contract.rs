@@ -869,6 +869,31 @@ fn buy_zero_amount_and_zero_limit_price_are_typed_invalid_amount() {
     assert_eq!(v["error_kind"], "invalid_amount", "{v}");
 }
 
+/// A malformed basket amount and a structurally bad `--limit-price` (unknown
+/// unit) are input errors: `error_kind: invalid_amount`, not null.
+#[test]
+fn bad_basket_amount_and_limit_price_are_typed_invalid_amount() {
+    let home = test_home("typed-invalid-amount");
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "1.1234567", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "100", "--limit-price", "748", "foo", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+}
+
 /// `buy-basket --total --dry-run` echoes the allocation object: `total` as
 /// entered plus a symbol→weight map, alongside the usual dry_run shape.
 #[test]
