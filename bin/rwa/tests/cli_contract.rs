@@ -863,7 +863,7 @@ fn bad_basket_amount_and_limit_price_are_typed_invalid_amount() {
     assert!(keygen.status.success());
 
     let out = rwa(&home)
-        .args(["--json", "gm", "buy-basket", "TSLA", "abc", "--dry-run"])
+        .args(["--json", "gm", "buy-basket", "TSLA", "1.1234567", "--dry-run"])
         .output()
         .unwrap();
     assert!(!out.status.success());
