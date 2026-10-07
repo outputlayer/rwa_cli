@@ -47,7 +47,6 @@ impl SolanaRpcError {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -59,6 +58,26 @@ impl SolanaRpcError {
                 | SolanaRpcErrorKind::BatchShape
                 | SolanaRpcErrorKind::Unavailable
         )
+    }
+}
+
+impl SolanaRpcError {
+    /// Whether the failure condemns the endpoint (transient), not the request:
+    /// retryable kinds, a server-side 5xx, and JSON-RPC error codes that are
+    /// node-side and transient (behind/unavailable/internal/rate-limit:
+    /// -32005, -32004, -32007, -32603, -32429). Client errors (4xx such as
+    /// 401/403) and request-level RPC errors (-32601 method not found, -32602
+    /// invalid params, …) are request problems and are not transient.
+    /// Shared by the URL-rotation loop and `classify_error` (`rpc_unavailable`).
+    #[must_use]
+    pub fn is_endpoint_transient(&self) -> bool {
+        self.is_retryable()
+            || (self.kind == SolanaRpcErrorKind::HttpStatus
+                && self.status.is_some_and(|s| s.is_server_error()))
+            || (self.kind == SolanaRpcErrorKind::RpcResponse
+                && self
+                    .code
+                    .is_some_and(|c| matches!(c, -32005 | -32004 | -32007 | -32603 | -32429)))
     }
 }
 
@@ -112,6 +131,35 @@ impl std::error::Error for SolanaRpcError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_rpc_error_only_transient_is_rpc_unavailable() {
+        use crate::usecases::gm::classify_error as c;
+        use StatusCode as S;
+        use SolanaRpcErrorKind as K;
+        let mk = |k, st: Option<S>| -> eyre::Error { SolanaRpcError::new(k, None, None, st, None, "x").into() };
+        assert_eq!(c(&mk(K::HttpStatus, Some(S::UNAUTHORIZED))), None);
+        assert_eq!(c(&mk(K::HttpStatus, Some(S::FORBIDDEN))), None);
+        assert_eq!(c(&mk(K::HttpStatus, Some(S::SERVICE_UNAVAILABLE))), Some("rpc_unavailable"));
+        assert_eq!(c(&mk(K::Network, None)), Some("rpc_unavailable"));
+        assert_eq!(c(&mk(K::RpcResponse, None)), None);
+    }
+
+    #[test]
+    fn rpc_response_codes_split_transient_from_request_errors() {
+        use crate::usecases::gm::classify_error as c;
+        let mk = |code: i64| -> SolanaRpcError {
+            SolanaRpcError::new(SolanaRpcErrorKind::RpcResponse, Some("getBalance"), None, None, Some(code), "x")
+        };
+        for code in [-32005, -32004, -32007, -32603, -32429] {
+            assert!(mk(code).is_endpoint_transient(), "{code}");
+            assert_eq!(c(&mk(code).into()), Some("rpc_unavailable"), "{code}");
+        }
+        for code in [-32601, -32602, -32600, -32002] {
+            assert!(!mk(code).is_endpoint_transient(), "{code}");
+            assert_eq!(c(&mk(code).into()), None, "{code}");
+        }
+    }
 
     #[test]
     fn solana_rpc_error_rate_limit_is_retryable() {

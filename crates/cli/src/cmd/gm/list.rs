@@ -1,4 +1,4 @@
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use rwa_ondo::{api, symbol_resolve, token_list};
 
 use super::*;
@@ -271,10 +271,18 @@ async fn fetch_list_context() -> Result<ListContext> {
         api::fetch_assets(),
         api::fetch_session_limits(None),
     );
-    let assets = assets_res.unwrap_or_default();
+    // Limits are the tradability source of truth: an outage must fail loudly,
+    // not report every token as untradable.
+    let limits = limits_res.wrap_err("Ondo session limits unavailable")?;
+    // Assets only enrich names/tags/pause flags; degrade with a warning.
+    let assets_failed = assets_res.is_err();
+    let assets = assets_res.unwrap_or_else(|e| {
+        // stderr only, so JSON stdout stays a clean contract.
+        eprintln!("warning: Ondo asset metadata unavailable ({e}); names, types and tags are missing");
+        Vec::new()
+    });
 
-    let tradable_set: std::collections::HashSet<String> = limits_res
-        .unwrap_or_default()
+    let tradable_set: std::collections::HashSet<String> = limits
         .iter()
         .filter(|l| l.is_tradable(session))
         .map(|l| l.symbol.to_uppercase())
@@ -292,7 +300,9 @@ async fn fetch_list_context() -> Result<ListContext> {
             let name = asset.map(|a| clean_name(&a.asset_name)).unwrap_or_default();
             let kind = asset
                 .and_then(|a| a.instrument_type())
-                .unwrap_or_else(|| token_type_from_name(&name))
+                .or_else(|| (!assets_failed).then(|| token_type_from_name(&name)))
+                // Assets outage: unknown, never guessed from an empty name.
+                .unwrap_or("")
                 .to_lowercase();
             let sector = asset.and_then(|a| a.sector()).map(String::from);
             let asset_class = asset.and_then(|a| a.asset_class()).map(String::from);

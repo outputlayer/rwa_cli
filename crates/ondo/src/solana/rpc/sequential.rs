@@ -15,14 +15,8 @@ use super::{
     ordered_indices, single_attempt, single_batch_attempt, RpcRequest, RpcResponse, LAST_GOOD_IDX,
 };
 
-/// Whether an exhausted single-URL attempt still warrants trying the next URL.
-/// Retryable kinds (network, rate limit, decode, empty result) obviously do;
-/// a server-side 5xx does too — it condemns that endpoint, not the request.
-/// Client errors (4xx) and RPC-level errors are request problems: fail fast.
 fn should_try_next_url(e: &SolanaRpcError) -> bool {
-    e.is_retryable()
-        || (e.kind == SolanaRpcErrorKind::HttpStatus
-            && e.status.is_some_and(|s| s.is_server_error()))
+    e.is_endpoint_transient()
 }
 
 fn all_exhausted(method: Option<&str>, last_err: Option<SolanaRpcError>) -> SolanaRpcError {
@@ -103,4 +97,24 @@ pub(super) async fn rpc_batch_sequential(
     }
 
     Err(all_exhausted(None, last_err).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    fn err(kind: SolanaRpcErrorKind, st: Option<StatusCode>, code: Option<i64>) -> SolanaRpcError {
+        SolanaRpcError::new(kind, Some("getBalance"), None, st, code, "x")
+    }
+
+    #[test]
+    fn should_try_next_url_only_for_endpoint_transient_errors() {
+        use SolanaRpcErrorKind as K;
+        assert!(should_try_next_url(&err(K::Network, None, None)));
+        assert!(should_try_next_url(&err(K::HttpStatus, Some(StatusCode::SERVICE_UNAVAILABLE), None)));
+        assert!(should_try_next_url(&err(K::RpcResponse, None, Some(-32005))));
+        assert!(!should_try_next_url(&err(K::HttpStatus, Some(StatusCode::UNAUTHORIZED), None)));
+        assert!(!should_try_next_url(&err(K::RpcResponse, None, Some(-32601))));
+    }
 }

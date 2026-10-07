@@ -71,6 +71,20 @@ fn error_kinds_are_documented() {
     let mut labels: Vec<&'static str> = GmTradeErrorKind::ALL.iter().map(|k| k.label()).collect();
     labels.extend(ExecuteFailureKind::ALL.iter().map(|k| k.label()));
     labels.extend(TransactionErrorKind::ALL.iter().map(|k| k.label()));
+    // `UpdateErrorKind` has no `ALL`; list each so a new kind forces a doc edit.
+    // Backtick-quoted below because `network` is a common word.
+    use rwa_cli::cmd::update::UpdateErrorKind as U;
+    let update_labels: Vec<&'static str> = [U::ChecksumMismatch, U::NoReleaseAsset, U::NotWritable, U::Network, U::RateLimited]
+        .iter()
+        .map(|k| k.label())
+        .collect();
+    for label in &update_labels {
+        for (file, content) in &docs {
+            if !content.contains(&format!("`{label}`")) {
+                missing.push(format!("  update error_kind `{label}` is not documented in {file}"));
+            }
+        }
+    }
     for label in labels {
         // A plain `contains` is a weak check for labels that are substrings of
         // OTHER documented labels — `unknown` lives inside `unknown_wallet`,

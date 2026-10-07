@@ -15,6 +15,18 @@ use super::*;
 /// Number rules unchanged: strict decimal parse, >6 decimal places rejected,
 /// must be > 0.
 fn parse_limit_price(raw: Option<&[String]>) -> Result<Option<(u128, LimitFrame)>> {
+    // Every parse failure is an input error: surface it as `invalid_amount`
+    // (never `error_kind: null`), keeping the full cause text.
+    parse_limit_price_inner(raw).map_err(|e| {
+        if usecases::gm::classify_error(&e).is_some() {
+            e
+        } else {
+            GmTradeError::new(GmTradeErrorKind::InvalidAmount, format!("{e:#}")).into()
+        }
+    })
+}
+
+fn parse_limit_price_inner(raw: Option<&[String]>) -> Result<Option<(u128, LimitFrame)>> {
     let Some(raw) = raw else { return Ok(None) };
     let (number, frame) = match raw {
         [one] => split_single_limit_price(one)?,

@@ -12,12 +12,12 @@ use usecases::gm::ClosePosition as CloseCandidate;
 /// why the per-skip stderr line was removed.
 fn filter_close_items(
     balances: &[solana::SolanaTokenBalance],
-    sell_pct: f64,
+    sell_bps: u32,
     assets: &[api::OndoAsset],
     tradable_set: &std::collections::HashSet<String>,
 ) -> Result<(Vec<CloseCandidate>, Vec<CloseSkipJson>)> {
     let (candidates, skips) =
-        usecases::gm::filter_close_positions(balances, sell_pct, assets, tradable_set)?;
+        usecases::gm::filter_close_positions(balances, sell_bps, assets, tradable_set)?;
     // No per-skip eprintln here: `render_close_preview`'s "Not selling" block
     // (printed right after this call, before the confirmation) shows the same
     // tokens with their real reason AND retryable/permanent status — a second
@@ -110,43 +110,55 @@ fn sum_quoted_usdc(items: &[CloseItemJson]) -> f64 {
         .sum()
 }
 
-/// Dry-run: fetch-only, no execute. Sequential (Jupiter rate-limit conservatism).
+/// Restore candidate order on items collected in completion order.
+fn sort_in_candidate_order(items: &mut [CloseItemJson], order_of: &[String]) {
+    items.sort_by_key(|i| order_of.iter().position(|s| *s == i.token));
+}
+
+/// Same, for failed entries.
+fn sort_failed_in_candidate_order(items: &mut [CloseFailJson], order_of: &[String]) {
+    items.sort_by_key(|f| order_of.iter().position(|s| *s == f.token));
+}
+
+/// Dry-run: fetch-only, no execute. Parallel by default (staggered, adaptive
+/// quote launches — same as the basket dry-runs); `--sequential` opts into one
+/// quote at a time, `SEQUENTIAL_SPACING` apart. Items are reported in
+/// candidate order either way.
 async fn run_close_dry_run(
     taker: &str,
     candidates: Vec<CloseCandidate>,
     json: bool,
+    parallel: bool,
     slippage: Option<u32>,
     max_bps: Option<u32>,
 ) -> (Vec<CloseItemJson>, Vec<CloseFailJson>, f64) {
-    let mut sold = Vec::new();
-    let mut failed = Vec::new();
-
-    for c in candidates {
-        match usecases::gm::fetch_sell_order(&c.symbol, &c.mint, &c.sell_raw, taker, json, slippage, max_bps).await {
-            Ok(order) => {
-                let quoted_usdc =
-                    amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS);
-                if !json {
-                    println!(
-                        "  [DRY RUN] Would sell {} {} -> ~{} USDC",
-                        c.sell_display, c.symbol, quoted_usdc
-                    );
-                }
-                sold.push(CloseItemJson {
-                    token: c.symbol,
-                    amount: c.sell_display,
-                    usdc: quoted_usdc,
-                    tx: String::new(),
-                });
-            }
-            Err(e) => {
-                if !json {
-                    eprintln!("  [DRY RUN] ✗ {} — {}", c.symbol, e);
-                }
-                failed.push(fail_json(c.symbol, &e));
-            }
+    let order_of: Vec<String> = candidates.iter().map(|c| c.symbol.clone()).collect();
+    let describe_ok = |i: &CloseItemJson| format!("would sell {} -> ~{} USDC", i.amount, i.usdc);
+    let taker = taker.to_string();
+    let fetch = |c: CloseCandidate| {
+        let taker = taker.clone();
+        async move {
+            let result = usecases::gm::fetch_sell_order(
+                &c.symbol, &c.mint, &c.sell_raw, &taker, json, slippage, max_bps,
+            )
+            .await
+            .map(|order| CloseItemJson {
+                token: c.symbol.clone(),
+                amount: c.sell_display.clone(),
+                usdc: amounts::format_amount(&order.order.out_amount, jupiter::USDC_DECIMALS),
+                tx: String::new(),
+            });
+            (c.symbol, result)
         }
-    }
+    };
+    let (mut sold, mut failed) = if parallel {
+        fetch_orders_parallel(candidates, json, "sell quotes", jupiter::order_retry_count, describe_ok, fetch).await
+    } else {
+        fetch_orders_sequential(candidates, json, describe_ok, fetch).await
+    };
+    // Parallel results arrive in completion order; keep candidate order.
+    sort_in_candidate_order(&mut sold, &order_of);
+    sort_failed_in_candidate_order(&mut failed, &order_of);
 
     let total = sum_quoted_usdc(&sold);
     (sold, failed, total)
@@ -162,7 +174,8 @@ pub async fn close_all(
 ) -> Result<()> {
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
-    let sell_pct = usecases::gm::parse_sell_pct(amount)?;
+    let sell_bps = usecases::gm::parse_sell_pct(amount)?;
+    let sell_pct = f64::from(sell_bps) / 100.0; // display only
 
     let tokens = token_list::get_token_list();
     let w = load_wallet(selected)?;
@@ -199,7 +212,7 @@ pub async fn close_all(
     // Filter FIRST: the confirmation must show what will actually be sold, not
     // the raw balance list that filtering then silently trims.
     let (candidates, skipped) =
-        filter_close_items(&balances, sell_pct, &assets, &tradable_set)?;
+        filter_close_items(&balances, sell_bps, &assets, &tradable_set)?;
 
     // Portfolio value for the share figure: everything we looked at, sellable
     // or not — otherwise the share would always read ~100%.
@@ -292,7 +305,7 @@ pub async fn close_all(
         // pinned to 0 (see the same reasoning at the empty-candidates
         // early-return above).
         drop(w);
-        run_close_dry_run(&taker, candidates, json, slippage, max_bps).await
+        run_close_dry_run(&taker, candidates, json, parallel, slippage, max_bps).await
     } else {
         let wallet_arc = Arc::new(w);
         run_swap_items(
@@ -829,5 +842,30 @@ mod tests {
         let total = sum_quoted_usdc(&items);
         assert!(total.is_finite(), "total must be finite, got {total}");
         assert_eq!(total, 5.5, "only the finite row should count, got {total}");
+    }
+
+    #[test]
+    fn sort_in_candidate_order_restores_candidate_order() {
+        let item = |t: &str| CloseItemJson {
+            token: t.to_string(),
+            amount: "1".to_string(),
+            usdc: "1".to_string(),
+            tx: String::new(),
+        };
+        let order: Vec<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        let mut items = vec![item("C"), item("A"), item("B")];
+        sort_in_candidate_order(&mut items, &order);
+        let got: Vec<&str> = items.iter().map(|i| i.token.as_str()).collect();
+        assert_eq!(got, ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn sort_failed_in_candidate_order_restores_candidate_order() {
+        let fail = |t: &str| CloseFailJson { token: t.to_string(), error: "e".to_string(), error_kind: None };
+        let order: Vec<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        let mut items = vec![fail("C"), fail("A"), fail("B")];
+        sort_failed_in_candidate_order(&mut items, &order);
+        let got: Vec<&str> = items.iter().map(|i| i.token.as_str()).collect();
+        assert_eq!(got, ["A", "B", "C"]);
     }
 }

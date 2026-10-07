@@ -113,11 +113,8 @@ async fn get_order_impl(
             Err(err) => {
                 let msg = err.to_string();
                 failures.push(format!("{}: {msg}", backend.label()));
-                if !is_route_like_order_error(&msg) {
-                    return Err(eyre!(
-                        "Jupiter quote failed via {}: {msg}",
-                        backend.label()
-                    ));
+                if let Some(e) = non_route_failure(backend.label(), &msg) {
+                    return Err(e);
                 }
             }
         }
@@ -308,6 +305,22 @@ fn order_backoff(attempt: u32) -> std::time::Duration {
 const ORDER_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 fn within_retry_budget(started: std::time::Instant, attempt: u32) -> bool {
     attempt == 0 || started.elapsed() < ORDER_RETRY_BUDGET
+}
+
+/// Error for a backend failure that must NOT fall through to the next backend
+/// (`None` = route-like, keep trying). Transport/429/5xx surface as the typed
+/// transient `execute_unavailable` (exit 75); anything else stays a plain error.
+fn non_route_failure(label: &str, msg: &str) -> Option<eyre::Error> {
+    if is_route_like_order_error(msg) {
+        return None;
+    }
+    let message = format!("Jupiter quote failed via {label}: {msg}");
+    if is_retryable_order_error(msg) {
+        return Some(
+            ExecuteFailure { kind: ExecuteFailureKind::Unavailable, code: None, message }.into(),
+        );
+    }
+    Some(eyre!("{message}"))
 }
 
 /// Errors from Jupiter /order that should be retried with backoff.
@@ -549,6 +562,18 @@ fn map_metis_order_response(
 mod tests {
     use super::*;
     use crate::USDC_MINT;
+
+    #[test]
+    fn transient_order_failure_is_typed_unavailable() {
+        let e = non_route_failure("swap/v2", "Jupiter /order rate limited (429)").unwrap();
+        let kind = crate::usecases::gm::classify_error(&e);
+        assert_eq!(kind, Some("execute_unavailable"));
+        assert!(crate::usecases::gm::is_transient_kind(kind.unwrap()));
+        // Permanent non-route errors stay untyped; route-like ones fall through.
+        let p = non_route_failure("swap/v2", "Jupiter API error (HTTP 400): bad input").unwrap();
+        assert_eq!(crate::usecases::gm::classify_error(&p), None);
+        assert!(non_route_failure("swap/v2", "No swap route found").is_none());
+    }
 
     #[test]
     fn mm_quote_unavailable_falls_through_not_retried() {

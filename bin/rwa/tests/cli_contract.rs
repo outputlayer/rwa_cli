@@ -543,8 +543,9 @@ fn portfolio_json_reports_unavailable_market_data() {
     assets.assert();
 }
 
-/// A hard RPC failure surfaces the JSON error envelope with a stable
-/// `error_kind` ("rpc_unavailable") and exit code 1.
+/// A permanent RPC-level failure (JSON-RPC error object, not an endpoint
+/// outage) surfaces the JSON error envelope with no `error_kind` (it is not
+/// `rpc_unavailable`) and exit code 1.
 #[test]
 fn rpc_failure_emits_error_envelope_with_kind() {
     let home = test_home("rpc-error-envelope");
@@ -576,8 +577,27 @@ fn rpc_failure_emits_error_envelope_with_kind() {
     assert!(!out.status.success(), "RPC failure must exit non-zero");
     let v = stdout_json(&out);
     assert_eq!(v["status"], "error");
-    assert_eq!(v["error_kind"], "rpc_unavailable");
+    assert!(v["error_kind"].is_null(), "RPC-level error is not rpc_unavailable: {v}");
+    assert_eq!(out.status.code(), Some(1));
     assert!(v["error"].as_str().unwrap().contains("Method not found"));
+}
+
+/// An Ondo session-limits outage must fail `tradable`, not report every token
+/// as untradable.
+#[test]
+fn tradable_fails_when_session_limits_unavailable() {
+    let home = test_home("tradable-limits-down");
+    let out = rwa(&home)
+        .args(["--json", "gm", "tradable", "TSLA"])
+        .env("RWA_ONDO_SESSION_URL", "http://127.0.0.1:1/session")
+        .env("RWA_ONDO_API_URL", "http://127.0.0.1:1/assets")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "limits outage must exit non-zero");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("\"tradable\":false"),
+        "must not emit a fake all-untradable list"
+    );
 }
 
 /// `buy-basket --dry-run --max-bps N` rejects quotes whose all-in cost exceeds
@@ -681,20 +701,15 @@ fn buy_basket_dry_run_enforces_max_bps() {
         .unwrap();
 
     let v = stdout_json(&out);
-    match v["status"].as_str() {
-        Some("dry_run") => {
-            assert!(v["bought"].as_array().unwrap().is_empty(), "over-budget quote must not pass: {v}");
-            let failed = v["failed"].as_array().unwrap();
-            assert_eq!(failed.len(), 1, "expected one cost_too_high failure: {v}");
-            // failed[].token echoes the user's input symbol (existing fail_json convention)
-            assert_eq!(failed[0]["token"], "AAL");
-            assert_eq!(failed[0]["error_kind"], "cost_too_high");
-        }
-        Some("error") => {
-            assert_eq!(v["error_kind"], "market_closed", "unexpected error: {v}");
-        }
-        other => panic!("unexpected status {other:?}: {v}"),
-    }
+    // always_tradable_limits() makes this wall-clock independent, so the
+    // market_closed envelope is NOT an acceptable outcome here.
+    assert_eq!(v["status"], "dry_run", "unexpected: {v}");
+    assert!(v["bought"].as_array().unwrap().is_empty(), "over-budget quote must not pass: {v}");
+    let failed = v["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "expected one cost_too_high failure: {v}");
+    // failed[].token echoes the user's input symbol (existing fail_json convention)
+    assert_eq!(failed[0]["token"], "AAL");
+    assert_eq!(failed[0]["error_kind"], "cost_too_high");
 }
 
 /// M3: a REAL (non-`--dry-run`, `-y`) buy-basket where every item fails must
@@ -823,6 +838,23 @@ fn buy_basket_total_validation_envelopes() {
     assert_eq!(v["error_kind"], "invalid_amount");
 }
 
+/// A malformed `NN%` in sell-basket fails up front as typed `invalid_amount`
+/// (before wallet load or any leg), not per-item mid-run. No wallet/mocks on
+/// purpose: reaching the wallet load would yield a different error.
+#[test]
+fn sell_basket_bad_percentage_fails_up_front_typed() {
+    let home = test_home("sell-basket-bad-pct");
+    for bad in ["33.333%", "0%", "1e1%"] {
+        let out = rwa(&home)
+            .args(["--json", "gm", "sell-basket", "SPY", bad, "--dry-run"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{bad}");
+        let v = stdout_json(&out);
+        assert_eq!(v["error_kind"], "invalid_amount", "{bad}: {v}");
+    }
+}
+
 /// L7: a zero amount / zero `--limit-price` must classify as `invalid_amount`,
 /// not leak `error_kind: null` from a bare `eyre!`. Both fail before any
 /// network access (amount parsing precedes tradability/RPC checks in
@@ -851,6 +883,31 @@ fn buy_zero_amount_and_zero_limit_price_are_typed_invalid_amount() {
     assert!(!out.status.success(), "zero limit-price must exit non-zero");
     let v = stdout_json(&out);
     assert_eq!(v["status"], "error", "{v}");
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+}
+
+/// A malformed basket amount and a structurally bad `--limit-price` (unknown
+/// unit) are input errors: `error_kind: invalid_amount`, not null.
+#[test]
+fn bad_basket_amount_and_limit_price_are_typed_invalid_amount() {
+    let home = test_home("typed-invalid-amount");
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy-basket", "TSLA", "1.1234567", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "invalid_amount", "{v}");
+
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "100", "--limit-price", "748", "foo", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = stdout_json(&out);
     assert_eq!(v["error_kind"], "invalid_amount", "{v}");
 }
 
@@ -967,9 +1024,8 @@ fn buy_basket_total_dry_run_echoes_allocation() {
 }
 
 /// `gm buy --quote-only --json` emits the `dry_run` TradeJson shape without
-/// touching the RPC (no funds check). Sessions are wall-clock dependent, so
-/// when the market is closed the same invocation must emit the error envelope
-/// with `error_kind: "market_closed"` — both branches are stable contracts.
+/// touching the RPC (no funds check). The session mock is always-tradable, so
+/// the result is wall-clock independent.
 #[test]
 fn buy_quote_only_json_emits_dry_run_shape() {
     let home = test_home("buy-quote-only");
@@ -988,10 +1044,13 @@ fn buy_quote_only_json_emits_dry_run_shape() {
         when.method(POST).path("/rpc");
         then.status(500);
     });
-    // Session-limits API down → check_tradable fails open (documented behavior).
+    // Deterministic session fixture: tradable in every session, so the
+    // result is wall-clock independent (a 500 fails closed while Closed).
     server.mock(|when, then| {
         when.method(GET).path("/session");
-        then.status(500);
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(always_tradable_limits());
     });
     let order = server.mock(|when, then| {
         when.method(GET).path("/order");
@@ -1023,24 +1082,15 @@ fn buy_quote_only_json_emits_dry_run_shape() {
         .unwrap();
 
     let v = stdout_json(&out);
-    match v["status"].as_str() {
-        Some("dry_run") => {
-            assert_eq!(v["token"], "AALon");
-            assert_eq!(v["counter_amount"], "10");
-            assert_eq!(v["counter_token"], "USDC");
-            assert_eq!(v["tx"], "");
-            assert_eq!(v["fee_bps"], 5);
-            assert_eq!(v["gasless"], true);
-            assert_eq!(v["router"], "iris");
-            order.assert_hits(1);
-        }
-        Some("error") => {
-            // Market closed right now (weekend window) — still a stable contract.
-            assert_eq!(v["error_kind"], "market_closed", "unexpected error: {v}");
-            assert!(!out.status.success());
-        }
-        other => panic!("unexpected status {other:?}: {v}"),
-    }
+    assert_eq!(v["status"], "dry_run", "unexpected: {v}");
+    assert_eq!(v["token"], "AALon");
+    assert_eq!(v["counter_amount"], "10");
+    assert_eq!(v["counter_token"], "USDC");
+    assert_eq!(v["tx"], "");
+    assert_eq!(v["fee_bps"], 5);
+    assert_eq!(v["gasless"], true);
+    assert_eq!(v["router"], "iris");
+    order.assert_hits(1);
 }
 
 /// `gm buy --json` without `-y` (and not `--dry-run`/`--quote-only`) must fail
@@ -3499,4 +3549,221 @@ fn buy_basket_equal_without_total_errors() {
     let v = stdout_json(&out);
     assert_eq!(v["error_kind"], "invalid_amount");
     assert!(v["error"].as_str().unwrap().contains("--total"), "{v}");
+}
+
+/// Runs `gm <side> AAL <amt> --dry-run --limit-price <limit>` against a mock
+/// stack whose quote implies exactly 10 USDC/token (buy: 10 USDC -> 1 token)
+/// or 12.5 USDC/token (sell: 2 tokens -> 25 USDC). Returns the process output.
+fn run_limit_price_dry_run(name: &str, side: &str, amount: &str, limit: &str) -> std::process::Output {
+    let home = test_home(name);
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).json_body(serde_json::json!({ "assets": [] }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getBalance");
+        then.status(200).json_body(serde_json::json!(
+            { "jsonrpc": "2.0", "id": 1, "result": { "context": { "slot": 1 }, "value": 1_000_000_000u64 } }
+        ));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/rpc").body_contains("getTokenAccountsByOwner");
+        then.status(200).json_body(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "context": { "slot": 1 }, "value": [
+                usdc_account_entry(1_000_000_000),
+                token_entry(AAL_MINT, 2.0, "2000000000"),
+            ] }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).json_body(always_tradable_limits());
+    });
+    let (in_amt, out_amt) = if side == "buy" { ("10000000", "1000000000") } else { ("2000000000", "25000000") };
+    server.mock(|when, then| {
+        when.method(GET).path("/order");
+        then.status(200).json_body(serde_json::json!({
+            "requestId": "req-1",
+            "inAmount": in_amt,
+            "outAmount": out_amt,
+            "inUsdValue": 10.0,
+            "outUsdValue": 9.99,
+            "feeBps": 5,
+            "gasless": true,
+            "router": "iris",
+            "transaction": "AQABBASE64DUMMYTX=="
+        }));
+    });
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    rwa(&home)
+        .args(["--json", "gm", side, "AAL", amount, "--limit-price", limit, "--dry-run"])
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_JUPITER_URL", server.base_url())
+        .output()
+        .unwrap()
+}
+
+/// `buy --limit-price` just below the implied 10 USDC/token must fail with
+/// `condition_not_met` (exit 1) even in `--dry-run`; at the exact implied
+/// price (equality passes) it previews normally.
+#[test]
+fn buy_limit_price_below_implied_is_condition_not_met() {
+    let out = run_limit_price_dry_run("buy-limit-below", "buy", "10", "9.99");
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "condition_not_met", "{v}");
+
+    let ok = run_limit_price_dry_run("buy-limit-equal", "buy", "10", "10");
+    assert!(ok.status.success(), "equality must pass: {}", String::from_utf8_lossy(&ok.stdout));
+    assert_eq!(stdout_json(&ok)["status"], "dry_run");
+}
+
+/// `sell --limit-price` just above the implied 12.5 USDC/token must fail with
+/// `condition_not_met`; at the exact implied price it previews normally.
+#[test]
+fn sell_limit_price_above_implied_is_condition_not_met() {
+    let out = run_limit_price_dry_run("sell-limit-above", "sell", "all", "12.51");
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "condition_not_met", "{v}");
+
+    let ok = run_limit_price_dry_run("sell-limit-equal", "sell", "all", "12.5");
+    assert!(ok.status.success(), "equality must pass: {}", String::from_utf8_lossy(&ok.stdout));
+    assert_eq!(stdout_json(&ok)["status"], "dry_run");
+}
+
+// ── mutation-gap closers ─────────────────────────────────────────────────────
+
+fn limits_never_tradable() -> serde_json::Value {
+    let no = serde_json::json!({
+        "tradable": false, "maxAttestationCount": "0", "maxActiveNotionalValue": "0"
+    });
+    serde_json::json!({
+        "limits": [{ "symbol": "TSLAon", "premarket": no, "regular": no, "postmarket": no,
+                     "overnight": no, "offhours": no }]
+    })
+}
+
+fn tsla_asset(paused: bool) -> serde_json::Value {
+    serde_json::json!({ "assets": [{
+        "symbol": "TSLAon", "assetName": "Tesla", "isTradingPaused": paused,
+        "isOffhoursTradable": false, "primaryMarket": { "price": "250.0" }, "tags": []
+    }]})
+}
+
+/// breaks if: `check_tradable` stops blocking a paused asset on buy.
+#[test]
+fn buy_is_blocked_when_asset_is_trading_paused() {
+    let home = test_home("buy-paused");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(true));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+    mock_rpc_for_transfers(&server, 100_000_000, serde_json::json!([]));
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "5", "--dry-run"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.url("/jup"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert_eq!(v["error_kind"], "trading_paused", "{v}");
+}
+
+/// breaks if: `check_tradable` stops blocking a token the session limits say
+/// is not tradable (kind depends on wall-clock: off-hours vs regular sessions).
+#[test]
+fn buy_is_blocked_when_token_not_tradable_in_session() {
+    let home = test_home("buy-not-tradable");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(false));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(limits_never_tradable());
+    });
+    mock_rpc_for_transfers(&server, 100_000_000, serde_json::json!([]));
+    let keygen = rwa(&home).args(["keys", "generate", "--allow-plaintext"]).output().unwrap();
+    assert!(keygen.status.success());
+    let out = rwa(&home)
+        .args(["--json", "gm", "buy", "TSLA", "5", "--dry-run"])
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_RPC_URL", server.url("/rpc"))
+        .env("RWA_JUPITER_URL", server.url("/jup"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v = stdout_json(&out);
+    assert!(matches!(v["error_kind"].as_str(), Some("market_closed" | "not_tradable")), "{v}");
+}
+
+fn list_type_of_tsla(assets_url: &str, session_url: &str, home: &Path) -> String {
+    let out = rwa(home)
+        .args(["--json", "gm", "tradable", "TSLA"])
+        .env("RWA_ONDO_API_URL", assets_url)
+        .env("RWA_ONDO_SESSION_URL", session_url)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = stdout_json(&out);
+    v["items"][0]["type"].as_str().unwrap_or_else(|| panic!("no type: {v}")).to_string()
+}
+
+/// breaks if: an assets outage makes `list` guess a type from an empty name
+/// (must be ""), or healthy assets stop deriving "stock".
+#[test]
+fn list_type_is_unknown_on_assets_outage_and_stock_otherwise() {
+    let home = test_home("list-type");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(200).header("content-type", "application/json").json_body(always_tradable_limits());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(200).header("content-type", "application/json").json_body(tsla_asset(false));
+    });
+    assert_eq!(list_type_of_tsla(&server.url("/assets"), &server.url("/session"), &home), "stock");
+    let home2 = test_home("list-type-down");
+    assert_eq!(list_type_of_tsla("http://127.0.0.1:1/assets", &server.url("/session"), &home2), "");
+}
+
+/// breaks if: `reclaim --token` stops rejecting a typo (reads as "nothing to
+/// reclaim") or the check moves back behind wallet load / RPC.
+#[test]
+fn reclaim_unknown_token_fails_fast_without_wallet() {
+    let home = test_home("reclaim-unknown");
+    let out = rwa(&home).args(["--json", "gm", "reclaim", "--token", "ZZZZ"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_json(&out)["error_kind"], "unknown_token");
+}
+
+/// breaks if: a valid mint address is rejected as unknown_token.
+#[test]
+fn reclaim_valid_mint_address_is_not_unknown_token() {
+    let home = test_home("reclaim-mint");
+    let out = rwa(&home)
+        .args(["--json", "gm", "reclaim", "--token", AAL_MINT])
+        .output()
+        .unwrap();
+    let v = stdout_json(&out);
+    assert_ne!(v["error_kind"], "unknown_token", "{v}");
 }

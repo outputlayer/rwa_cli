@@ -70,26 +70,33 @@ pub fn format_amount(raw: &str, decimals: u8) -> String {
     }
 }
 
-/// Parse the numeric part of an `NN%` amount (suffix already stripped) and
-/// range-check 0–100 — the ONE home for percentage validation. The buy/sell
-/// amount resolvers and close-all's `parse_sell_pct` all call it, so the
-/// grammar and error wording cannot drift between commands. `display` is the
-/// user's original token, used in error messages. Typed `invalid_amount`.
-pub fn parse_pct(pct_str: &str, display: &str) -> Result<f64> {
-    let pct: f64 = pct_str
+/// Parse the numeric part of an `NN%` amount (suffix already stripped) into
+/// integer basis points (`50` → 5000, `33.33` → 3333) — the ONE home for
+/// percentage validation. Exact decimal parsing at 2 places (no f64): more
+/// than 2 decimals, exponent forms (`1e1`), `inf`/`nan`, signs and 0 are
+/// rejected; range is 0 < bps <= 10000. The buy/sell amount resolvers and
+/// close-all's `parse_sell_pct` all call it, so the grammar and error wording
+/// cannot drift between commands. `display` is the user's original token, used
+/// in error messages. Typed `invalid_amount`.
+pub fn parse_pct(pct_str: &str, display: &str) -> Result<u32> {
+    let bps: u128 = token_to_raw(pct_str, 2)
+        .map_err(|e| {
+            invalid_amount(format!(
+                "Invalid percentage: {display} (up to 2 decimal places, e.g. 50%, 33.33%): {e}"
+            ))
+        })?
         .parse()
-        .map_err(|_| invalid_amount(format!("Invalid percentage: {display}")))?;
-    if !(0.0..=100.0).contains(&pct) {
-        return Err(invalid_amount(format!("Percentage must be 0–100, got {pct}")));
+        .unwrap_or(u128::MAX);
+    if bps > 10_000 {
+        return Err(invalid_amount(format!("Percentage must be > 0 and ≤ 100, got {display}")));
     }
-    Ok(pct)
+    Ok(bps as u32)
 }
 
-/// Compute `value * pct / 100` using integer math to avoid f64 precision loss.
+/// Compute `value * bps / 10_000` using integer math (floor).
 #[must_use]
-pub fn pct_of_u128(value: u128, pct: f64) -> u128 {
-    let bps = (pct * 100.0).round() as u128;
-    value * bps / 10_000
+pub fn pct_of_u128(value: u128, bps: u32) -> u128 {
+    value * u128::from(bps) / 10_000
 }
 
 /// Resolve an amount expression (`all`, `50%`, `1.25`) to raw on-chain units.
@@ -296,7 +303,7 @@ mod tests {
 
     #[test]
     fn pct_33_33_of_value() {
-        assert_eq!(pct_of_u128(1_000_000_000, 33.33), 333_300_000);
+        assert_eq!(pct_of_u128(1_000_000_000, 3333), 333_300_000);
     }
 
     #[test]
@@ -304,7 +311,37 @@ mod tests {
         // 50% of 999_999_999_999_999_999 floors to 499_999_999_999_999_999
         // (hand-derived constant — not re-computed with the production
         // formula, which would hide a shared rounding/overflow bug).
-        assert_eq!(pct_of_u128(999_999_999_999_999_999, 50.0), 499_999_999_999_999_999);
+        assert_eq!(pct_of_u128(999_999_999_999_999_999, 5000), 499_999_999_999_999_999);
+    }
+
+    #[test]
+    fn parse_pct_exact_two_decimals() {
+        assert_eq!(parse_pct("33.33", "33.33%").unwrap(), 3333);
+        assert_eq!(parse_pct("0.01", "0.01%").unwrap(), 1);
+        assert_eq!(parse_pct("50", "50%").unwrap(), 5000);
+        assert_eq!(parse_pct("100", "100%").unwrap(), 10_000);
+        assert_eq!(parse_pct("100.00", "100.00%").unwrap(), 10_000);
+        // f64 would turn 0.29 * 100.0 into 28.999… — exact parsing must not.
+        assert_eq!(parse_pct("0.29", "0.29%").unwrap(), 29);
+    }
+
+    #[test]
+    fn parse_pct_rejects_bad_forms() {
+        for bad in ["33.333", "1e1", "inf", "nan", "-1", "+5", "", "0", "0.00", "100.01", "101", "1.2.3", "99999999999999999999999999999999999999999999"] {
+            let err = parse_pct(bad, &format!("{bad}%")).expect_err(bad);
+            let kind = err
+                .downcast_ref::<GmTradeError>()
+                .map(|e| e.kind)
+                .expect("typed error");
+            assert_eq!(kind, GmTradeErrorKind::InvalidAmount, "{bad}");
+        }
+    }
+
+    #[test]
+    fn pct_of_u128_floors_exactly() {
+        assert_eq!(pct_of_u128(10_000, 1), 1);
+        assert_eq!(pct_of_u128(9_999, 1), 0);
+        assert_eq!(pct_of_u128(7, 10_000), 7);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -435,8 +472,7 @@ mod tests {
             value in 1u128..=u64::MAX as u128,
             pct_bps in 0u32..=10_000u32,
         ) {
-            let pct = pct_bps as f64 / 100.0;
-            let result = pct_of_u128(value, pct);
+            let result = pct_of_u128(value, pct_bps);
             prop_assert!(result <= value);
         }
     }

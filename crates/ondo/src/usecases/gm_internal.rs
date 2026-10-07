@@ -146,7 +146,10 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
     // tokens as paused when the market is closed (weekends). Fail open on
     // fetch errors (mirrors the session-limits behavior below); the assets
     // response is disk-cached for 60s, so this is usually a free lookup.
-    match api::fetch_assets().await {
+    // Both fetches are independent: join them (the paused check still runs
+    // before the session check below).
+    let (assets_res, limits_res) = tokio::join!(api::fetch_assets(), api::fetch_session_limits(api_url));
+    match assets_res {
         Ok(assets) => {
             if api::is_trading_paused(symbol, &assets) {
                 return Err(GmTradeError::new(
@@ -163,7 +166,7 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
 
     let session = api::current_session();
     let off_hours = session == api::Session::Closed;
-    let limits = match api::fetch_session_limits(api_url).await {
+    let limits = match limits_res {
         Ok(l) => l,
         Err(e) => {
             if off_hours {

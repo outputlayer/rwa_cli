@@ -126,10 +126,14 @@ pub async fn fetch_sell_order_by_symbol(
     let tokens = token_list::get_token_list();
     let sym = Symbol::from(symbol_str);
     let (sym, gm_mint) = resolve_gm_mint(&sym, tokens)?;
-    check_tradable(&sym, None).await?;
 
     let gm_dec = jupiter::GM_SOL_DECIMALS;
-    let bal = solana::get_balance(taker, &gm_mint, rpc_url).await
+    let (tradable_res, bal_res) = tokio::join!(
+        check_tradable(&sym, None),
+        solana::get_balance(taker, &gm_mint, rpc_url),
+    );
+    tradable_res?;
+    let bal = bal_res
         .wrap_err_with(|| format!("failed to fetch {sym} balance"))?;
     if bal.balance <= 0.0 {
         return Err(GmTradeError::new(
@@ -625,6 +629,16 @@ mod tests {
         let out = split_total_by_weights("10.000001", &wpairs(&[("TSLA", "50%"), ("NVDA", "50%")])).unwrap();
         assert_eq!(out[0].1, 5_000_001);
         assert_eq!(out[1].1, 5_000_000);
+    }
+
+    #[test]
+    fn split_total_dust_goes_to_largest_weight_not_first() {
+        // Largest weight is SECOND (70%): 20.000001 floors to 6_000_000 /
+        // 14_000_000 and the 1-micro dust must land on TSLA, not SPY. (Distinct
+        // weights: a tie fixture can't tell "largest" from "first".)
+        let out = split_total_by_weights("20.000001", &wpairs(&[("SPY", "30%"), ("TSLA", "70%")])).unwrap();
+        assert_eq!(out[0].1, 6_000_000);
+        assert_eq!(out[1].1, 14_000_001);
     }
 
     #[test]

@@ -177,8 +177,10 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
         if let Some(t) = cause.downcast_ref::<crate::solana::TransactionError>() {
             return Some(t.kind.label());
         }
-        if cause.downcast_ref::<crate::solana::SolanaRpcError>().is_some() {
-            return Some("rpc_unavailable");
+        if let Some(e) = cause.downcast_ref::<crate::solana::SolanaRpcError>() {
+            // Only endpoint-side failures are transient; 4xx (bad key, 401/403)
+            // and RPC-level errors are permanent (exit 1), not `rpc_unavailable`.
+            return e.is_endpoint_transient().then_some("rpc_unavailable");
         }
         if cause.downcast_ref::<crate::solana::NoTokenAccount>().is_some() {
             return Some("no_position");
@@ -512,12 +514,18 @@ pub async fn execute_swap(wallet: &wallet::Wallet, plan: &SwapPlan, json: bool) 
     Ok(exec)
 }
 
-pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
-    let Some(raw) = amount else { return Ok(100.0); };
+/// close-all percentage as integer basis points (default 10_000 = 100%).
+pub fn parse_sell_pct(amount: Option<&str>) -> Result<u32> {
+    let Some(raw) = amount else { return Ok(10_000); };
     let s = raw.trim();
     let pct_str = s
         .strip_suffix('%')
-        .ok_or_else(|| eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
+        .ok_or_else(|| {
+            GmTradeError::new(
+                GmTradeErrorKind::InvalidAmount,
+                "close-all amount must be a percentage (e.g. 10%, 50%)",
+            )
+        })?;
     crate::amounts::parse_pct(pct_str, s)
 }
 
@@ -909,27 +917,27 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_none_returns_100() {
-        assert_eq!(parse_sell_pct(None).unwrap(), 100.0);
+        assert_eq!(parse_sell_pct(None).unwrap(), 10_000);
     }
 
     #[test]
     fn parse_sell_pct_full_percent() {
-        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 100.0);
+        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 10_000);
     }
 
     #[test]
     fn parse_sell_pct_half_percent() {
-        assert_eq!(parse_sell_pct(Some("50%")).unwrap(), 50.0);
+        assert_eq!(parse_sell_pct(Some("50%")).unwrap(), 5_000);
     }
 
     #[test]
-    fn parse_sell_pct_zero_percent() {
-        assert_eq!(parse_sell_pct(Some("0%")).unwrap(), 0.0);
+    fn parse_sell_pct_zero_percent_is_err() {
+        assert!(parse_sell_pct(Some("0%")).is_err());
     }
 
     #[test]
     fn parse_sell_pct_decimal_percent() {
-        assert_eq!(parse_sell_pct(Some("1.5%")).unwrap(), 1.5);
+        assert_eq!(parse_sell_pct(Some("1.5%")).unwrap(), 150);
     }
 
     #[test]
@@ -944,7 +952,8 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_missing_percent_suffix_is_err() {
-        assert!(parse_sell_pct(Some("50")).is_err());
+        let err = parse_sell_pct(Some("50")).expect_err("no % suffix");
+        assert_eq!(classify_error(&err), Some("invalid_amount"));
     }
 
     #[test]
@@ -1045,14 +1054,12 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_fractional_near_zero() {
-        let pct = parse_sell_pct(Some("0.01%")).unwrap();
-        assert!((pct - 0.01).abs() < f64::EPSILON);
+        assert_eq!(parse_sell_pct(Some("0.01%")).unwrap(), 1);
     }
 
     #[test]
     fn parse_sell_pct_exactly_100_percent() {
-        let pct = parse_sell_pct(Some("100%")).unwrap();
-        assert_eq!(pct, 100.0);
+        assert_eq!(parse_sell_pct(Some("100%")).unwrap(), 10_000);
     }
 
     // ── classify_error ────────────────────────────────────────
@@ -1116,6 +1123,8 @@ mod tests {
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(30)), Some((55.0, 30)));
         // cost 55 <= max 100 -> allow
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), Some(100)), None);
+        // cost exactly == max is NOT over the cap (strict `>`): fee 10, slip 0 -> 10 bps
+        assert_eq!(cost_exceeds_max_bps(Some(0.0), Some(10), Some(10)), None);
         // no max set -> allow
         assert_eq!(cost_exceeds_max_bps(Some(-0.45), Some(10), None), None);
         // favorable cost (-10 bps) never exceeds, even at max 0

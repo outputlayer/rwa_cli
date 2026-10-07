@@ -81,7 +81,7 @@ fn dividend_token_close_all_skips_paused_and_keeps_out_of_sells() {
     let tradable: std::collections::HashSet<String> = ["SPYON".to_string()].into();
 
     let (positions, skipped) =
-        filter_close_positions(&balances, 100.0, &[paused_asset], &tradable).unwrap();
+        filter_close_positions(&balances, 10_000, &[paused_asset], &tradable).unwrap();
 
     assert!(
         positions.is_empty(),
@@ -123,7 +123,7 @@ fn pause_on_ex_dividend_day_blocks_close_all_but_not_a_healthy_sibling() {
     ];
     let tradable: std::collections::HashSet<String> =
         ["SPYON".to_string(), "AAPLON".to_string()].into();
-    let (positions, skipped) = filter_close_positions(&balances, 100.0, &assets, &tradable).unwrap();
+    let (positions, skipped) = filter_close_positions(&balances, 10_000, &assets, &tradable).unwrap();
 
     assert_eq!(positions.len(), 1, "only the healthy sibling should be queued to sell");
     assert_eq!(positions[0].symbol, "AAPLon");

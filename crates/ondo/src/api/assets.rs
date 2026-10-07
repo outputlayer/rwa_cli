@@ -143,13 +143,12 @@ async fn fetch_assets_attempt(url: &str) -> Result<Vec<OndoAsset>> {
 /// Find an asset by symbol (case-insensitive, accepts "TSLA" or "TSLAon").
 #[must_use]
 pub fn find_asset<'a>(symbol: &str, assets: &'a [OndoAsset]) -> Option<&'a OndoAsset> {
+    // `<input>ON` first (bare tickers ending in "ON": AAON, ON), then as given.
     let normalized = symbol.to_uppercase();
-    let lookup = if normalized.ends_with("ON") {
-        normalized
-    } else {
-        format!("{normalized}ON")
-    };
-    assets.iter().find(|a| a.symbol.to_uppercase() == lookup)
+    let suffixed = format!("{normalized}ON");
+    [suffixed, normalized]
+        .iter()
+        .find_map(|lookup| assets.iter().find(|a| a.symbol.to_uppercase() == *lookup))
 }
 
 /// Whether Ondo currently pauses trading for `symbol` (case-insensitive,
@@ -201,6 +200,19 @@ pub fn market_snapshot_for_symbol(symbol: &str, assets: &[OndoAsset]) -> Result<
 mod tests {
     use super::*;
     use crate::api::{OndoError, OndoErrorKind};
+
+    #[test]
+    fn find_asset_prefers_on_suffixed_for_bare_ticker_ending_in_on() {
+        let mk = |sym: &str| -> OndoAsset {
+            serde_json::from_value(serde_json::json!({"symbol": sym, "assetName": sym})).unwrap()
+        };
+        let assets = vec![mk("AAon"), mk("AAONon"), mk("ONon"), mk("TSLAon")];
+        assert_eq!(find_asset("AAON", &assets).unwrap().symbol, "AAONon");
+        assert_eq!(find_asset("AA", &assets).unwrap().symbol, "AAon");
+        assert_eq!(find_asset("ON", &assets).unwrap().symbol, "ONon");
+        assert_eq!(find_asset("TSLA", &assets).unwrap().symbol, "TSLAon");
+        assert_eq!(find_asset("tslaon", &assets).unwrap().symbol, "TSLAon");
+    }
 
     #[test]
     fn parse_valid_price() {
