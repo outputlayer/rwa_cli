@@ -483,6 +483,14 @@ pub async fn sell_basket(
     let ExecOpts { yes, dry_run, json } = opts;
     let TradeTuning { slippage, max_bps } = tuning;
     let pairs = parse_basket_pairs(tokens)?;
+    // Fail a bad percentage (33.333%, 0%, 1e1%) up front, typed, before any
+    // wallet load or leg executes — not per-item mid-run. Sell-only: buy-basket
+    // `--total` weights use a different (6-decimal) grammar.
+    for (_, amt) in &pairs {
+        if let Some(pct) = amt.trim().strip_suffix('%') {
+            amounts::parse_pct(pct, amt.trim())?;
+        }
+    }
 
     let w = load_wallet(selected)?;
     let taker = w.pubkey();

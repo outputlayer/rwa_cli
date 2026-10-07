@@ -838,6 +838,23 @@ fn buy_basket_total_validation_envelopes() {
     assert_eq!(v["error_kind"], "invalid_amount");
 }
 
+/// A malformed `NN%` in sell-basket fails up front as typed `invalid_amount`
+/// (before wallet load or any leg), not per-item mid-run. No wallet/mocks on
+/// purpose: reaching the wallet load would yield a different error.
+#[test]
+fn sell_basket_bad_percentage_fails_up_front_typed() {
+    let home = test_home("sell-basket-bad-pct");
+    for bad in ["33.333%", "0%", "1e1%"] {
+        let out = rwa(&home)
+            .args(["--json", "gm", "sell-basket", "SPY", bad, "--dry-run"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{bad}");
+        let v = stdout_json(&out);
+        assert_eq!(v["error_kind"], "invalid_amount", "{bad}: {v}");
+    }
+}
+
 /// L7: a zero amount / zero `--limit-price` must classify as `invalid_amount`,
 /// not leak `error_kind: null` from a bare `eyre!`. Both fail before any
 /// network access (amount parsing precedes tradability/RPC checks in

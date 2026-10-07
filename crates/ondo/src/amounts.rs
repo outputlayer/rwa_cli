@@ -88,7 +88,7 @@ pub fn parse_pct(pct_str: &str, display: &str) -> Result<u32> {
         .parse()
         .unwrap_or(u128::MAX);
     if bps > 10_000 {
-        return Err(invalid_amount(format!("Percentage must be 0–100, got {display}")));
+        return Err(invalid_amount(format!("Percentage must be > 0 and ≤ 100, got {display}")));
     }
     Ok(bps as u32)
 }

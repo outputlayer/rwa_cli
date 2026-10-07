@@ -134,7 +134,7 @@ pub async fn search(
     name_keywords: &[String],
     tags: &[String],
 ) -> Result<()> {
-    let context = fetch_list_context(json).await?;
+    let context = fetch_list_context().await?;
     let filtered: Vec<ListItemJson> = context
         .items
         .into_iter()
@@ -173,7 +173,7 @@ pub async fn search(
 }
 
 pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
-    let context = fetch_list_context(json).await?;
+    let context = fetch_list_context().await?;
 
     let items = if symbols.is_empty() {
         context
@@ -263,7 +263,7 @@ pub async fn tradable(json: bool, symbols: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_list_context(json: bool) -> Result<ListContext> {
+async fn fetch_list_context() -> Result<ListContext> {
     let tokens = token_list::get_token_list();
     let session = api::current_session();
     // Two independent Ondo API calls (both disk-cached) — fetch concurrently.
@@ -277,9 +277,8 @@ async fn fetch_list_context(json: bool) -> Result<ListContext> {
     // Assets only enrich names/tags/pause flags; degrade with a warning.
     let assets_failed = assets_res.is_err();
     let assets = assets_res.unwrap_or_else(|e| {
-        if !json {
-            eprintln!("warning: Ondo asset metadata unavailable ({e}); names, types and tags are missing");
-        }
+        // stderr only, so JSON stdout stays a clean contract.
+        eprintln!("warning: Ondo asset metadata unavailable ({e}); names, types and tags are missing");
         Vec::new()
     });
 

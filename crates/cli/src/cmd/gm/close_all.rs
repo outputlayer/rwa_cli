@@ -146,13 +146,14 @@ async fn run_close_dry_run(
             (c.symbol, result)
         }
     };
-    let (mut sold, failed) = if parallel {
+    let (mut sold, mut failed) = if parallel {
         fetch_orders_parallel(candidates, json, "sell quotes", jupiter::order_retry_count, describe_ok, fetch).await
     } else {
         fetch_orders_sequential(candidates, json, describe_ok, fetch).await
     };
     // Parallel results arrive in completion order; keep candidate order.
     sort_in_candidate_order(&mut sold, &order_of);
+    failed.sort_by_key(|f| order_of.iter().position(|s| *s == f.token));
 
     let total = sum_quoted_usdc(&sold);
     (sold, failed, total)

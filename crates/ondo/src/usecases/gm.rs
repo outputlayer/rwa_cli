@@ -952,7 +952,8 @@ mod tests {
 
     #[test]
     fn parse_sell_pct_missing_percent_suffix_is_err() {
-        assert!(parse_sell_pct(Some("50")).is_err());
+        let err = parse_sell_pct(Some("50")).expect_err("no % suffix");
+        assert_eq!(classify_error(&err), Some("invalid_amount"));
     }
 
     #[test]
