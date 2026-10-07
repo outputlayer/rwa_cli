@@ -114,3 +114,29 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_filter_mint_accepts_both_tsla_and_tslaon() {
+        // Get the expected mint for TSLAon from token_list
+        let tokens = token_list::get_token_list();
+        let expected_mint = tokens
+            .iter()
+            .find(|t| t.symbol == "TSLAon")
+            .and_then(|t| t.solana_address)
+            .expect("TSLAon not found in token_list")
+            .to_string();
+
+        // All these symbol variants should resolve to the same mint.
+        // This catches the mutant where || is replaced with &&:
+        // with &&, the closure would never match (TSLA can't both equal
+        // "TSLA" AND equal "TSLA" with suffix stripped).
+        assert_eq!(resolve_filter_mint("TSLA").unwrap(), expected_mint);
+        assert_eq!(resolve_filter_mint("tsla").unwrap(), expected_mint);
+        assert_eq!(resolve_filter_mint("TSLAon").unwrap(), expected_mint);
+        assert_eq!(resolve_filter_mint("tslaon").unwrap(), expected_mint);
+    }
+}
