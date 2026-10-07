@@ -33,6 +33,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.13] - 2026-07-20 — pnl: sends shrink positions, scope disclosure, `--all`
+
+### Changed
+
+- **`pnl`: a CLI-recorded `send_out` of a GM token reduces the position at average cost** with no realized impact. Previously the quantity stayed, showing phantom holdings (and "unrealized" P&L) on tokens the wallet no longer held. USDC/SOL sends stay ignored as cash movements; a send beyond the ledger position clamps to zero. **Realized figures can shift** where sells previously matched basis that had already left the wallet.
+
+### Added
+
+- **`pnl --all`** — compares every wallet that ever traded through the CLI: one row per ledger file (pure directory enumeration, no key material, removed/unregistered wallets still appear), sorted by total P&L descending with unknowable totals last. JSON: `{wallets:[{wallet, trades_recorded, invested_usdc, market_value_usdc?, unrealized_usdc?, realized_usdc, total_pnl_usdc?, ledger_integrity}]}`.
+- **`pnl` discloses its scope** — human mode ends with a note that only CLI trades are counted plus the ledger file path; JSON adds optional `ledger_path`.
+
+### Fixed
+
+- **`pnl --all` (human) surfaces broken ledger chains** — each broken wallet gets the same stderr warning as single-wallet `pnl` plus an inline note under its row.
+
+---
+
+## [0.7.12] - 2026-07-20 — slippage default on sells, Metis price-impact sign
+
+Version bumped but never tagged or released — these changes first shipped in **0.7.13**.
+
+### Fixed
+
+- **Default 100-bps slippage on every sell path and the gas refuel** — `sell`, `sell-basket` and `close-all` sent no `slippageBps`, so the pre-sign under-delivery floor was computed from Jupiter's echoed value unclamped; a widened or hostile echo could slacken or disable the floor on the default invocation. Sell paths now force the same 100-bps default as `buy`.
+- **Metis price-impact sign normalized** — live Metis `swap/v1` reports an adverse impact as a non-negative fraction; the sign was kept, so a real −N% impact read as +N: it bypassed the 3% hard block, passed `--max-bps` (even `0`) as a discount, and the preview showed it "in your favor". Both unit and sign are now normalized.
+- **GM token list 438 → 439** (SKHYon).
+
+---
+
 ## [0.7.11] - 2026-07-19 — post-audit fixes: F10 mis-allocation + exit-code contract
 
 ### Fixed
