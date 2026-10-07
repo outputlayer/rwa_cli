@@ -70,6 +70,9 @@ pub enum GmTradeErrorKind {
     /// `--view` term matched no category, ticker, or Ondo tag label (typo or
     /// a concept the catalog does not carry, e.g. "biopharma").
     InvalidView,
+    /// Ondo assets/session-limits endpoint temporarily unreachable (network,
+    /// 403 WAF block, 429, 5xx) — transient, retry shortly.
+    OndoUnavailable,
 }
 
 #[derive(Debug)]
@@ -99,7 +102,7 @@ impl GmTradeErrorKind {
     /// appears in llms.txt / README / CLAUDE.md). Adding a variant already
     /// breaks `label()`'s exhaustive match at compile time — when you fix that,
     /// add the variant here and document it, or the guard fails.
-    pub const ALL: [GmTradeErrorKind; 20] = [
+    pub const ALL: [GmTradeErrorKind; 21] = [
         Self::MarketClosed,
         Self::NotTradable,
         Self::SlippageTooHigh,
@@ -120,6 +123,7 @@ impl GmTradeErrorKind {
         Self::RecipientNotAllowed,
         Self::LockContention,
         Self::InvalidView,
+        Self::OndoUnavailable,
     ];
 
     /// Stable label used in JSON `error_kind` fields and error Display.
@@ -146,6 +150,7 @@ impl GmTradeErrorKind {
             Self::RecipientNotAllowed => "recipient_not_allowed",
             Self::LockContention => "lock_contention",
             Self::InvalidView => "invalid_view",
+            Self::OndoUnavailable => "ondo_unavailable",
         }
     }
 }
@@ -182,6 +187,11 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
             // and RPC-level errors are permanent (exit 1), not `rpc_unavailable`.
             return e.is_endpoint_transient().then_some("rpc_unavailable");
         }
+        if let Some(o) = cause.downcast_ref::<crate::api::OndoError>() {
+            // Only outage-shaped failures are transient; decode/404/missing
+            // data are permanent (null kind, exit 1).
+            return o.is_outage().then_some("ondo_unavailable");
+        }
         if cause.downcast_ref::<crate::solana::NoTokenAccount>().is_some() {
             return Some("no_position");
         }
@@ -206,7 +216,7 @@ pub fn is_transient_kind(kind: &str) -> bool {
     // fail on-chain, which a fresh blockhash won't fix (F6).
     if matches!(
         kind,
-        "rpc_unavailable" | "confirmation_timeout" | "lock_contention" | "missing_blockhash" | "invalid_blockhash"
+        "rpc_unavailable" | "confirmation_timeout" | "lock_contention" | "missing_blockhash" | "invalid_blockhash" | "ondo_unavailable"
     ) {
         return true;
     }
@@ -784,6 +794,33 @@ mod tests {
     }
 
     #[test]
+    fn classify_error_maps_ondo_outages_to_ondo_unavailable() {
+        use crate::api::{OndoError, OndoErrorKind};
+        use eyre::WrapErr;
+        let mk = |kind, status: Option<u16>| {
+            let e = OndoError::new(
+                kind,
+                "session_limits",
+                status.map(|s| reqwest::StatusCode::from_u16(s).unwrap()),
+                "x",
+            );
+            Err::<(), _>(e).wrap_err("Ondo session limits unavailable").unwrap_err()
+        };
+        for (kind, status) in [
+            (OndoErrorKind::Network, None),
+            (OndoErrorKind::HttpStatus, Some(403)),
+            (OndoErrorKind::HttpStatus, Some(429)),
+            (OndoErrorKind::HttpStatus, Some(503)),
+        ] {
+            assert_eq!(classify_error(&mk(kind, status)), Some("ondo_unavailable"), "{kind:?} {status:?}");
+        }
+        for (kind, status) in [(OndoErrorKind::Decode, None), (OndoErrorKind::HttpStatus, Some(404))] {
+            assert_eq!(classify_error(&mk(kind, status)), None, "{kind:?} {status:?}");
+        }
+        assert!(is_transient_kind("ondo_unavailable"));
+    }
+
+    #[test]
     fn transient_kind_classification_for_exit_codes() {
         for k in ["rpc_unavailable", "execute_unavailable", "confirmation_timeout", "missing_blockhash", "invalid_blockhash"] {
             assert!(is_transient_kind(k), "{k} must be transient");
@@ -1274,7 +1311,8 @@ mod tests {
                 | GmTradeErrorKind::InteractiveRequired
                 | GmTradeErrorKind::RecipientNotAllowed
                 | GmTradeErrorKind::LockContention
-                | GmTradeErrorKind::InvalidView => {}
+                | GmTradeErrorKind::InvalidView
+                | GmTradeErrorKind::OndoUnavailable => {}
             }
         }
         let mut seen = std::collections::HashSet::new();

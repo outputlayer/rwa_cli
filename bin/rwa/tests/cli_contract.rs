@@ -598,6 +598,36 @@ fn tradable_fails_when_session_limits_unavailable() {
         !String::from_utf8_lossy(&out.stdout).contains("\"tradable\":false"),
         "must not emit a fake all-untradable list"
     );
+    assert_eq!(out.status.code(), Some(75), "Ondo outage is transient");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| serde_json::from_slice(&out.stderr).expect("json error envelope"));
+    assert_eq!(v["error_kind"], "ondo_unavailable", "{v}");
+}
+
+/// Ondo's WAF answers 403 on these public endpoints during a rate block; that
+/// is an outage (transient, exit 75), not a permanent failure.
+#[test]
+fn tradable_session_limits_403_is_ondo_unavailable() {
+    let home = test_home("tradable-limits-403");
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/session");
+        then.status(403);
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/assets");
+        then.status(403);
+    });
+    let out = rwa(&home)
+        .args(["--json", "gm", "tradable", "TSLA"])
+        .env("RWA_ONDO_SESSION_URL", server.url("/session"))
+        .env("RWA_ONDO_API_URL", server.url("/assets"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(75));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| serde_json::from_slice(&out.stderr).expect("json error envelope"));
+    assert_eq!(v["error_kind"], "ondo_unavailable", "{v}");
 }
 
 /// `buy-basket --dry-run --max-bps N` rejects quotes whose all-in cost exceeds

@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- New transient error kind `ondo_unavailable` (exit 75) for Ondo assets/session-limits outages (network, HTTP 403 WAF block, 429, 5xx) on `gm search`/`gm tradable` and the pre-trade tradability check; previously `search`/`tradable` reported `error_kind: null` (exit 1). An off-hours session-limits outage during buy/sell is no longer misreported as `market_closed`.
+
 ## [0.7.16] - 2026-10-07 — revert parallel `close-all --dry-run`
 
 ### Changed

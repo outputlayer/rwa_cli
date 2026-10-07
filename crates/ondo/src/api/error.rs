@@ -47,6 +47,19 @@ impl OndoError {
     }
 }
 
+impl OndoError {
+    /// Whether this failure looks like a temporary Ondo outage worth retrying
+    /// later: everything `is_retryable()` covers PLUS HTTP 403 — these
+    /// endpoints are public/unauthenticated, so a 403 is a WAF/rate block that
+    /// lifts after a few minutes. Kept separate from `is_retryable()` so the
+    /// in-process backoff loop doesn't hammer a blocked endpoint.
+    #[must_use]
+    pub fn is_outage(&self) -> bool {
+        self.is_retryable()
+            || (self.kind == OndoErrorKind::HttpStatus && self.status == Some(StatusCode::FORBIDDEN))
+    }
+}
+
 impl std::fmt::Display for OndoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.status {
@@ -97,5 +110,15 @@ mod tests {
         assert!(network.is_retryable());
         assert!(rate_limited.is_retryable());
         assert!(!invalid.is_retryable());
+    }
+
+    #[test]
+    fn outage_adds_403_but_not_other_4xx_or_decode() {
+        let mk = |kind, status: Option<StatusCode>| OndoError::new(kind, "assets", status, "x");
+        assert!(mk(OndoErrorKind::HttpStatus, Some(StatusCode::FORBIDDEN)).is_outage());
+        assert!(!mk(OndoErrorKind::HttpStatus, Some(StatusCode::FORBIDDEN)).is_retryable());
+        assert!(mk(OndoErrorKind::Network, None).is_outage());
+        assert!(!mk(OndoErrorKind::HttpStatus, Some(StatusCode::NOT_FOUND)).is_outage());
+        assert!(!mk(OndoErrorKind::Decode, None).is_outage());
     }
 }

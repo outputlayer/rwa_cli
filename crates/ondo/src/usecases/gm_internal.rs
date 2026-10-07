@@ -172,10 +172,11 @@ pub(crate) async fn check_tradable(symbol: &str, api_url: Option<&str>) -> Resul
             if off_hours {
                 // Off-hours with no limits data: fail closed. Only a handful
                 // of tokens trade 24/7 and we can't tell which without the API.
+                // This is an Ondo outage, not a market decision: transient.
                 return Err(GmTradeError::new(
-                    GmTradeErrorKind::MarketClosed,
+                    GmTradeErrorKind::OndoUnavailable,
                     format!(
-                        "off-hours session and the limits endpoint is unreachable ({e}) — cannot verify {symbol} trades 24/7. Regular trading resumes Sunday 8:00 PM ET."
+                        "Ondo session limits unavailable ({e}) — off-hours session, cannot verify {symbol} trades 24/7. Retry shortly."
                     ),
                 )
                 .into());
