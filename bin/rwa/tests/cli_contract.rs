@@ -543,8 +543,9 @@ fn portfolio_json_reports_unavailable_market_data() {
     assets.assert();
 }
 
-/// A hard RPC failure surfaces the JSON error envelope with a stable
-/// `error_kind` ("rpc_unavailable") and exit code 1.
+/// A permanent RPC-level failure (JSON-RPC error object, not an endpoint
+/// outage) surfaces the JSON error envelope with no `error_kind` (it is not
+/// `rpc_unavailable`) and exit code 1.
 #[test]
 fn rpc_failure_emits_error_envelope_with_kind() {
     let home = test_home("rpc-error-envelope");
@@ -576,8 +577,27 @@ fn rpc_failure_emits_error_envelope_with_kind() {
     assert!(!out.status.success(), "RPC failure must exit non-zero");
     let v = stdout_json(&out);
     assert_eq!(v["status"], "error");
-    assert_eq!(v["error_kind"], "rpc_unavailable");
+    assert!(v["error_kind"].is_null(), "RPC-level error is not rpc_unavailable: {v}");
+    assert_eq!(out.status.code(), Some(1));
     assert!(v["error"].as_str().unwrap().contains("Method not found"));
+}
+
+/// An Ondo session-limits outage must fail `tradable`, not report every token
+/// as untradable.
+#[test]
+fn tradable_fails_when_session_limits_unavailable() {
+    let home = test_home("tradable-limits-down");
+    let out = rwa(&home)
+        .args(["--json", "gm", "tradable", "TSLA"])
+        .env("RWA_ONDO_SESSION_URL", "http://127.0.0.1:1/session")
+        .env("RWA_ONDO_API_URL", "http://127.0.0.1:1/assets")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "limits outage must exit non-zero");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("\"tradable\":false"),
+        "must not emit a fake all-untradable list"
+    );
 }
 
 /// `buy-basket --dry-run --max-bps N` rejects quotes whose all-in cost exceeds

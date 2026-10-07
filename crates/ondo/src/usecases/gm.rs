@@ -177,8 +177,10 @@ pub fn classify_error(err: &eyre::Error) -> Option<&'static str> {
         if let Some(t) = cause.downcast_ref::<crate::solana::TransactionError>() {
             return Some(t.kind.label());
         }
-        if cause.downcast_ref::<crate::solana::SolanaRpcError>().is_some() {
-            return Some("rpc_unavailable");
+        if let Some(e) = cause.downcast_ref::<crate::solana::SolanaRpcError>() {
+            // Only endpoint-side failures are transient; 4xx (bad key, 401/403)
+            // and RPC-level errors are permanent (exit 1), not `rpc_unavailable`.
+            return e.is_endpoint_transient().then_some("rpc_unavailable");
         }
         if cause.downcast_ref::<crate::solana::NoTokenAccount>().is_some() {
             return Some("no_position");
