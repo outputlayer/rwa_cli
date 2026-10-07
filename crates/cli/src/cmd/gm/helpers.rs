@@ -341,7 +341,7 @@ pub(super) fn solscan_tx_url(sig: &str) -> String {
 pub(super) fn fail_json(token: String, err: &eyre::Error) -> CloseFailJson {
     CloseFailJson {
         token,
-        error: err.to_string(),
+        error: format!("{err:#}"),
         error_kind: usecases::gm::classify_error(err),
     }
 }
@@ -493,6 +493,14 @@ pub(super) fn token_type_from_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fail_json_keeps_the_full_cause_chain() {
+        use eyre::WrapErr;
+        let err = Err::<(), _>(eyre::eyre!("root cause")).wrap_err("outer context").unwrap_err();
+        let f = fail_json("TSLA".into(), &err);
+        assert!(f.error.contains("outer context") && f.error.contains("root cause"), "{}", f.error);
+    }
 
     #[test]
     fn clean_name_removes_suffix() {

@@ -24,8 +24,20 @@ pub async fn reclaim(token_filter: Option<&str>, json: bool, rpc_url: Option<&st
                         .eq_ignore_ascii_case(&filter_upper)
             })
             .and_then(|t| t.solana_address)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| filter.to_string());
+            .map(|s| s.to_string());
+        // A typo must not read as "nothing to reclaim": accept a known symbol
+        // or a valid mint address, otherwise fail as unknown_token.
+        let filter_mint = match filter_mint {
+            Some(m) => m,
+            None if solana::validate_address(filter).is_ok() => filter.to_string(),
+            None => {
+                return Err(rwa_ondo::usecases::gm::GmTradeError::new(
+                    rwa_ondo::usecases::gm::GmTradeErrorKind::UnknownToken,
+                    format!("Unknown token '{filter}' — use a GM symbol (see `rwa gm list`) or a mint address"),
+                )
+                .into());
+            }
+        };
 
         empty.retain(|a| a.mint == filter_mint);
     }

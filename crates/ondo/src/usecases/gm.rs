@@ -517,7 +517,12 @@ pub fn parse_sell_pct(amount: Option<&str>) -> Result<f64> {
     let s = raw.trim();
     let pct_str = s
         .strip_suffix('%')
-        .ok_or_else(|| eyre!("close-all amount must be a percentage (e.g. 10%, 50%)"))?;
+        .ok_or_else(|| {
+            GmTradeError::new(
+                GmTradeErrorKind::InvalidAmount,
+                "close-all amount must be a percentage (e.g. 10%, 50%)",
+            )
+        })?;
     crate::amounts::parse_pct(pct_str, s)
 }
 

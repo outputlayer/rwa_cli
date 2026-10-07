@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::{Result, WrapErr, eyre};
 use rwa_ondo::{amounts, jupiter, usecases};
 use std::sync::Arc;
 
@@ -8,10 +8,14 @@ use super::*;
 /// Returns Err if the list is odd-length or any amount is not parseable as a number/pct/all.
 fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> {
     if !tokens.len().is_multiple_of(2) {
-        return Err(eyre!(
-            "Expected alternating SYMBOL AMOUNT pairs (e.g. AAPL 4 TSLA 3), got {} token(s)",
-            tokens.len()
-        ));
+        return Err(usecases::gm::GmTradeError::new(
+            usecases::gm::GmTradeErrorKind::InvalidAmount,
+            format!(
+                "Expected alternating SYMBOL AMOUNT pairs (e.g. AAPL 4 TSLA 3), got {} token(s)",
+                tokens.len()
+            ),
+        )
+        .into());
     }
     let mut pairs = Vec::with_capacity(tokens.len() / 2);
     let mut i = 0;
@@ -24,9 +28,11 @@ fn parse_basket_pairs(tokens: &[String]) -> eyre::Result<Vec<(String, String)>> 
             && !trimmed.ends_with('%')
             && trimmed.parse::<f64>().is_err()
         {
-            return Err(eyre!(
-                "Invalid amount '{amt}' for token '{sym}'. Use a number (e.g. 10), percentage (e.g. 50%), or 'all'."
-            ));
+            return Err(usecases::gm::GmTradeError::new(
+                usecases::gm::GmTradeErrorKind::InvalidAmount,
+                format!("Invalid amount '{amt}' for token '{sym}'. Use a number (e.g. 10), percentage (e.g. 50%), or 'all'."),
+            )
+            .into());
         }
         pairs.push((sym, amt));
         i += 2;
@@ -109,7 +115,7 @@ fn resolve_buy_items(
             .into());
         }
         let raw = amounts::token_to_raw(amt, jupiter::USDC_DECIMALS)
-            .map_err(|e| eyre!("Invalid amount '{amt}' for {sym}: {e}"))?;
+            .wrap_err_with(|| format!("Invalid amount '{amt}' for {sym}"))?;
         let raw_u: u128 = raw.parse().map_err(|_| eyre!("Invalid USDC amount for {sym}"))?;
         items.push((sym.clone(), raw_u));
     }

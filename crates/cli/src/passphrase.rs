@@ -80,13 +80,13 @@ fn tty_prompt() -> Result<Zeroizing<String>> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
         return Err(eyre!(
-            "Failed to read passphrase (stdin is not a terminal). No terminal to prompt? Set RWA_PASSPHRASE or run interactively."
+            "Failed to read passphrase (stdin is not a terminal). No terminal to prompt? Run `rwa keys store-passphrase` once at a terminal (recommended), or set RWA_PASSPHRASE."
         ));
     }
     rpassword::prompt_password("Wallet passphrase: ")
         .map(Zeroizing::new)
         .map_err(|e| {
-            eyre!("Failed to read passphrase ({e}). No terminal to prompt? Set RWA_PASSPHRASE or run interactively.")
+            eyre!("Failed to read passphrase ({e}). No terminal to prompt? Run `rwa keys store-passphrase` once at a terminal (recommended), or set RWA_PASSPHRASE.")
         })
 }
 
