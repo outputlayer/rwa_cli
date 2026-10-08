@@ -9,7 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.17] - 2026-10-08 — Ondo outages are transient (`ondo_unavailable`, exit 75)
 
 ### Changed
 
